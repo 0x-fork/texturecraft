@@ -1725,14 +1725,16 @@ fn pen_pressure(ui: &Ui) -> f32 {
         }
         // A pen lifts with no pressure, so keep its contact pressure for a tap
         Some((egui::TouchPhase::End, None)) => ui.data(|d| d.get_temp(id)).unwrap_or(1.0),
-        // A finger must not inherit an earlier pen's pressure
-        Some((egui::TouchPhase::Start, None)) => {
+        // A touch without pressure (a finger) must not inherit an earlier pen's.
+        Some((egui::TouchPhase::Start | egui::TouchPhase::Cancel, None)) => {
             ui.data_mut(|d| d.remove_temp::<f32>(id));
             1.0
         }
         _ => {
-            let active = ui.input(|i| i.pointer.primary_down() || i.pointer.any_down() || i.pointer.primary_released() || i.pointer.any_released());
-            if active {
+            let (pressed, active) = ui.input(|i| {
+                (i.pointer.any_pressed(), i.pointer.primary_down() || i.pointer.any_down() || i.pointer.primary_released() || i.pointer.any_released())
+            });
+            if active && !pressed {
                 ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(1.0)
             } else {
                 ui.data_mut(|d| d.remove_temp::<f32>(id));
