@@ -847,7 +847,7 @@ dependencies = [
 [[package]]
 name = "craft-tcraft"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b85e4b150#b85e4b150b7e427b1fd3c88b4ed9e6aba055053c"
+source = "git+https://github.com/storytold/craft-libs?rev=d2c1cac03#d2c1cac0324491bd67f6e3b583a5dffb18bf78eb"
 dependencies = [
  "craft-zip",
  "serde",
@@ -927,7 +927,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b85e4b150#b85e4b150b7e427b1fd3c88b4ed9e6aba055053c"
+source = "git+https://github.com/storytold/craft-libs?rev=d2c1cac03#d2c1cac0324491bd67f6e3b583a5dffb18bf78eb"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
