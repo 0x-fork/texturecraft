@@ -818,9 +818,9 @@ dependencies = [
 [[package]]
 name = "craft-mcmat"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b6d9feed23ceae249b40593ed84a668343091627#b6d9feed23ceae249b40593ed84a668343091627"
+source = "git+https://github.com/storytold/craft-libs?rev=c376774f15ae7cd3b06a7ac664f01a8645af4b83#c376774f15ae7cd3b06a7ac664f01a8645af4b83"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b6d9feed23ceae249b40593ed84a668343091627)",
+ "craft-zip",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -858,9 +858,9 @@ dependencies = [
 [[package]]
 name = "craft-tcraft"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=2cf13ea7c6920f3674e0fd5c362852e77c5cf833#2cf13ea7c6920f3674e0fd5c362852e77c5cf833"
+source = "git+https://github.com/storytold/craft-libs?rev=c376774f15ae7cd3b06a7ac664f01a8645af4b83#c376774f15ae7cd3b06a7ac664f01a8645af4b83"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2cf13ea7c6920f3674e0fd5c362852e77c5cf833)",
+ "craft-zip",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -938,17 +938,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=2cf13ea7c6920f3674e0fd5c362852e77c5cf833#2cf13ea7c6920f3674e0fd5c362852e77c5cf833"
-dependencies = [
- "flate2",
- "thiserror 2.0.21",
- "zip",
-]
-
-[[package]]
-name = "craft-zip"
-version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=b6d9feed23ceae249b40593ed84a668343091627#b6d9feed23ceae249b40593ed84a668343091627"
+source = "git+https://github.com/storytold/craft-libs?rev=c376774f15ae7cd3b06a7ac664f01a8645af4b83#c376774f15ae7cd3b06a7ac664f01a8645af4b83"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -4439,7 +4429,7 @@ dependencies = [
  "craft-mcmat",
  "craft-mesh",
  "craft-tcraft",
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=2cf13ea7c6920f3674e0fd5c362852e77c5cf833)",
+ "craft-zip",
  "exr",
  "flate2",
  "gltf",
