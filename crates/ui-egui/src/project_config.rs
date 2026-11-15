@@ -16,7 +16,7 @@ const SELECT_BUTTON_WIDTH: f32 = 90.0;
 
 /// Opens the window on the current project, with nothing chosen yet.
 pub(crate) fn open(app: &mut TextureCraftApp) {
-    app.ui.windows.project_config = Some(ProjectConfig { mesh: None, reimport: false, project: app.session.project_id });
+    app.ui.windows.project_config = Some(ProjectConfig { mesh: None, reimport: false, confirm: false, project: app.session.project_id });
 }
 
 /// `text` with its beginning replaced by an ellipsis until `fits` accepts it (the end of a path
@@ -40,6 +40,22 @@ fn elide_start(text: &str, fits: impl Fn(&str) -> bool) -> String {
     shown(low)
 }
 
+/// The keys of the open window, read in `menus::shortcuts` before any panel draws: Escape closes
+/// it (and goes no further, so it doesn't cancel a stroke), Enter confirms it unless a text field
+/// or button had the keyboard (`nothing_focused`), whose Enter belongs to it.
+pub(crate) fn keys_in(app: &mut TextureCraftApp, input: &mut egui::InputState, nothing_focused: bool) {
+    let escape = input.consume_key(Modifiers::NONE, Key::Escape);
+    let enter = input.consume_key(Modifiers::NONE, Key::Enter);
+    if escape {
+        app.ui.windows.project_config = None;
+    } else if enter
+        && nothing_focused
+        && let Some(config) = app.ui.windows.project_config.as_mut()
+    {
+        config.confirm = true;
+    }
+}
+
 pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let Some(mut config) = app.ui.windows.project_config.clone() else { return };
     // Another project was opened meanwhile: the choices were for the old one.
@@ -47,20 +63,24 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         app.ui.windows.project_config = None;
         return;
     }
-    let current = app.session.doc.project.mesh_path.clone();
+    let project = &app.session.doc.project;
+    let current = project.mesh_path.clone();
+    // What the project's mesh came from: its file, or at least the name it was imported under.
+    let named = if current.is_empty() { project.mesh_file.clone() } else { current.clone() };
+    let readable = app.session.remembered_mesh_path().is_some();
     // A file other than the project's own is the project's new mesh.
     let changed = config.mesh.as_ref().filter(|chosen| **chosen != current).cloned();
 
     let mut open = true;
-    let (mut ok, mut cancel, mut select) = (false, false, false);
-    let font = egui::TextStyle::Body.resolve(&ctx.style());
+    let (mut ok, mut cancel, mut select) = (std::mem::take(&mut config.confirm), false, false);
     crate::windows::dialog("project_config", tr("Project configuration"), &mut open).default_width(460.0).show(ctx, |ui| {
         // One section per part of the project; more follow the same pattern.
         ui.label(caption(tr("3D MESH")));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(tr("3D mesh"));
-            let shown = changed.clone().unwrap_or_else(|| current.clone());
+            let shown = changed.clone().unwrap_or_else(|| named.clone());
+            let font = egui::TextStyle::Body.resolve(ui.style());
             let max = (ui.available_width() - SELECT_BUTTON_WIDTH).max(60.0);
             let measure = |s: &str| ui.painter().layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE).rect.width() <= max;
             if shown.is_empty() {
@@ -72,25 +92,28 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 select = ui.button(tr("Select...")).clicked();
             });
         });
+        if changed.is_none() && !current.is_empty() && !readable {
+            ui.colored_label(ui.visuals().error_fg_color, tr("File not found"));
+        }
         ui.add_space(4.0);
-        // Another file always reads the mesh again, so its box is ticked and stays ticked.
+        // Another file always reads the mesh again, so its box shows ticked and can't be cleared.
+        // Without a file on disk there is nothing to read again.
         let mut reimport = config.reimport || changed.is_some();
-        ui.add_enabled(changed.is_none(), egui::Checkbox::new(&mut reimport, tr("Reimport mesh")))
-            .on_hover_text(tr("Read the mesh file again, keeping the layers and painted strokes"));
-        config.reimport = reimport;
+        let free = changed.is_none() && readable;
+        let tick = ui.add_enabled(free, egui::Checkbox::new(&mut reimport, tr("Reimport mesh")));
+        if free {
+            config.reimport = reimport;
+            tick.on_hover_text(tr("Read the mesh file again, keeping the layers and painted strokes"));
+        } else if changed.is_none() {
+            tick.on_disabled_hover_text(tr("There is no mesh file to read again. Select one."));
+        }
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ok = ui.add(primary_button(ui, tr("OK"))).clicked();
+                ok |= ui.add(primary_button(ui, tr("OK"))).clicked();
                 cancel = ui.button(tr("Cancel")).clicked();
             });
         });
-    });
-    // Esc cancels; Enter confirms unless a button has the keyboard (it presses that one itself).
-    let nothing_focused = ctx.memory(|m| m.focused()).is_none();
-    ctx.input_mut(|i| {
-        cancel |= i.consume_key(Modifiers::NONE, Key::Escape);
-        ok |= nothing_focused && i.consume_key(Modifiers::NONE, Key::Enter);
     });
 
     if select {
@@ -101,24 +124,25 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             if let Some(config) = app.ui.windows.project_config.as_mut() {
                 // Picking the project's own file again drops an earlier choice.
                 config.mesh = (path != current).then_some(path);
-                config.reimport |= config.mesh.is_some();
             }
         });
     }
-    if ok || cancel || !open {
+    // OK closes the window once the change worked; a failure leaves it open, choice kept, with its toast.
+    let done = ok
+        && if let Some(path) = changed {
+            app.run("file.changeMesh", json!({"path": path, "preserveStrokes": true})).is_some()
+        } else if config.reimport
+            && let Some(path) = app.session.remembered_mesh_path().map(str::to_string)
+        {
+            app.run("file.reimportMesh", json!({"path": path, "preserveStrokes": true})).is_some()
+        } else {
+            true
+        };
+    if done || cancel || !open {
         app.ui.windows.project_config = None;
-    } else {
-        // Keep a tick made now; the file answer arrives later through the stored value.
-        if let Some(stored) = app.ui.windows.project_config.as_mut() {
-            stored.reimport = config.reimport;
-        }
-    }
-    if ok {
-        if let Some(path) = changed {
-            app.run("file.changeMesh", json!({"path": path, "preserveStrokes": true}));
-        } else if config.reimport {
-            crate::menus::invoke(app, ctx, "file.reimportMesh");
-        }
+    } else if let Some(stored) = app.ui.windows.project_config.as_mut() {
+        // Keep the tick made now; the file answer arrives later through the stored value.
+        stored.reimport = config.reimport;
     }
 }
 
@@ -134,6 +158,6 @@ mod tests {
     #[test]
     fn a_long_path_loses_its_beginning() {
         let shown = elide_start("/home/me/projects/models/hero.obj", |s| s.chars().count() <= 12);
-        assert_eq!(shown, "…/hero.obj", "the longest tail that fits, not a shorter one");
+        assert_eq!(shown, "…ls/hero.obj", "the longest tail that fits, not a shorter one");
     }
 }

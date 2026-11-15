@@ -89,8 +89,10 @@ pub struct Windows {
 pub struct ProjectConfig {
     /// A mesh file picked with Select..., not applied until OK.
     pub mesh: Option<String>,
-    /// The Reimport mesh box.
+    /// The Reimport mesh box as the user set it (a chosen file reads the mesh again whatever it says).
     pub reimport: bool,
+    /// Enter was pressed: OK in the next frame.
+    pub confirm: bool,
     /// The project the window was opened on (`Session::project_id`).
     pub project: u64,
 }

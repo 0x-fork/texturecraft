@@ -348,6 +348,8 @@ pub fn shortcuts(app: &mut TextureCraftApp, ctx: &egui::Context) {
     // Escape closes a dropdown before Properties, the rail popup, color picking or the stroke
     let popup_open = egui::Popup::is_any_open(ctx);
 
+    #[cfg(not(target_arch = "wasm32"))]
+    let nothing_focused = ctx.memory(|memory| memory.focused().is_none());
     let commands_to_invoke = ctx.input_mut(|input| {
         // egui's label selection copies on these events at the end of the frame
         let copies: Vec<_> = input.events.iter().filter(|event| matches!(event, egui::Event::Copy | egui::Event::Cut)).cloned().collect();
@@ -367,7 +369,11 @@ pub fn shortcuts(app: &mut TextureCraftApp, ctx: &egui::Context) {
             app.session.tool.brush.size = (app.session.tool.brush.size * scale).clamp(MIN_BRUSH_SIZE, MAX_BRUSH_SIZE);
         }
 
-        if !popup_open && app.properties_popup.is_some() && input.consume_key(Modifiers::NONE, Key::Escape) {
+        if app.ui.windows.project_config.is_some() {
+            // Its keys are Escape (close) and Enter (OK); a stroke in progress isn't touched
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::project_config::keys_in(app, input, nothing_focused);
+        } else if !popup_open && app.properties_popup.is_some() && input.consume_key(Modifiers::NONE, Key::Escape) {
             app.properties_popup = None;
         } else if !popup_open && crate::rail_popup::is_visible(app) && input.consume_key(Modifiers::NONE, Key::Escape) {
             app.ui.rail_panel = None;
