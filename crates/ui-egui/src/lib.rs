@@ -22,6 +22,7 @@ pub mod export_templates;
 pub mod file_dialogs;
 mod filter_slot;
 pub mod fonts;
+mod generator_panel;
 pub mod gpu;
 mod grid_tile;
 pub mod i18n;
@@ -337,7 +338,7 @@ impl TextureCraftApp {
         }
 
         let total = sets.len();
-        self.bake = Some(BakeJob { queue: sets, current: None, total });
+        self.bake = Some(BakeJob { queue: sets, current: None, total, mesh_id: self.session.mesh_id });
     }
 
     /// Re-cook MaterialCraft material layer `layer` in the background. While one cook of the layer
@@ -402,6 +403,15 @@ impl TextureCraftApp {
             self.session.bake_preview_end();
             return;
         };
+
+        if job.mesh_id != self.session.mesh_id {
+            // The mesh was swapped under the job: stop it and drop its result.
+            if let Some(running) = &job.current {
+                running.progress.cancel.store(true, Ordering::Relaxed);
+            }
+            self.bake = None;
+            return;
+        }
 
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
         if let Some(running) = &job.current {
@@ -683,6 +693,7 @@ impl eframe::App for TextureCraftApp {
         self.poll_bake(ctx);
         self.poll_resize(ctx);
         self.poll_link_cooks(ctx);
+        self.thumbs.sync_images(&self.session.images, self.session.revision);
         // The library shelf rescans when the window comes back (MaterialCraft may have sent a material)
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         if focused && !self.focused {
