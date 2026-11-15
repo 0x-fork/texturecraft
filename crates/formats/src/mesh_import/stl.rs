@@ -2,13 +2,13 @@
 
 use texturecraft_geom::glam::{Vec3, Vec4};
 
-use super::{RawMesh, check_triangles};
+use super::{MAX_VERTICES, RawMesh, check_triangles};
 use crate::{FormatError, Result};
 
 const KIND: &str = "STL";
 
 pub(crate) fn read(bytes: &[u8]) -> Result<RawMesh> {
-    let scene = craft_mesh::stl::read(bytes, &craft_mesh::Limits::default()).map_err(|e| FormatError::Invalid(e.to_string()))?;
+    let scene = craft_mesh::stl::read(bytes, &stl_limits()).map_err(|e| FormatError::Invalid(e.to_string()))?;
     let mut raw = RawMesh::default();
     raw.warnings = scene.warnings;
 
@@ -57,4 +57,19 @@ pub(crate) fn read(bytes: &[u8]) -> Result<RawMesh> {
     }
     raw.groups.push(("Default".into(), String::new(), (0..raw.positions.len() as u32).collect()));
     Ok(raw)
+}
+
+/// STL stores three positions per facet; retain the app's established triangle capacity.
+fn stl_limits() -> craft_mesh::Limits {
+    craft_mesh::Limits { max_vertices: MAX_VERTICES, ..craft_mesh::Limits::default() }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn shared_reader_accepts_the_app_vertex_limit() {
+        let limits = super::stl_limits();
+        assert_eq!(limits.max_vertices, super::MAX_VERTICES);
+        assert_eq!(limits.max_triangles, texturecraft_geom::MAX_TRIANGLES);
+    }
 }
