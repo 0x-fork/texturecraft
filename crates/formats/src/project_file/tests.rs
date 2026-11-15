@@ -83,6 +83,15 @@ fn round_trip_is_identical_and_deterministic() {
 }
 
 #[test]
+fn shared_project_schema_round_trips_the_app_document() {
+    let project = sample().pf.project;
+    let original = serde_json::to_value(&project).unwrap();
+    let document: craft_tcraft::ProjectDocument = serde_json::from_value(original.clone()).unwrap();
+    assert_eq!(document.format_version, project.format_version);
+    assert_eq!(serde_json::to_value(document).unwrap(), original);
+}
+
+#[test]
 fn legacy_bakes_load_as_is_without_layout_conversion() {
     let mut sample = sample();
     sample.pf.project.format_version = 1;
