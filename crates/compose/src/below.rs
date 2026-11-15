@@ -14,7 +14,8 @@ use texturecraft_core::{BakedMap, Channel, EffectKind, Layer, LayerId, LayerKind
 use texturecraft_texel::TileImage;
 
 use crate::eval::{Inputs, PaintTarget};
-use crate::store::{BakedMaps, ImageRes, ImageStore, PixelStore};
+use crate::image_identity::ImageIdentity;
+use crate::store::{BakedMaps, ImageStore, PixelStore};
 
 /// Default byte budget of a [`BelowCache`], per nesting level it holds (see
 /// [`BelowCache::limit`]).
@@ -82,76 +83,79 @@ pub struct StackKey {
 }
 
 impl StackKey {
-    /// The key of `roots` (layers of texture set `ts`, bottom → top) and their effects.
-    pub fn new(project: &Project, pixels: &PixelStore, baked: &BakedMaps, images: &ImageStore, ts: usize, roots: &[LayerId]) -> Option<StackKey> {
-        StackKey::of_tree(project, pixels, baked, images, ts, roots.to_vec(), &project.render_tree(roots))
+    /// The key of `roots` (layers of a texture set, bottom → top) and their effects.
+    pub fn new(
+        project: &Project,
+        pixels: &PixelStore,
+        baked: &BakedMaps,
+        images: &ImageStore,
+        texture_set_index: usize,
+        roots: &[LayerId],
+    ) -> Option<StackKey> {
+        StackKey::of_tree(project, pixels, baked, images, texture_set_index, roots.to_vec(), &project.render_tree(roots))
     }
 
-    /// The key of the layers in `tree` (and their effects), drawn as `roots` arrange them.
+    /// The key of the layers in `render_tree` (and their effects), drawn as `roots` arrange them.
     fn of_tree(
         project: &Project,
         pixels: &PixelStore,
         baked: &BakedMaps,
         images: &ImageStore,
-        ts: usize,
+        texture_set_index: usize,
         roots: Vec<LayerId>,
-        tree: &BTreeSet<LayerId>,
+        render_tree: &BTreeSet<LayerId>,
     ) -> Option<StackKey> {
-        let mut set = project.texture_set(ts).ok()?.clone();
+        let mut set = project.texture_set(texture_set_index).ok()?.clone();
         set.name.clear();
         set.description.clear();
         set.stack.clear();
         set.bake = Default::default();
-        let effects: BTreeSet<LayerId> = tree.iter().filter_map(|id| project.layers.get(id)).flat_map(effect_ids).collect();
-        let pixels = tree
+
+        let effect_ids: BTreeSet<LayerId> = render_tree.iter().filter_map(|id| project.layers.get(id)).flat_map(effect_ids).collect();
+        let pixel_handles = render_tree
             .iter()
-            .chain(&effects)
+            .chain(&effect_ids)
             .flat_map(|id| {
-                let layer = Channel::ALL.into_iter().filter_map(move |c| pixels.layer(*id, c).map(|img| (*id, Some(c), Shared(img.clone()))));
-                layer.chain(pixels.masks.get(id).map(|img| (*id, None, Shared(img.clone()))))
+                let layer_channels =
+                    Channel::ALL.into_iter().filter_map(move |channel| pixels.layer(*id, channel).map(|image| (*id, Some(channel), Shared(image.clone()))));
+                layer_channels.chain(pixels.masks.get(id).map(|image| (*id, None, Shared(image.clone()))))
             })
             .collect();
-        let mut names = BTreeSet::new();
+
+        let mut referenced_images = BTreeSet::new();
         if !images.is_empty() {
-            let mut record = |source: &Source| {
+            let mut record_image_reference = |source: &Source| {
                 if let Source::Image { name, .. } = source
                     && let Some((name, _)) = images.get_key_value(name)
                 {
-                    names.insert(name);
+                    referenced_images.insert(name);
                 }
             };
-            for layer in tree.iter().filter_map(|id| project.layers.get(id)) {
+            for layer in render_tree.iter().filter_map(|id| project.layers.get(id)) {
                 if let LayerKind::Fill(fill) = &layer.kind {
-                    fill.sources.values().for_each(&mut record);
+                    fill.sources.values().for_each(&mut record_image_reference);
                 }
-                for effect in layer.mask.iter().flat_map(|m| &m.effects).chain(&layer.content_effects) {
+                for effect in layer.mask.iter().flat_map(|mask| &mask.effects).chain(&layer.content_effects) {
                     match &effect.kind {
-                        EffectKind::Fill { source, .. } => record(source),
-                        EffectKind::Material(fill) => fill.sources.values().for_each(&mut record),
+                        EffectKind::Fill { source, .. } => record_image_reference(source),
+                        EffectKind::Material(fill) => fill.sources.values().for_each(&mut record_image_reference),
                         _ => {}
                     }
                 }
             }
         }
-        let images = names.into_iter().map(|name| (name.clone(), ImageIdentity(Arc::downgrade(&images[name])))).collect();
+
+        let image_identities =
+            referenced_images.into_iter().filter_map(|name| images.get(name).map(|image| (name.clone(), ImageIdentity::new(image)))).collect();
+
         Some(StackKey {
             set,
             roots,
-            layers: tree.iter().filter_map(|id| project.layers.get(id)).map(render_view).collect(),
-            pixels,
-            baked: (baked.resolution, baked.maps.iter().map(|(m, d)| (*m, Arc::as_ptr(d) as usize)).collect()),
-            images,
+            layers: render_tree.iter().filter_map(|id| project.layers.get(id)).map(render_view).collect(),
+            pixels: pixel_handles,
+            baked: (baked.resolution, baked.maps.iter().map(|(map, data)| (*map, Arc::as_ptr(data) as usize)).collect()),
+            images: image_identities,
         })
-    }
-}
-
-// Keep the allocation identity stable even when an image is removed between composites.
-#[derive(Debug)]
-struct ImageIdentity(std::sync::Weak<ImageRes>);
-
-impl PartialEq for ImageIdentity {
-    fn eq(&self, other: &Self) -> bool {
-        self.0.ptr_eq(&other.0)
     }
 }
 

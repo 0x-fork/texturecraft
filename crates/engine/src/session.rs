@@ -571,42 +571,55 @@ impl Session {
         self.invalidate_changed(other);
     }
 
-    /// Mark dirty every texture set whose composite differs between `other` and the current
+    /// Mark dirty every texture set whose composite differs between the previous and current
     /// document (after an edit, undo or redo).
-    pub(crate) fn invalidate_changed(&mut self, other: &Document) {
-        self.follow_uv_layouts(&other.project);
+    pub(crate) fn invalidate_changed(&mut self, previous_document: &Document) {
+        self.follow_uv_layouts(&previous_document.project);
         self.sync_caches();
-        // Retain broad invalidation on removal or replacement. A newly added resource
-        // can also satisfy an existing, previously unresolved image reference.
-        let all = other.resources.iter().any(|(name, old)| !self.doc.resources.get(name).is_some_and(|new| Arc::ptr_eq(old, new)));
-        let added: BTreeSet<_> = self.doc.resources.keys().filter(|name| !other.resources.contains_key(*name)).collect();
-        let uses_added = |ts: usize| {
+
+        // Removed or replaced resources may change any set's rendered content
+        let removed_or_replaced_resource =
+            previous_document.resources.iter().any(|(name, previous)| !self.doc.resources.get(name).is_some_and(|current| Arc::ptr_eq(previous, current)));
+        let added_resource_names: BTreeSet<_> = self.doc.resources.keys().filter(|name| !previous_document.resources.contains_key(*name)).collect();
+        let uses_added_resource = |texture_set_index: usize| {
             use texturecraft_core::{EffectKind, Fill, Source};
-            let uses_source = |src: &Source| matches!(src, Source::Image { name, .. } if added.contains(name));
-            let uses_fill = |f: &Fill| f.sources.values().any(uses_source) || f.link.as_ref().is_some_and(|l| added.contains(&l.package));
+
+            let uses_source = |source: &Source| matches!(source, Source::Image { name, .. } if added_resource_names.contains(name));
+            let uses_fill =
+                |fill: &Fill| fill.sources.values().any(uses_source) || fill.link.as_ref().is_some_and(|link| added_resource_names.contains(&link.package));
             let project = &self.doc.project;
-            !added.is_empty()
-                && project.texture_sets.get(ts).is_some_and(|set| {
+            !added_resource_names.is_empty()
+                && project.texture_sets.get(texture_set_index).is_some_and(|set| {
                     project.render_tree(&set.stack).iter().filter_map(|id| project.layers.get(id)).any(|layer| {
-                        matches!(&layer.kind, LayerKind::Fill(f) if uses_fill(f))
-                            || layer.mask.iter().flat_map(|m| &m.effects).chain(&layer.content_effects).any(|e| match &e.kind {
+                        matches!(&layer.kind, LayerKind::Fill(fill) if uses_fill(fill))
+                            || layer.mask.iter().flat_map(|mask| &mask.effects).chain(&layer.content_effects).any(|effect| match &effect.kind {
                                 EffectKind::Fill { source, .. } => uses_source(source),
-                                EffectKind::Material(f) => uses_fill(f),
+                                EffectKind::Material(fill) => uses_fill(fill),
                                 _ => false,
                             })
                     })
                 })
         };
-        let (empty, images) = (BakedMaps::default(), Default::default());
-        let key = |d: &Document, ts: usize| {
-            let stack = d.project.texture_sets.get(ts).map(|s| s.stack.as_slice()).unwrap_or_default();
-            StackKey::new(&d.project, &d.pixels, d.baked.get(&ts).unwrap_or(&empty), &images, ts, stack)
+
+        let (empty_baked_maps, empty_images) = (BakedMaps::default(), Default::default());
+        let stack_key = |document: &Document, texture_set_index: usize| {
+            let stack = document.project.texture_sets.get(texture_set_index).map(|set| set.stack.as_slice()).unwrap_or_default();
+            StackKey::new(
+                &document.project,
+                &document.pixels,
+                document.baked.get(&texture_set_index).unwrap_or(&empty_baked_maps),
+                &empty_images,
+                texture_set_index,
+                stack,
+            )
         };
-        for ts in 0..self.caches.len() {
-            if (all || key(other, ts) != key(&self.doc, ts) || uses_added(ts))
-                && let Some(c) = self.caches.get_mut(ts)
+        for texture_set_index in 0..self.caches.len() {
+            if (removed_or_replaced_resource
+                || stack_key(previous_document, texture_set_index) != stack_key(&self.doc, texture_set_index)
+                || uses_added_resource(texture_set_index))
+                && let Some(cache) = self.caches.get_mut(texture_set_index)
             {
-                c.invalidate_all();
+                cache.invalidate_all();
             }
         }
     }
