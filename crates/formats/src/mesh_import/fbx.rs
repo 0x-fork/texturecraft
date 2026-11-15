@@ -88,6 +88,10 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     cameras.resize_with(scene.cameras.len().min(super::MAX_CAMERAS), || None);
     // Keep parent indices rather than copying names into every pending child: a hostile
     // hierarchy may fan one very long model name out to many children.
+    let stack_limit = limits.max_data_bytes / std::mem::size_of::<(usize, Mat4, Option<usize>, usize)>();
+    if scene.roots.len() > stack_limit {
+        return Err(FormatError::TooLarge("FBX hierarchy exceeds its memory limit".into()));
+    }
     let mut stack: Vec<_> = scene.roots.iter().rev().map(|i| (*i, global, None::<usize>, 0usize)).collect();
     let mut reached = vec![false; scene.nodes.len()];
     let mut visited = 0usize;
@@ -106,7 +110,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         let synthetic = node.mesh.is_some() && node.name.strip_suffix(" geometry") == Some(parent_name);
         let next_parent = if synthetic { inherited } else { Some(id) };
         for child in node.children.iter().rev() {
-            if stack.len() >= limits.max_data_bytes / std::mem::size_of::<(usize, Mat4, Option<usize>, usize)>() {
+            if stack.len() >= stack_limit {
                 return Err(FormatError::TooLarge("FBX hierarchy exceeds its memory limit".into()));
             }
             stack.push((*child, world, next_parent, depth + 1));
