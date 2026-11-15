@@ -820,7 +820,7 @@ name = "craft-mcmat"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=828b07f3c9f3f6a2e935087b859016a5e46b1c31#828b07f3c9f3f6a2e935087b859016a5e46b1c31"
 dependencies = [
- "craft-zip",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=828b07f3c9f3f6a2e935087b859016a5e46b1c31)",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -842,7 +842,11 @@ dependencies = [
 [[package]]
 name = "craft-mesh"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=d6ed8c20f12188c1f39c89b3a8436bd0d09c3748#d6ed8c20f12188c1f39c89b3a8436bd0d09c3748"
+source = "git+https://github.com/storytold/craft-libs?rev=543098150ffc09914b662e61053d8cddf239bbe6#543098150ffc09914b662e61053d8cddf239bbe6"
+dependencies = [
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=543098150ffc09914b662e61053d8cddf239bbe6)",
+ "miniz_oxide 0.9.1",
+]
 
 [[package]]
 name = "craft-quit"
@@ -922,6 +926,16 @@ dependencies = [
  "quick-xml 0.41.0",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=543098150ffc09914b662e61053d8cddf239bbe6#543098150ffc09914b662e61053d8cddf239bbe6"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]
@@ -4417,7 +4431,7 @@ dependencies = [
  "craft-materialx",
  "craft-mcmat",
  "craft-mesh",
- "craft-zip",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=828b07f3c9f3f6a2e935087b859016a5e46b1c31)",
  "exr",
  "flate2",
  "gltf",
