@@ -18,6 +18,7 @@ pub(crate) const NO_TYPE: usize = TABS.len();
 /// The row, then `trailing` at its right end; `counts[i]` is how many assets of `TABS[i]` match the search
 pub(crate) fn row(app: &mut TextureCraftApp, ui: &mut Ui, counts: &[usize], trailing: impl FnOnce(&mut TextureCraftApp, &mut Ui, f32)) {
     let size = ui.spacing().interact_size.y;
+
     // The type icons and one icon after them
     let row_width = (TABS.len() + 1) as f32 * (size + ICON_GAP);
     let mut picked = app.ui.shelf_tab.min(NO_TYPE);

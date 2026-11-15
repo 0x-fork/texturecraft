@@ -7,6 +7,7 @@ use texturecraft_engine::core::project::ENVIRONMENTS;
 use texturecraft_engine::materials::{MATERIALS, SmartMaterial};
 use texturecraft_engine::smart_masks::SMART_MASKS;
 use texturecraft_ui_egui::TextureCraftApp;
+use texturecraft_ui_egui::saved_search::SavedSearch;
 use texturecraft_ui_egui::shelf_view::ShelfView;
 
 /// The reference's capture window: its Assets panel shows four columns there
@@ -84,6 +85,17 @@ fn the_search_narrows_the_picked_type_and_greys_types_without_matches() {
     harness.run_steps(3);
     assert_eq!(harness.state().ui.shelf_filter, "rust", "picking a type keeps the search");
     assert!(harness.query_by_label(material.label).is_some());
+}
+
+#[test]
+fn unavailable_project_images_do_not_make_textures_match() {
+    let mut harness = shelf(REFERENCE_WINDOW);
+    harness.state_mut().session.doc.resources.insert("unavailable-preview.png".into(), vec![0].into());
+    harness.state_mut().ui.shelf_filter = "unavailable-preview.png".into();
+    harness.run_steps(3);
+
+    assert!(button(&harness, "Textures").accesskit_node().is_disabled());
+    assert!(harness.query_by_label("unavailable-preview.png").is_none());
 }
 
 #[test]
@@ -182,6 +194,46 @@ fn filter_by_path_picks_a_folder() {
     harness.run_steps(2);
 
     assert_eq!(harness.state().ui.shelf_path, ["starter"]);
+}
+
+#[test]
+fn many_saved_searches_keep_the_path_filter_reachable() {
+    let mut harness = shelf(NARROW_WINDOW);
+    harness.state_mut().ui.shelf_panes.saved_searches = true;
+    harness.state_mut().ui.shelf_panes.filter_by_path = true;
+    harness.state_mut().ui.shelf_saved_searches = (0..100)
+        .map(|index| SavedSearch { name: format!("search {index}"), filter: format!("filter {index}"), tab: MATERIALS_TYPE, path: Vec::new() })
+        .collect();
+    harness.run_steps(3);
+
+    let heading = harness.get_by_label("FILTER BY PATH").rect();
+    assert!(heading.bottom() < NARROW_WINDOW.y, "the path pane heading stays on screen: {heading:?}");
+    assert!(harness.query_by_label("Starter assets").is_some(), "the folder tree remains reachable");
+}
+
+#[test]
+fn a_long_saved_search_list_can_select_the_last_query() {
+    let mut harness = shelf(NARROW_WINDOW);
+    harness.state_mut().ui.shelf_panes.saved_searches = true;
+    harness.state_mut().ui.shelf_saved_searches = (0..1000)
+        .map(|index| SavedSearch { name: format!("search {index}"), filter: format!("filter {index}"), tab: MATERIALS_TYPE, path: Vec::new() })
+        .collect();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("search 500").is_none(), "offscreen searches do not build rows");
+
+    harness.get_by_label("search 0").hover();
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -50_000.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(3);
+    harness.get_by_label("search 999").click();
+    harness.run_steps(2);
+
+    assert_eq!(harness.state().ui.shelf_filter, "filter 999");
 }
 
 #[test]

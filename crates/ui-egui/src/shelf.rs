@@ -20,8 +20,12 @@ use crate::widgets::dnd_release;
 
 /// The gap between tiles in points (their sizes are [`ShelfView`]'s)
 const TILE_GAP: f32 = 2.0;
-/// The gap after a grid or a list of rows, and the size of a hint under a header, in points
+/// The gap after a grid or a list of rows, in points
 const SECTION_GAP: f32 = 6.0;
+/// The gap between the type row and asset grid, in points
+const TYPE_GRID_GAP: f32 = 4.0;
+/// The saved material hint's font size, in points
+#[cfg(not(target_arch = "wasm32"))]
 const HINT_SIZE: f32 = 10.0;
 /// The name of a saved material whose file name isn't text
 const SAVED_MATERIAL_NAME: &str = "material";
@@ -121,7 +125,7 @@ pub fn apply(app: &mut TextureCraftApp, asset: &Asset) {
                 && content
                 && let Some(name) = unpainted_paint_layer(app)
             {
-                // Otherwise the filter seems to do nothing: it has nothing to change yet.
+                // Otherwise the filter seems to do nothing: it has nothing to change yet
                 app.toast(trf("\"{layer}\" has no paint yet: the filter changes what you paint on it.", &[("layer", &name)]), false);
             }
             return;
@@ -259,7 +263,7 @@ pub fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
     crate::shelf_folders::breadcrumb(app, ui, &paths);
     search_field(app, ui);
     crate::shelf_tabs::row(app, ui, &counts, crate::shelf_view::menu);
-    ui.add_space(4.0);
+    ui.add_space(TYPE_GRID_GAP);
 
     let tab = app.ui.shelf_tab;
     let shown_tab = TABS.get(tab).map(|(shown, _, _)| *shown);
@@ -279,6 +283,7 @@ pub fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
             });
             ui.separator();
         }
+
         // Saved smart materials are files in the user's library, without folders of their own
         let saved_materials = in_user_library && shown_tab.is_none_or(|shown| shown == Tab::Smart);
         grid(app, ui, &ctx, &entries, grid_rect.height(), saved_materials, &filter);
@@ -413,6 +418,7 @@ fn library(app: &mut TextureCraftApp, ui: &mut Ui, filter: &str) {
 
     for path in shown {
         let (label, asset) = (saved_material_name(path).to_string(), Asset::Library(path.display().to_string()));
+
         // MaterialCraft materials (sent from MaterialCraft) show a graph
         let glyph = if path.extension().is_some_and(|extension| extension == MCMAT_EXT) { ic::GRAPH } else { ic::SPHERE };
         let response = ui.add(egui::Button::selectable(false, format!("{glyph}  {label}")).sense(Sense::click_and_drag())).on_hover_ui(|ui| {
@@ -465,7 +471,18 @@ fn entry_tile(app: &mut TextureCraftApp, ui: &mut Ui, ctx: &egui::Context, entry
     let texture = entry.thumbnail(app, ctx);
     let asset = entry.asset();
     let session = &app.session;
-    let response = tile_in_view(ui, &mut app.thumbs, texture.as_ref(), || entry.preview(session), entry.label(), asset.as_ref(), view);
+    let response = tile_in_view(
+        ui,
+        &mut app.thumbs,
+        texture.as_ref(),
+        |thumbs| match entry {
+            ShelfEntry::SavedBrush(path) => Some(thumbs.saved_brush_preview(path, &session.images)),
+            _ => entry.preview(session),
+        },
+        entry.label(),
+        asset.as_ref(),
+        view,
+    );
 
     if selected || entry.in_use(app) {
         let tokens = Tokens::get(ctx);
@@ -508,7 +525,7 @@ pub(crate) fn tile(
     label: &str,
     drag: Option<&Asset>,
 ) -> egui::Response {
-    tile_in_view(ui, thumbs, texture, || Some(preview()), label, drag, ShelfView::Medium)
+    tile_in_view(ui, thumbs, texture, |_| Some(preview()), label, drag, ShelfView::Medium)
 }
 
 /// [`tile`] at `view`'s size: a grid tile with the name under the thumbnail, or a list row with it beside; `preview` runs on hover
@@ -516,7 +533,7 @@ fn tile_in_view(
     ui: &mut Ui,
     thumbs: &mut Thumbs,
     texture: Option<&egui::TextureHandle>,
-    preview: impl FnOnce() -> Option<ShelfPreview>,
+    preview: impl FnOnce(&mut Thumbs) -> Option<ShelfPreview>,
     label: &str,
     drag: Option<&Asset>,
     view: ShelfView,
@@ -547,7 +564,7 @@ fn tile_in_view(
         painter.galley(egui::pos2(rect.center().x - galley.size().x * 0.5, image_rect.bottom() + LABEL_GAP), galley, tokens.text);
     }
 
-    let big = if response.hovered() { preview().and_then(|preview| big_preview(ui, thumbs, || preview)) } else { None };
+    let big = if response.hovered() { preview(thumbs).and_then(|preview| big_preview(ui, thumbs, || preview)) } else { None };
     response.on_hover_ui(|ui| hover_preview(ui, texture, big.as_ref(), label))
 }
 
@@ -628,6 +645,7 @@ mod tests {
         let mut output = egui::Context::default().run_ui(egui::RawInput::default(), |ui| {
             laid_out = Some(ui.painter().layout_job(one_line("Steel Painted Rust Leaks Extra", width, Color32::WHITE)));
         });
+
         // The font atlas upload is not under test
         output.textures_delta.clear();
         let galley = laid_out.unwrap();

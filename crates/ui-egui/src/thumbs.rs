@@ -3,11 +3,14 @@
 //! Smart masks, smart materials and hover previews use [`PreviewWorker`]
 
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Weak};
 
 use egui::{Color32, ColorImage, Painter, Pos2, Rect, TextureHandle, TextureOptions};
+use texturecraft_engine::compose::{ImageRes, ImageStore};
 use texturecraft_engine::core::ProceduralKind;
 use texturecraft_engine::paint::presets::BrushPreset;
-use texturecraft_engine::paint::{BrushAlpha, alphas};
+use texturecraft_engine::paint::{BrushAlpha, BrushSettings, alphas};
 use texturecraft_engine::texel::linear_to_srgb;
 
 use crate::preview_image::{aces, image_preview, shade};
@@ -36,6 +39,8 @@ const BIG_PREVIEWS_KEPT: usize = 32;
 pub struct Thumbs {
     /// Shelf thumbnails by [`ShelfPreview::key`]
     shelf: HashMap<String, TextureHandle>,
+    /// Parsed saved brushes and weak project-image identities, reused by tile and hover previews
+    saved_brush_previews: HashMap<PathBuf, (Option<BrushSettings>, Option<Weak<ImageRes>>)>,
     images: HashMap<String, TextureHandle>,
     /// (frame, thumbnails rendered in it)
     budget: (u64, usize),
@@ -200,6 +205,7 @@ impl Thumbs {
         self.shelf.retain(|key, _| current(key));
         self.rendered.retain(|key, _| current(key));
         self.big_shown.retain(current);
+        self.saved_brush_previews.clear();
     }
 
     /// Smart mask thumbnail; None until the worker returns it
@@ -228,8 +234,43 @@ impl Thumbs {
     }
 
     /// A saved brush preset's stroke along an S curve; None while it renders, empty when the file is unreadable
-    pub fn saved_brush(&mut self, ctx: &egui::Context, path: &std::path::Path) -> Option<TextureHandle> {
-        self.shelf(ctx, ShelfPreview::SavedBrush(path.to_path_buf()), SWATCH_PX)
+    pub fn saved_brush(&mut self, ctx: &egui::Context, path: &Path, images: &ImageStore) -> Option<TextureHandle> {
+        let key = format!("saved-brush:{}", path.display());
+        let cached_preview = self.saved_brush_previews.contains_key(path).then(|| self.saved_brush_preview(path, images));
+        if let Some(texture) = self.shelf.get(&key) {
+            return Some(texture.clone());
+        }
+        if !self.spend_budget(ctx, 1) {
+            return None;
+        }
+
+        let preview = cached_preview.unwrap_or_else(|| self.saved_brush_preview(path, images));
+        let image = preview.image(SWATCH_PX).unwrap_or_else(|| ColorImage::filled([SWATCH_PX, SWATCH_PX], Color32::TRANSPARENT));
+        let texture = ctx.load_texture(format!("thumb_{key}"), image, TextureOptions::LINEAR);
+        self.shelf.insert(key, texture.clone());
+        Some(texture)
+    }
+
+    /// Reuse parsed settings until refresh; rebuild previews when their project image changes
+    pub fn saved_brush_preview(&mut self, path: &Path, images: &ImageStore) -> ShelfPreview {
+        let cached = self.saved_brush_previews.entry(path.to_path_buf()).or_insert_with(|| (crate::shelf_preview::read_saved_brush(path), None));
+        let (settings, previous_image) = cached;
+        let image = settings.as_ref().and_then(|brush| brush.alpha_image.as_ref()).and_then(|name| images.get(name));
+        let image_changed = match (previous_image.as_ref(), image) {
+            (Some(previous), Some(current)) => previous.upgrade().is_none_or(|previous| !Arc::ptr_eq(&previous, current)),
+            (None, None) => false,
+            _ => true,
+        };
+        *previous_image = image.map(Arc::downgrade);
+        if image_changed {
+            let key = format!("saved-brush:{}", path.display());
+            let rendered_prefix = format!("{key}@");
+            self.shelf.remove(&key);
+            self.rendered.retain(|rendered, _| !rendered.starts_with(&rendered_prefix));
+            self.big_shown.retain(|rendered| !rendered.starts_with(&rendered_prefix));
+        }
+
+        ShelfPreview::SavedBrush { path: path.to_path_buf(), settings: settings.clone(), image: image.cloned() }
     }
 
     /// A brush preset's stroke along an S curve
@@ -294,5 +335,88 @@ pub fn paint_alpha(p: &Painter, rect: Rect, a: BrushAlpha, hardness: f32) {
                 p.rect_filled(r, 0.0, Color32::from_white_alpha((v * 255.0) as u8));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn saved_brush_file_read_waits_for_the_thumbnail_budget() {
+        let path = std::env::temp_dir().join(format!("texturecraft-brush-budget-{}-{}.tcbrush", std::process::id(), NEXT_FILE.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&path, serde_json::to_vec(&BrushSettings::default()).unwrap()).unwrap();
+        let context = egui::Context::default();
+        let mut thumbs = Thumbs::default();
+        thumbs.budget = (context.cumulative_pass_nr(), PER_FRAME);
+
+        assert!(thumbs.saved_brush(&context, &path, &ImageStore::new()).is_none());
+        assert!(thumbs.saved_brush_previews.is_empty(), "a deferred thumbnail has not read its file");
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn saved_brush_settings_are_read_once_until_refresh() {
+        let path =
+            std::env::temp_dir().join(format!("texturecraft-brush-preview-{}-{}.tcbrush", std::process::id(), NEXT_FILE.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&path, serde_json::to_vec(&BrushSettings::default()).unwrap()).unwrap();
+        let mut thumbs = Thumbs::default();
+        let images = ImageStore::new();
+
+        assert!(matches!(thumbs.saved_brush_preview(&path, &images), ShelfPreview::SavedBrush { settings: Some(_), .. }));
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            matches!(thumbs.saved_brush_preview(&path, &images), ShelfPreview::SavedBrush { settings: Some(_), .. }),
+            "cached settings avoid a second file read"
+        );
+
+        thumbs.forget_saved_files();
+        assert!(matches!(thumbs.saved_brush_preview(&path, &images), ShelfPreview::SavedBrush { settings: None, .. }), "refresh reads the file again");
+    }
+
+    #[test]
+    fn saved_brush_cache_releases_old_images_on_change_and_refresh() {
+        const IMAGE_SIDE: u32 = 512;
+        const IMAGE_TEXELS: usize = IMAGE_SIDE as usize * IMAGE_SIDE as usize;
+        const IMAGE_BYTES: usize = IMAGE_TEXELS * std::mem::size_of::<[f32; 4]>();
+
+        let mut thumbs = Thumbs::default();
+        let first_path = PathBuf::from("first.tcbrush");
+        let second_path = PathBuf::from("second.tcbrush");
+        let settings = BrushSettings { alpha_image: Some("alpha.png".into()), ..BrushSettings::default() };
+        let old_image = Arc::new(ImageRes { width: IMAGE_SIDE, height: IMAGE_SIDE, rgba: vec![[1.0; 4]; IMAGE_TEXELS], srgb: false });
+        let other_image = Arc::new(ImageRes { width: IMAGE_SIDE, height: IMAGE_SIDE, rgba: vec![[0.5; 4]; IMAGE_TEXELS], srgb: false });
+        let old_weak = Arc::downgrade(&old_image);
+        let other_weak = Arc::downgrade(&other_image);
+        assert!(old_image.rgba.iter().map(|pixel| std::hint::black_box(pixel[0])).sum::<f32>() > 0.0);
+        assert!(other_image.rgba.iter().map(|pixel| std::hint::black_box(pixel[0])).sum::<f32>() > 0.0);
+
+        thumbs.saved_brush_previews.insert(first_path.clone(), (Some(settings.clone()), None));
+        thumbs.saved_brush_previews.insert(second_path.clone(), (Some(settings), None));
+        let mut images: ImageStore = [("alpha.png".into(), old_image.clone())].into();
+        drop(thumbs.saved_brush_preview(&first_path, &images));
+        images.insert("alpha.png".into(), other_image.clone());
+        drop(thumbs.saved_brush_preview(&second_path, &images));
+        drop(old_image);
+        drop(other_image);
+        assert!(old_weak.upgrade().is_none(), "cached settings do not retain a replaced image");
+        assert!(other_weak.upgrade().is_some(), "the project still owns its current image");
+        eprintln!(
+            "saved brush cache after first replacement: 0 of {IMAGE_BYTES} old image bytes retained, {} current image strong owners",
+            Arc::strong_count(&images["alpha.png"])
+        );
+
+        let replacement = Arc::new(ImageRes { width: IMAGE_SIDE, height: IMAGE_SIDE, rgba: vec![[0.0; 4]; IMAGE_TEXELS], srgb: false });
+        images.insert("alpha.png".into(), replacement);
+        drop(thumbs.saved_brush_preview(&first_path, &images));
+        assert!(other_weak.upgrade().is_none(), "another saved brush does not retain the old project image");
+        eprintln!("saved brush cache after second replacement: 0 of {IMAGE_BYTES} previous image bytes retained");
+
+        thumbs.forget_saved_files();
+        assert!(thumbs.saved_brush_previews.is_empty(), "refresh releases parsed brush settings");
     }
 }

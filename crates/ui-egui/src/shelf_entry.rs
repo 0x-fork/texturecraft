@@ -62,7 +62,8 @@ impl ShelfEntry {
             .chain(ProceduralKind::ALL.into_iter().map(ShelfEntry::Procedural))
             .chain(ENVIRONMENTS.into_iter().map(ShelfEntry::Environment));
         let saved = app.brushes.iter().flatten().cloned().map(ShelfEntry::SavedBrush);
-        built_in.chain(saved).chain(app.session.doc.resources.keys().cloned().map(ShelfEntry::Image)).collect()
+        let images = app.session.doc.resources.keys().filter(|name| app.session.images.contains_key(*name)).cloned().map(ShelfEntry::Image);
+        built_in.chain(saved).chain(images).collect()
     }
 
     /// The tab that lists the asset
@@ -156,7 +157,7 @@ impl ShelfEntry {
             ShelfEntry::SmartMask(mask) => app.thumbs.smart_mask(ctx, mask.id),
             ShelfEntry::Filter(filter) => app.thumbs.filter(ctx, filter.id),
             ShelfEntry::Brush(preset) => app.thumbs.brush_preset(ctx, preset),
-            ShelfEntry::SavedBrush(path) => app.thumbs.saved_brush(ctx, path),
+            ShelfEntry::SavedBrush(path) => app.thumbs.saved_brush(ctx, path, &app.session.images),
             ShelfEntry::Alpha(alpha) => app.thumbs.alpha(ctx, alpha),
             ShelfEntry::Procedural(kind) => app.thumbs.procedural(ctx, *kind),
             ShelfEntry::Environment(name) => app.thumbs.environment(ctx, name),
@@ -174,7 +175,7 @@ impl ShelfEntry {
             ShelfEntry::SmartMask(mask) => ShelfPreview::SmartMask(mask.id),
             ShelfEntry::Filter(filter) => ShelfPreview::Filter(filter.id),
             ShelfEntry::Brush(preset) => ShelfPreview::Brush(preset),
-            ShelfEntry::SavedBrush(path) => ShelfPreview::SavedBrush(path.clone()),
+            ShelfEntry::SavedBrush(path) => ShelfPreview::saved_brush(path, &session.images),
             ShelfEntry::Alpha(alpha) => ShelfPreview::Alpha(alpha),
             ShelfEntry::Procedural(kind) => ShelfPreview::Procedural(*kind),
             ShelfEntry::Environment(name) => ShelfPreview::Environment(name),

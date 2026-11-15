@@ -14,6 +14,8 @@ use crate::widgets::icon_button;
 /// The panes' column width as a fraction of the panel, and its least width in points
 const COLUMN_FRACTION: f32 = 0.45;
 const COLUMN_MIN_WIDTH: f32 = 110.0;
+/// Maximum share of the column used by saved searches while both panes are open
+const SAVED_SEARCHES_HEIGHT_FRACTION: f32 = 0.45;
 /// The pane header's caption size in points
 const HEADER_SIZE: f32 = 10.0;
 
@@ -133,19 +135,27 @@ fn saved_searches(app: &mut TextureCraftApp, ui: &mut Ui) {
     }
 
     let mut deleted = None;
-    for (i, saved) in app.ui.shelf_saved_searches.iter().enumerate() {
-        let same = saved.filter == current.filter && saved.tab == current.tab && saved.path == current.path;
-        let response = ui.selectable_label(same, &saved.name);
-        if response.clicked() {
-            (app.ui.shelf_filter, app.ui.shelf_tab, app.ui.shelf_path) = (saved.filter.clone(), saved.tab, saved.path.clone());
-        }
-        response.context_menu(|ui| {
-            if ui.button(tr("Delete")).clicked() {
-                deleted = Some(i);
-                ui.close();
+    let max_height = if app.ui.shelf_panes.filter_by_path { ui.available_height() * SAVED_SEARCHES_HEIGHT_FRACTION } else { ui.available_height() };
+    let row_height = ui.spacing().interact_size.y;
+    let total_rows = app.ui.shelf_saved_searches.len();
+    egui::ScrollArea::vertical().id_salt("shelf_saved_searches").max_height(max_height).show_rows(ui, row_height, total_rows, |ui, visible_rows| {
+        for i in visible_rows {
+            let Some(saved) = app.ui.shelf_saved_searches.get(i) else { continue };
+
+            let same = saved.filter == current.filter && saved.tab == current.tab && saved.path == current.path;
+            let response = ui.selectable_label(same, &saved.name);
+            if response.clicked() {
+                (app.ui.shelf_filter, app.ui.shelf_tab, app.ui.shelf_path) = (saved.filter.clone(), saved.tab, saved.path.clone());
             }
-        });
-    }
+            response.context_menu(|ui| {
+                if ui.button(tr("Delete")).clicked() {
+                    deleted = Some(i);
+                    ui.close();
+                }
+            });
+        }
+    });
+
     if let Some(i) = deleted {
         app.ui.shelf_saved_searches.remove(i);
     }

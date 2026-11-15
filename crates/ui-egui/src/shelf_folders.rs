@@ -1,5 +1,7 @@
 //! The shelf's library folders ([`ShelfEntry::path`]) for the breadcrumb above the search and the Filter by path tree
 
+use std::collections::BTreeSet;
+
 use egui::{RichText, Ui};
 
 use crate::TextureCraftApp;
@@ -13,10 +15,9 @@ const ARROW_SCALE: f32 = 0.8;
 
 /// The folder paths of `entries`, each a library id then folder names
 pub(crate) fn paths<'a>(entries: impl IntoIterator<Item = &'a ShelfEntry>) -> Vec<Vec<String>> {
-    let mut paths: Vec<Vec<String>> = entries.into_iter().map(|entry| entry.path().into_iter().map(str::to_string).collect()).collect();
-    paths.sort();
-    paths.dedup();
-    paths
+    let unique_paths: BTreeSet<Vec<&str>> = entries.into_iter().map(ShelfEntry::path).collect();
+
+    unique_paths.into_iter().map(|segments| segments.into_iter().map(str::to_string).collect()).collect()
 }
 
 /// `paths` and every library, even one with nothing in it (the picker always lists them all)
@@ -29,18 +30,19 @@ pub(crate) fn with_every_library(mut paths: Vec<Vec<String>>) -> Vec<Vec<String>
 
 /// The folders right below `prefix` (libraries in their usual order, folders by name)
 pub(crate) fn children(paths: &[Vec<String>], prefix: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+    let mut children = Vec::new();
     for path in paths.iter().filter(|path| path.len() > prefix.len() && path.starts_with(prefix)) {
-        if let Some(next) = path.get(prefix.len())
-            && !out.contains(next)
+        if let Some(child) = path.get(prefix.len())
+            && !children.contains(child)
         {
-            out.push(next.clone());
+            children.push(child.clone());
         }
     }
+
     if prefix.is_empty() {
-        out.sort_by_key(|library| LIBRARIES.iter().position(|(id, _)| id == library));
+        children.sort_by_key(|library| LIBRARIES.iter().position(|(id, _)| id == library));
     }
-    out
+    children
 }
 
 /// A folder's shown name: libraries by their name, folders (type and category names) translated
@@ -86,6 +88,7 @@ pub(crate) fn breadcrumb(app: &mut TextureCraftApp, ui: &mut Ui, paths: &[Vec<St
             ui.label(RichText::new(shown).strong().color(tokens.text_strong));
         }
     });
+
     if let Some(path) = picked {
         app.ui.shelf_path = path;
     }

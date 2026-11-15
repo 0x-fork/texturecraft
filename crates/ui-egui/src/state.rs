@@ -442,7 +442,9 @@ mod tests {
         ui.keymap.insert("file.save".into(), "F5".into());
         let mut layout = UiState::default();
         layout.dock.close(crate::docking::Panel::Assets);
+
         ui.adopt_layout(layout);
+
         assert!(!ui.dock.is_open(crate::docking::Panel::Assets));
         assert_eq!(ui.recent, vec!["a.tcraft".to_string()]);
         assert_eq!(ui.export.preset, "Mine");
