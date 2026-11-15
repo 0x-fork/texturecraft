@@ -157,7 +157,11 @@ fn high_dpi_smart_material_hover_stays_within_the_renderer_limit() {
 
 // Coverage instrumentation makes the 512px software-rendered preview substantially slower.
 fn high_dpi_worker_timeout() -> Duration {
-    if std::env::var_os("LLVM_PROFILE_FILE").is_some() { Duration::from_secs(600) } else { WORKER_TIMEOUT }
+    if std::env::var_os("LLVM_PROFILE_FILE").is_some() || std::env::var("RUSTFLAGS").is_ok_and(|f| f.contains("instrument-coverage")) {
+        Duration::from_secs(600)
+    } else {
+        WORKER_TIMEOUT
+    }
 }
 
 fn check_high_dpi_orb_hover(shelf_tab: usize, label: &str) {
