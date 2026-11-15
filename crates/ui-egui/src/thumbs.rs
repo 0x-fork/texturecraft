@@ -3,8 +3,10 @@
 //! Smart masks, smart materials and hover previews use [`PreviewWorker`]
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Weak};
 
 use egui::{Color32, ColorImage, Painter, Pos2, Rect, TextureHandle, TextureOptions};
+use texturecraft_engine::compose::{ImageRes, ImageStore};
 use texturecraft_engine::core::ProceduralKind;
 use texturecraft_engine::paint::presets::BrushPreset;
 use texturecraft_engine::paint::{BrushAlpha, alphas};
@@ -26,6 +28,8 @@ const PROCEDURAL_PX: usize = 56;
 const SWATCH_PX: usize = 64;
 /// Image resource preview size in pixels
 const IMAGE_PX: usize = 64;
+/// Largest stencil preview dimension in pixels
+const STENCIL_MAX_SIZE_PX: f32 = 1024.0;
 /// Big hover previews kept at most (the least recently shown go first)
 const BIG_PREVIEWS_KEPT: usize = 32;
 
@@ -34,7 +38,8 @@ const BIG_PREVIEWS_KEPT: usize = 32;
 pub struct Thumbs {
     /// Shelf thumbnails by [`ShelfPreview::key`]
     shelf: HashMap<String, TextureHandle>,
-    images: HashMap<String, TextureHandle>,
+    images: HashMap<String, (Weak<ImageRes>, TextureHandle)>,
+    images_revision: Option<u64>,
     /// (frame, thumbnails rendered in it)
     budget: (u64, usize),
     /// Renders the orb thumbnails and the big previews
@@ -49,34 +54,57 @@ pub struct Thumbs {
 
 impl Thumbs {
     /// A larger cached texture of an image resource for the stencil overlay (up to 1024 px)
-    pub fn stencil(&mut self, ctx: &egui::Context, name: &str, img: &texturecraft_engine::compose::ImageRes) -> TextureHandle {
+    pub fn stencil(&mut self, ctx: &egui::Context, name: &str, image: &Arc<ImageRes>) -> TextureHandle {
         let key = format!("stencil:{name}");
-        if let Some(t) = self.images.get(&key) {
-            return t.clone();
+        if let Some((cached_image, texture)) = self.images.get(&key)
+            && cached_image.ptr_eq(&Arc::downgrade(image))
+        {
+            return texture.clone();
         }
-        let scale = (1024.0 / img.width.max(img.height).max(1) as f32).min(1.0);
-        let (w, h) = (((img.width as f32 * scale) as usize).max(1), ((img.height as f32 * scale) as usize).max(1));
-        let mut ci = ColorImage::filled([w, h], Color32::TRANSPARENT);
+
+        let scale = (STENCIL_MAX_SIZE_PX / image.width.max(image.height).max(1) as f32).min(1.0);
+        let (w, h) = (((image.width as f32 * scale) as usize).max(1), ((image.height as f32 * scale) as usize).max(1));
+        let mut color_image = ColorImage::filled([w, h], Color32::TRANSPARENT);
         for y in 0..h {
             for x in 0..w {
-                let s = img.sample((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
-                let enc = |v: f32| if img.srgb { (v.clamp(0.0, 1.0) * 255.0) as u8 } else { (linear_to_srgb(v) * 255.0) as u8 };
-                ci.pixels[y * w + x] = Color32::from_rgba_unmultiplied(enc(s[0]), enc(s[1]), enc(s[2]), (s[3].clamp(0.0, 1.0) * 255.0) as u8);
+                let sample = image.sample((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
+                let encode = |value: f32| {
+                    if image.srgb { (value.clamp(0.0, 1.0) * 255.0) as u8 } else { (linear_to_srgb(value) * 255.0) as u8 }
+                };
+                color_image.pixels[y * w + x] =
+                    Color32::from_rgba_unmultiplied(encode(sample[0]), encode(sample[1]), encode(sample[2]), (sample[3].clamp(0.0, 1.0) * 255.0) as u8);
             }
         }
-        let t = ctx.load_texture(key.clone(), ci, TextureOptions::LINEAR);
-        self.images.insert(key, t.clone());
-        t
+
+        let texture = ctx.load_texture(key.clone(), color_image, TextureOptions::LINEAR);
+        self.images.insert(key, (Arc::downgrade(image), texture.clone()));
+        texture
     }
 
     /// Cached preview of an image resource (64 px, letterboxed)
-    pub fn image(&mut self, ctx: &egui::Context, name: &str, img: &texturecraft_engine::compose::ImageRes) -> TextureHandle {
-        if let Some(t) = self.images.get(name) {
-            return t.clone();
+    pub fn image(&mut self, ctx: &egui::Context, name: &str, image: &Arc<ImageRes>) -> TextureHandle {
+        if let Some((cached_image, texture)) = self.images.get(name)
+            && cached_image.ptr_eq(&Arc::downgrade(image))
+        {
+            return texture.clone();
         }
-        let t = ctx.load_texture(format!("res_{name}"), image_preview(img, IMAGE_PX), TextureOptions::LINEAR);
-        self.images.insert(name.to_string(), t.clone());
-        t
+
+        let texture = ctx.load_texture(format!("res_{name}"), image_preview(image, IMAGE_PX), TextureOptions::LINEAR);
+        self.images.insert(name.to_string(), (Arc::downgrade(image), texture.clone()));
+        texture
+    }
+
+    /// Release previews for deleted or replaced resources after a session change
+    pub fn sync_images(&mut self, images: &ImageStore, revision: u64) {
+        if self.images_revision == Some(revision) {
+            return;
+        }
+
+        self.images_revision = Some(revision);
+        self.images.retain(|key, (cached_image, _)| {
+            let name = key.strip_prefix("stencil:").unwrap_or(key);
+            images.get(name).is_some_and(|image| cached_image.ptr_eq(&Arc::downgrade(image)))
+        });
     }
 
     /// Render within the frame budget; deferred thumbnails request a repaint
@@ -274,5 +302,66 @@ pub fn paint_alpha(p: &Painter, rect: Rect, a: BrushAlpha, hardness: f32) {
                 p.rect_filled(r, 0.0, Color32::from_white_alpha((v * 255.0) as u8));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use texturecraft_engine::compose::{ImageRes, ImageStore};
+
+    use super::Thumbs;
+
+    #[test]
+    fn replacing_an_image_rebuilds_its_preview() {
+        let context = egui::Context::default();
+        let mut thumbs = Thumbs::default();
+        let image = |value| Arc::new(ImageRes { width: 2, height: 2, rgba: vec![[value; 4]; 4], srgb: false });
+
+        let first_image = image(0.2);
+        let replacement_image = image(0.8);
+        let first = thumbs.image(&context, "sample.png", &first_image);
+        let second = thumbs.image(&context, "sample.png", &replacement_image);
+
+        assert_ne!(first.id(), second.id(), "a replaced resource must update its preview");
+    }
+
+    #[test]
+    fn removing_resources_releases_their_previews() {
+        let context = egui::Context::default();
+        let mut thumbs = Thumbs::default();
+        let mut images = ImageStore::new();
+        for index in 0..3 {
+            let name = format!("image-{index}");
+            images.insert(name, Arc::new(ImageRes { width: 2, height: 2, rgba: vec![[index as f32; 4]; 4], srgb: false }));
+        }
+
+        for (name, image) in &images {
+            drop(thumbs.image(&context, name, image));
+        }
+        let cached_pixel_bytes = |thumbs: &Thumbs| thumbs.images.values().map(|(_, texture)| texture.size()[0] * texture.size()[1] * 4).sum::<usize>();
+        let before_count = thumbs.images.len();
+        let before_pixel_bytes = cached_pixel_bytes(&thumbs);
+        images.remove("image-0");
+        images.remove("image-1");
+        thumbs.sync_images(&images, 1);
+        let after_count = thumbs.images.len();
+        let after_pixel_bytes = cached_pixel_bytes(&thumbs);
+
+        eprintln!("cached previews: {before_count} -> {after_count}; texture pixel bytes: {before_pixel_bytes} -> {after_pixel_bytes}");
+        assert_eq!((before_count, after_count), (3, 1));
+        assert!(after_pixel_bytes < before_pixel_bytes);
+        assert!(thumbs.images.contains_key("image-2"));
+
+        images.insert("image-3".into(), Arc::new(ImageRes { width: 2, height: 2, rgba: vec![[0.7; 4]; 4], srgb: false }));
+        drop(thumbs.image(&context, "image-3", &images["image-3"]));
+        thumbs.sync_images(&images, 2);
+        assert_eq!(thumbs.images.len(), 2);
+
+        images.clear();
+        thumbs.sync_images(&images, 3);
+        eprintln!("cached previews after clearing resources: {}", thumbs.images.len());
+        assert!(thumbs.images.is_empty());
     }
 }
