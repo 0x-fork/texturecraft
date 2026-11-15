@@ -107,7 +107,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         }
         let world = parent * to_mat(node.transform);
         let parent_name = inherited.and_then(|i| scene.nodes.get(i)).map_or("", |n| n.name.as_str());
-        let synthetic = node.mesh.is_some() && node.name.strip_suffix(" geometry") == Some(parent_name);
+        let synthetic = inherited.is_some() && node.mesh.is_some() && node.name.strip_suffix(" geometry") == Some(parent_name);
         let next_parent = if synthetic { inherited } else { Some(id) };
         for child in node.children.iter().rev() {
             if stack.len() >= stack_limit {
