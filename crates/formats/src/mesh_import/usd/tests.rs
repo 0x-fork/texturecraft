@@ -416,8 +416,18 @@ fn integer_coding_round_trips() {
     let wide = vec![i64::MAX, i64::MIN, 0, 1 << 40];
     assert_eq!(codec::decode_ints(&codec::encode_ints(&wide, 8), 4, 8).unwrap(), wide);
     let big: Vec<u8> = (0..5000u32).flat_map(|i| (i % 7).to_le_bytes()).collect();
-    assert_eq!(codec::decompress(&codec::compress(&big), big.len()).unwrap(), big);
+    assert_eq!(codec::decompress(&codec::compress(&big).unwrap(), big.len()).unwrap(), big);
     assert!(codec::decompress(&[0, 0xF0], 10).is_err());
+}
+
+#[test]
+fn shared_crate_lz4_writer_preserves_bytes() {
+    for len in [0, 1, 15, 16, 255, 4096] {
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        let mut previous = vec![0];
+        previous.extend(lz4_flex::block::compress(&data));
+        assert_eq!(codec::compress(&data).unwrap(), previous);
+    }
 }
 
 #[test]

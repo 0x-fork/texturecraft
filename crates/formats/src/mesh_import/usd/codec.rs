@@ -108,10 +108,9 @@ pub(crate) fn decompress(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
 }
 
 /// Crate's LZ4 framing for one chunk (inputs are far below LZ4's ~2 GB chunk limit).
-pub(crate) fn compress(input: &[u8]) -> Vec<u8> {
-    let mut out = vec![0u8];
-    out.extend_from_slice(&lz4_flex::block::compress(input));
-    out
+pub(crate) fn compress(input: &[u8]) -> Result<Vec<u8>> {
+    // Keep one compressed output reservation within the app's decoded-data ceiling.
+    craft_usd::compress::compress(input, super::MAX_DECODED_BYTES).map_err(|e| malformed(KIND, e.to_string()))
 }
 
 /// Upper bound of the encoded size of `n` integers of `width` bytes.
