@@ -277,3 +277,73 @@ fn a_failing_change_is_reported_as_a_toast() {
     assert_eq!(h.state().ui.windows.project_config.as_ref().and_then(|c| c.mesh.clone()), Some(missing.display().to_string()), "with the choice kept");
     assert_eq!(h.state().session.mesh.triangle_count(), 2, "the project keeps its mesh");
 }
+
+fn project_normal_format(h: &Harness<'_, TextureCraftApp>) -> texturecraft_engine::core::NormalFormat {
+    h.state().session.doc.project.normal_format
+}
+
+#[test]
+fn the_normal_map_format_changes_on_ok_and_shows_in_the_texture_set_panel() {
+    use texturecraft_engine::core::NormalFormat;
+    let dir = temp_dir("normal-format");
+    let mut h = app_on_a_quad(&dir);
+    open_window(&mut h);
+    click(&mut h, Role::ComboBox, "OpenGL");
+    click(&mut h, Role::Button, "DirectX");
+    assert_eq!(project_normal_format(&h), NormalFormat::OpenGl, "nothing changes before OK");
+    click(&mut h, Role::Button, "OK");
+    assert_eq!(project_normal_format(&h), NormalFormat::DirectX);
+    h.state_mut().ui.dock.focus(texturecraft_ui_egui::docking::Panel::TextureSetSettings);
+    h.run_steps(3);
+    assert!(h.query_by_label("DirectX").is_some(), "the Texture Set Settings panel shows the project's format");
+    // One undo step puts it back
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!(project_normal_format(&h), NormalFormat::OpenGl);
+}
+
+#[test]
+fn cancel_discards_a_normal_map_format() {
+    use texturecraft_engine::core::NormalFormat;
+    let dir = temp_dir("normal-format-cancel");
+    let mut h = app_on_a_quad(&dir);
+    open_window(&mut h);
+    click(&mut h, Role::ComboBox, "OpenGL");
+    click(&mut h, Role::Button, "DirectX");
+    click(&mut h, Role::Button, "Cancel");
+    assert_eq!(project_normal_format(&h), NormalFormat::OpenGl);
+}
+
+#[test]
+fn uv_tiles_are_shown_read_only() {
+    let dir = temp_dir("udim");
+    let mut h = app_on_a_quad(&dir);
+    open_window(&mut h);
+    assert!(h.query_by_label("UV Tile settings (UDIMs)").is_some());
+    assert!(h.query_by_label("Off").is_some(), "a project without UV tiles");
+    assert!(h.query_by_label("You can't change UV Tile settings once a project has been created.").is_some());
+    click(&mut h, Role::Button, "Cancel");
+
+    texturecraft_engine::execute(&mut h.state_mut().session, "textureSet.uvTiles", &json!({"ts": 0, "enabled": true})).unwrap();
+    open_window(&mut h);
+    assert!(h.query_by_label("Off").is_none());
+    assert!(h.query_by_label("1001").is_some(), "the tile list of a UDIM project");
+}
+
+#[test]
+fn preserving_strokes_is_an_import_setting_of_a_mesh_that_is_read() {
+    let dir = temp_dir("preserve");
+    let mut h = app_on_a_quad(&dir);
+    let tri = dir.join("tri.obj");
+    std::fs::write(&tri, TRIANGLE).unwrap();
+    let box_of = |h: &Harness<'_, TextureCraftApp>| h.get_by_role_and_label(Role::CheckBox, "Preserve stroke positions on mesh").accesskit_node().is_disabled();
+    open_window(&mut h);
+    assert!(box_of(&h), "greyed while no mesh is going to be read");
+    assert!(h.state().ui.windows.project_config.as_ref().unwrap().preserve, "on by default");
+    select(&mut h, &tri);
+    assert!(!box_of(&h));
+    click(&mut h, Role::CheckBox, "Preserve stroke positions on mesh");
+    assert!(!h.state().ui.windows.project_config.as_ref().unwrap().preserve);
+    click(&mut h, Role::Button, "OK");
+    assert_eq!(h.state().session.mesh.triangle_count(), 1, "the mesh changed without reprojecting strokes");
+}

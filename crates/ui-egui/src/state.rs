@@ -84,13 +84,17 @@ pub struct Windows {
     pub unsaved: Option<Unsaved>,
 }
 
-/// Edit > Project Configuration, the 3D mesh section.
+/// Edit > Project Configuration: the choices made so far, applied by OK.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct ProjectConfig {
     /// A mesh file picked with Select..., not applied until OK.
     pub mesh: Option<String>,
     /// The Reimport mesh box as the user set it (a chosen file reads the mesh again whatever it says).
     pub reimport: bool,
+    /// Import settings: painted strokes follow the surface of the new mesh.
+    pub preserve: bool,
+    /// The normal map format picked, when it differs from the project's.
+    pub normal_format: Option<texturecraft_engine::core::NormalFormat>,
     /// Enter was pressed: OK in the next frame.
     pub confirm: bool,
     /// The project the window was opened on (`Session::project_id`).

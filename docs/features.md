@@ -83,7 +83,9 @@ Everything TextureCraft does today, by area. What's still missing is in [`ROADMA
   Reimport a changed mesh and your painted strokes stay on the surface. The
   `file.changeMesh` command (trusted local command API and the control channel) moves the project onto a different mesh file and keeps its layers.
   **Edit › Project Configuration...** (desktop) does the same from the 3D MESH section: *Select...* picks the
-  file, *Reimport mesh* is ticked for you (or tick it alone to read the same file again), OK applies.
+  file, *Reimport mesh* is ticked for you (or tick it alone to read the same file again), OK applies. *Import settings* decides whether painted
+  strokes follow the surface (on by default), and PROJECT SETTINGS sets the project's normal map format and
+  shows its UV tiles (read only).
 - **UDIM / UV tiles:** detected on import or switched on later, with a resolution per tile (blurs,
   other filters and height-to-normal slopes keep their size in UV space at any tile resolution)
   and one texture per tile on export (`$udim`).
