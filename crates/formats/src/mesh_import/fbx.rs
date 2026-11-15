@@ -104,14 +104,14 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         for child in node.children.iter().rev() {
             stack.push((*child, world, part.clone(), depth + 1));
         }
-        if let Some(index) = node.camera {
-            if let (Some(camera), Some(slot)) = (scene.cameras.get(index), cameras.get_mut(index)) {
-                let (fov, ortho) = match camera.projection {
-                    craft_mesh::Projection::Perspective { yfov, .. } => (yfov.to_degrees() as f32, None),
-                    craft_mesh::Projection::Orthographic { ymag, .. } => (40.0, Some(ymag as f32)),
-                };
-                *slot = Some(RawCamera::placed(camera.name.clone(), world, Vec3::NEG_Z, fov, ortho));
-            }
+        if let Some(index) = node.camera
+            && let (Some(camera), Some(slot)) = (scene.cameras.get(index), cameras.get_mut(index))
+        {
+            let (fov, ortho) = match camera.projection {
+                craft_mesh::Projection::Perspective { yfov, .. } => (yfov.to_degrees() as f32, None),
+                craft_mesh::Projection::Orthographic { ymag, .. } => (40.0, Some(ymag as f32)),
+            };
+            *slot = Some(RawCamera::placed(camera.name.clone(), world, Vec3::NEG_Z, fov, ortho));
         }
         let Some(index) = node.mesh else { continue };
         let mesh = scene.meshes.get(index).ok_or_else(|| malformed(KIND, "mesh index out of range"))?;
