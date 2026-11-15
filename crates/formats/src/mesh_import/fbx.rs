@@ -111,6 +111,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         let normal_transform = Mat3::from_mat4(world).inverse().transpose();
         let flip = world.determinant() < 0.0;
         sink.part = part;
+        let (mut bad_normals, mut bad_uvs) = (0usize, 0usize);
         for group in &mesh.parts {
             let material = group.material.and_then(|m| scene.materials.get(m)).map_or("Default", |m| m.name.as_str());
             for face in group.faces() {
@@ -119,7 +120,16 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
                     let p = mesh.positions.get(c.position as usize).ok_or_else(|| malformed(KIND, "position index out of range"))?;
                     let p = world.transform_point3(Vec3::new(p[0] as f32, p[1] as f32, p[2] as f32));
                     let n = mesh.normals.get(c.normal as usize).map(|n| normal_transform * Vec3::new(n[0] as f32, n[1] as f32, n[2] as f32));
-                    let uv = mesh.uv_sets.first().and_then(|set| set.get(c.uv as usize)).map(|v| Vec2::new(v[0], v[1]));
+                    if !mesh.normals.is_empty() && n.is_none() {
+                        bad_normals += 1;
+                    }
+                    let uv = mesh.uv_sets.first().map(|set| match set.get(c.uv as usize) {
+                        Some(v) => Vec2::new(v[0], v[1]),
+                        None => {
+                            bad_uvs += 1;
+                            Vec2::ZERO
+                        }
+                    });
                     let color = mesh.colors.get(c.position as usize).copied().map(Vec4::from_array);
                     corners.push(Corner { p, n, uv, color });
                 }
@@ -128,6 +138,12 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
                 }
                 sink.polygon(material, &corners)?;
             }
+        }
+        if bad_normals > 0 {
+            sink.warn(format!("{bad_normals} polygon corners have no normal in the FBX normal layer; normals were recomputed"));
+        }
+        if bad_uvs > 0 {
+            sink.warn(format!("{bad_uvs} polygon corners have no UV in the FBX UV layer (set to 0, 0)"));
         }
     }
     if visited < scene.nodes.len() {
@@ -140,4 +156,32 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     raw.cameras = cameras;
     raw.base_colors = colors.into_iter().map(|c| RawBaseColor { material: c.name, factor: Vec4::from_array(c.factor), image: c.image }).collect();
     Ok(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn incomplete_uv_layer_keeps_other_uvs() {
+        let bytes = br#"FBXHeaderExtension: { FBXVersion: 7400 }
+Objects: {
+ Geometry: 1, "Geometry::G", "Mesh" {
+  Vertices: 0,0,0,1,0,0,0,1,0
+  PolygonVertexIndex: 0,1,-3
+  LayerElementUV: 0 {
+   MappingInformationType: "ByPolygonVertex"
+   ReferenceInformationType: "IndexToDirect"
+   UV: 0.25,0.5, 0.75,0.5
+   UVIndex: 0,1
+  }
+ }
+ Model: 2, "Model::M", "Mesh" {}
+}
+Connections: { C: "OO",1,2 }
+"#;
+        let raw = super::read(bytes).unwrap();
+        let uvs = raw.uvs.unwrap();
+        assert!(uvs.contains(&texturecraft_geom::glam::Vec2::new(0.25, 0.5)));
+        assert!(uvs.contains(&texturecraft_geom::glam::Vec2::ZERO));
+        assert!(raw.warnings.iter().any(|w| w.contains("1 polygon corners have no UV")));
+    }
 }
