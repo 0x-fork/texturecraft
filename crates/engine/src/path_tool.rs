@@ -368,6 +368,10 @@ impl Session {
 
     /// Store the Path tool's curve (new, or the path being edited) and repaint its sublayer as one undo step, then clear the tool
     pub fn commit_path(&mut self, viewport: Vec2) -> Result<Value> {
+        if self.quick_mask.editing {
+            return Err(EngineError::Other("paths can't edit the quick mask: stop editing it first".into()));
+        }
+
         if let Some((effect, index)) = self.tool.path.editing
             && self.paths(effect).and_then(|paths| paths.get(index)).is_some_and(|stored| self.same_as_stored(stored))
         {
@@ -396,20 +400,20 @@ impl Session {
         let shape = self.path_shape(self.camera, viewport);
         let editing = self.tool.path.editing;
         let label = editing.map_or(NEW_PATH_LABEL.to_string(), |(_, i)| format!("Edit path {}", i + 1));
-        let out = self.edit_merging(&label, editing.is_some() && self.tool.path.edited, |s| {
-            let (eid, index) = match editing {
+        let report = self.edit_merging(&label, editing.is_some() && self.tool.path.edited, |session| {
+            let (effect_id, index) = match editing {
                 Some(at) => at,
-                None => (s.path_effect()?, usize::MAX),
+                None => (session.path_effect()?, usize::MAX),
             };
-            s.put_path(eid, index, shape)
+            session.put_path(effect_id, index, shape)
         })?;
 
-        if let Some(eid) = out.get("effect").and_then(Value::as_u64) {
-            self.target = StackTarget::Effect(LayerId(eid));
+        if let Some(effect_id) = report.get("effect").and_then(Value::as_u64) {
+            self.target = StackTarget::Effect(LayerId(effect_id));
         }
         self.tool.path.clear();
 
-        Ok(out)
+        Ok(report)
     }
 
     /// Repaint the edited path (one merged undo step) or a new path's preview (no step) when its points, brush or material changed; called every frame
@@ -429,9 +433,13 @@ impl Session {
 
     /// Preview a command's points in its supplied viewport, or the UI's current viewport
     fn path_live_in_view(&mut self, viewport: Vec2) -> Result<bool> {
+        if self.quick_mask.editing {
+            return Ok(false);
+        }
+
         let stored = match self.tool.path.editing {
-            Some((eid, index)) => match self.paths(eid).and_then(|v| v.get(index)).cloned() {
-                Some(shape) => Some((eid, index, shape)),
+            Some((effect_id, index)) => match self.paths(effect_id).and_then(|paths| paths.get(index)).cloned() {
+                Some(shape) => Some((effect_id, index, shape)),
                 None => {
                     self.stop_path_edit();
                     return Ok(false);

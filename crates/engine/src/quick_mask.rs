@@ -47,18 +47,18 @@ fn mask_enabled(session: &Session) -> std::result::Result<(), String> {
     if session.quick_mask.enabled { Ok(()) } else { Err("enable the quick mask first".into()) }
 }
 
-fn state(s: &Session) -> Value {
-    let q = &s.quick_mask;
+fn state(session: &Session) -> Value {
+    let mask = &session.quick_mask;
     json!({
-        "enabled": q.enabled, "editing": q.editing, "inverted": q.inverted,
-        "paintedTiles": q.masks.get(&s.ts()).map(TileImage::allocated_count).unwrap_or(0),
+        "enabled": mask.enabled, "editing": mask.editing, "inverted": mask.inverted,
+        "paintedTiles": mask.masks.get(&session.ts()).map(TileImage::allocated_count).unwrap_or(0),
     })
 }
 
-fn changed(s: &mut Session) -> Result<Value> {
-    s.quick_mask.revision = s.quick_mask.revision.wrapping_add(1);
-    s.revision = s.revision.wrapping_add(1);
-    Ok(state(s))
+fn changed(session: &mut Session) -> Result<Value> {
+    session.quick_mask.revision = session.quick_mask.revision.wrapping_add(1);
+    session.revision = session.revision.wrapping_add(1);
+    Ok(state(session))
 }
 
 fn enable(session: &mut Session, params: &Value) -> Result<Value> {
@@ -79,9 +79,9 @@ fn edit(session: &mut Session, params: &Value) -> Result<Value> {
     changed(session)
 }
 
-fn invert(s: &mut Session, _: &Value) -> Result<Value> {
-    s.quick_mask.inverted = !s.quick_mask.inverted;
-    changed(s)
+fn invert(session: &mut Session, _: &Value) -> Result<Value> {
+    session.quick_mask.inverted = !session.quick_mask.inverted;
+    changed(session)
 }
 
 impl Session {

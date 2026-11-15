@@ -1,5 +1,8 @@
 //! Which tools can act on each selection, and that every usable tool acts there in both views
 
+mod selection;
+
+use selection::Selection;
 use serde_json::{Value, json};
 use texturecraft_engine::core::{Effect, EffectKind, LayerId};
 use texturecraft_engine::geom::glam::{Vec2, Vec3};
@@ -10,86 +13,6 @@ const PARTS_OBJ: &str = "o Lid\nv 0 0 0\nv 2 0 0\nv 0 2 0\nvt 0 0\nvt 0.5 0\nvt 
 o Body\nv 2 2 0\nv 4 2 0\nv 2 4 0\nvt 0.5 0.5\nvt 1 0.5\nvt 0.5 1\nf 4/4 5/5 6/6\n";
 
 const VIEWPORT_PIXELS: f32 = 400.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Selection {
-    PaintContent,
-    FillContent,
-    PaintMask,
-    FillMask,
-    FolderMask,
-    InstanceOwnMask,
-    PaintSublayer,
-    PaintSublayerInMask,
-    PaintSublayerInFill,
-    PathSublayer,
-    FilterInPaint,
-    FilterInFill,
-    FilterInMask,
-    FillEffectInPaint,
-    GeneratorInFillMask,
-    FolderContent,
-    InstanceOfPaint,
-    InstanceOfFill,
-    Nothing,
-    QuickMaskOverPaint,
-    QuickMaskOverFill,
-    QuickMaskOverNothing,
-}
-
-impl Selection {
-    const ALL: [Selection; 22] = [
-        Selection::PaintContent,
-        Selection::FillContent,
-        Selection::PaintMask,
-        Selection::FillMask,
-        Selection::FolderMask,
-        Selection::InstanceOwnMask,
-        Selection::PaintSublayer,
-        Selection::PaintSublayerInMask,
-        Selection::PaintSublayerInFill,
-        Selection::PathSublayer,
-        Selection::FilterInPaint,
-        Selection::FilterInFill,
-        Selection::FilterInMask,
-        Selection::FillEffectInPaint,
-        Selection::GeneratorInFillMask,
-        Selection::FolderContent,
-        Selection::InstanceOfPaint,
-        Selection::InstanceOfFill,
-        Selection::Nothing,
-        Selection::QuickMaskOverPaint,
-        Selection::QuickMaskOverFill,
-        Selection::QuickMaskOverNothing,
-    ];
-
-    /// Whether the shelf offers `tool` for this selection
-    fn offers(self, tool: Tool) -> bool {
-        let reads_content = matches!(tool, Tool::Smudge | Tool::Clone);
-        match tool {
-            Tool::ColorPicker => true,
-            Tool::GeometryMask => !matches!(self, Selection::Nothing | Selection::QuickMaskOverNothing),
-            _ => match self {
-                Selection::PaintContent | Selection::PaintSublayer => true,
-                Selection::PaintSublayerInFill => tool != Tool::Path,
-                Selection::PaintMask | Selection::FillMask | Selection::FolderMask | Selection::InstanceOwnMask | Selection::PaintSublayerInMask => {
-                    !reads_content
-                }
-                Selection::PathSublayer => tool == Tool::Path,
-                Selection::QuickMaskOverPaint | Selection::QuickMaskOverFill | Selection::QuickMaskOverNothing => tool != Tool::Path,
-                _ => false,
-            },
-        }
-    }
-
-    /// Greyed in the shelf, but scripts still paint here: below the effect, or the instance's source
-    fn scripts_still_paint(self) -> bool {
-        matches!(
-            self,
-            Selection::FilterInPaint | Selection::FillEffectInPaint | Selection::FilterInMask | Selection::GeneratorInFillMask | Selection::InstanceOfPaint
-        )
-    }
-}
 
 fn stencil_png() -> Vec<u8> {
     let mut out = Vec::new();
@@ -133,13 +56,13 @@ fn select_nothing(session: &mut Session) {
 }
 
 /// Adds an effect with `command` to the layer's content or mask and selects it
-fn select_new_effect(session: &mut Session, layer: u64, mask: bool, command: &str, params: Value) {
+fn select_new_effect(session: &mut Session, layer: u64, mask: bool, command: &str, effect_params: Value) {
     if mask {
         execute(session, "mask.add.black", &json!({"layer": layer})).unwrap();
     }
 
     let target = if mask { "mask" } else { "content" };
-    let mut params = params;
+    let mut params = effect_params;
     params["layer"] = json!(layer);
     params["target"] = json!(target);
     execute(session, command, &params).unwrap();
@@ -241,6 +164,7 @@ fn session_with(selection: Selection) -> Session {
             execute(&mut session, "viewport.quickMask.edit", &json!({"editing": true})).unwrap();
         }
     }
+
     session
 }
 
@@ -284,6 +208,7 @@ fn use_tool(session: &mut Session, tool: Tool, in_2d_view: bool) -> texturecraft
             session.continue_stroke(*point, 1.0);
         }
     }
+
     session.end_stroke()
 }
 
@@ -380,4 +305,32 @@ fn quick_mask_edit_and_invert_need_the_mask_on() {
     execute(&mut session, "viewport.quickMask", &json!({"enabled": false})).unwrap();
 
     assert!(!session.quick_mask.editing, "turning the mask off stops editing it");
+}
+
+#[test]
+fn a_saved_path_cannot_be_committed_while_editing_the_quick_mask() {
+    let mut session = session_with(Selection::PaintContent);
+    commit_path(&mut session).unwrap();
+    let StackTarget::Effect(path_sublayer) = session.target else { panic!("the committed path is not selected") };
+
+    let points_before = match session.doc.project.effect(path_sublayer).map(|(_, effect)| &effect.kind) {
+        Some(EffectKind::Path(paths)) => paths[0].points.clone(),
+        _ => panic!("the committed path is missing"),
+    };
+
+    execute(&mut session, "viewport.quickMask", &json!({"enabled": true})).unwrap();
+    execute(&mut session, "viewport.quickMask.edit", &json!({"editing": true})).unwrap();
+    execute(&mut session, "path.edit", &json!({"effect": path_sublayer.0, "index": 0})).unwrap();
+    assert!(!session.tool_usable(Tool::Path));
+
+    execute(&mut session, "tool.path", &json!({"uvPoints": [[0.2, 0.8], [0.3, 0.7]]})).unwrap();
+    assert!(!session.path_live().unwrap(), "live preview must leave the stored path alone");
+    let result = execute(&mut session, "tool.path", &json!({"commit": true}));
+    assert!(result.is_err(), "a greyed Path tool must not commit a stored path into the quick mask edit state");
+
+    let points_after = match session.doc.project.effect(path_sublayer).map(|(_, effect)| &effect.kind) {
+        Some(EffectKind::Path(paths)) => paths[0].points.clone(),
+        _ => panic!("the stored path is missing"),
+    };
+    assert_eq!(points_after, points_before);
 }

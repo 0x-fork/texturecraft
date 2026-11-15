@@ -46,6 +46,7 @@ pub fn paint_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
                 let button_size = ui.spacing().interact_size.y;
                 let mode_width = 3.0 * button_size + 2.0 * BAR_SPACING;
                 let separator_width = BAR_SEPARATOR_WIDTH + 2.0 * BAR_SPACING;
+
                 // Leave room for both scroll arrows and at least one button of content
                 let minimum_strip_width = 3.0 * button_size + 2.0 * BAR_SPACING;
                 let scroll_views =

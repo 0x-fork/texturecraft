@@ -41,7 +41,7 @@ mod path_draft;
 pub mod path_tool;
 mod polygon_fill;
 mod polygon_fill_drag;
-// Mesh reimport reads files: native only.
+// Mesh reimport reads files on native targets only
 #[cfg(not(target_arch = "wasm32"))]
 mod preserve;
 pub mod preset_cmds;
