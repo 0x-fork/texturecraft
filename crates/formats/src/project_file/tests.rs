@@ -803,13 +803,17 @@ fn baked_dimensions_must_match_the_entry_before_reserving_payload_bytes() {
 #[test]
 fn streamed_float_chunks_preserve_bits_across_the_chunk_boundary() {
     let values: Vec<u32> = (0..BAKED_CHUNK + 3).map(|index| (index as u32).wrapping_mul(0x9e3779b9)).collect();
-    let bytes: Vec<u8> = values.iter().flat_map(|bits| bits.to_le_bytes()).collect();
+    let mut bytes = header(values.len() as u32, 1, 1, 0);
+    bytes.extend(values.iter().flat_map(|bits| bits.to_le_bytes()));
+    let declared = bytes.len() as u64;
     let mut reader = Cursor::new(bytes);
+    let mut budget = LoadBudget::new(declared);
 
-    let decoded = read_f32s(&mut reader, values.len(), "baked map").unwrap();
+    let (_, _, decoded) = read_baked(&mut reader, declared, 1, &mut budget, "baked map").unwrap();
 
     assert_eq!(decoded.into_iter().map(f32::to_bits).collect::<Vec<_>>(), values);
-    assert_eq!(reader.position(), (values.len() * 4) as u64);
+    assert_eq!(reader.position(), declared);
+    assert_eq!(budget.remaining(), 0);
 }
 
 #[test]

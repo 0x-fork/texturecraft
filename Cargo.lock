@@ -845,6 +845,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-tcraft"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5f46c0ab25f067f6fdb863c7e1f9ff567712f394#5f46c0ab25f067f6fdb863c7e1f9ff567712f394"
+dependencies = [
+ "craft-zip",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-ui"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=390fe98b0dd3fb84db7c3af7cbd958db4e8cc585#390fe98b0dd3fb84db7c3af7cbd958db4e8cc585"
@@ -911,6 +920,16 @@ dependencies = [
  "quick-xml 0.41.0",
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=5f46c0ab25f067f6fdb863c7e1f9ff567712f394#5f46c0ab25f067f6fdb863c7e1f9ff567712f394"
+dependencies = [
+ "flate2",
+ "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]
@@ -4395,6 +4414,8 @@ dependencies = [
  "base64 0.22.1",
  "craft-materialx",
  "craft-mesh",
+ "craft-tcraft",
+ "craft-zip",
  "exr",
  "flate2",
  "gltf",

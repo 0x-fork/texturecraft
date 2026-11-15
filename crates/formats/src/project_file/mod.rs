@@ -43,9 +43,11 @@ pub use entries::{DEFAULT_RAM_PERCENT, DEFAULT_RESERVED_CORES, available_save_re
 pub use project_open_limit::{DEFAULT_PROJECT_OPEN_LIMIT_GIB, project_open_limit_gib, set_project_open_limit_gib};
 
 const KIND: &str = "project file";
+#[cfg(test)]
 const MAGIC: &[u8; 4] = b"TCTX";
-/// Version of the `.bin` layout.
+#[cfg(test)]
 const BIN_VERSION: u32 = 1;
+#[cfg(test)]
 const BIN_HEADER_BYTES: usize = 24;
 const MAX_JSON: u64 = 256 << 20;
 const MAX_THUMBNAIL: u64 = 64 << 20;
@@ -124,6 +126,7 @@ fn zip_err(e: zip::result::ZipError) -> FormatError {
     }
 }
 
+#[cfg(test)]
 fn header(w: u32, h: u32, comps: usize, count: usize) -> Vec<u8> {
     let mut b = MAGIC.to_vec();
     for v in [BIN_VERSION, w, h, comps as u32, count as u32] {
@@ -132,19 +135,18 @@ fn header(w: u32, h: u32, comps: usize, count: usize) -> Vec<u8> {
     b
 }
 
-fn write_tiles(w: &mut impl Write, img: &TileImage) -> std::io::Result<()> {
-    w.write_all(&header(img.width(), img.height(), img.comps(), img.allocated_count()))?;
-    let mut buf = Vec::with_capacity(TILE_AREA * img.comps() * 2 + 8);
-    for (tx, ty) in img.allocated() {
-        buf.clear();
-        buf.extend_from_slice(&tx.to_le_bytes());
-        buf.extend_from_slice(&ty.to_le_bytes());
-        for v in img.tile(tx, ty).unwrap_or_default() {
-            buf.extend_from_slice(&v.to_le_bytes());
-        }
-        w.write_all(&buf)?;
+fn codec_write_error(error: craft_tcraft::Error) -> std::io::Error {
+    match error {
+        craft_tcraft::Error::Io(error) => error,
+        other => std::io::Error::other(other),
     }
-    Ok(())
+}
+
+fn write_tiles(w: &mut impl Write, img: &TileImage) -> std::io::Result<()> {
+    let layout = craft_tcraft::Layout { width: img.width(), height: img.height(), components: img.comps() };
+    let count = u32::try_from(img.allocated_count()).map_err(std::io::Error::other)?;
+    let tiles = img.allocated().map(|(x, y)| (x, y, img.tile(x, y).unwrap_or_default()));
+    craft_tcraft::write_tiles(w, layout, count, tiles).map_err(codec_write_error)
 }
 
 /// Keep `[a-z0-9]`, at most 8 characters (the mesh entry's extension).
@@ -169,18 +171,12 @@ fn unique_entry_name(dir: &str, name: &str, used: &mut HashSet<String>) -> Strin
     entry
 }
 
-/// Floats converted to bytes at a time when a baked map streams into the compressor.
+#[cfg(test)]
 const BAKED_CHUNK: usize = 1 << 16;
 
 fn write_baked(w: &mut dyn Write, res: u32, h: u32, comps: usize, data: &[f32]) -> std::io::Result<()> {
-    w.write_all(&header(res, h, comps, 0))?;
-    let mut buf = Vec::with_capacity(BAKED_CHUNK * 4);
-    for chunk in data.chunks(BAKED_CHUNK) {
-        buf.clear();
-        buf.extend(chunk.iter().flat_map(|v| v.to_le_bytes()));
-        w.write_all(&buf)?;
-    }
-    Ok(())
+    let layout = craft_tcraft::Layout { width: res, height: h, components: comps };
+    craft_tcraft::write_baked(w, layout, data).map_err(codec_write_error)
 }
 
 /// The zip entries of a project file, in file order. Bodies run later, possibly on other threads.
@@ -304,110 +300,34 @@ fn read_all(reader: &mut impl Read, cap: u64, budget: &mut LoadBudget, what: &st
     Ok(out)
 }
 
-/// Decode bounded chunks so a false header cannot allocate an entire missing map.
-fn read_f32s(reader: &mut impl Read, count: usize, what: &str) -> Result<Vec<f32>> {
-    let mut values = Vec::new();
-    let mut bytes = vec![0u8; BAKED_CHUNK.min(count) * 4];
-    let mut remaining = count;
-    while remaining > 0 {
-        let chunk_values = BAKED_CHUNK.min(remaining);
-        let chunk = bytes.get_mut(..chunk_values * 4).ok_or_else(|| malformed(KIND, format!("{what}: invalid float chunk")))?;
-        read_exact(reader, chunk, what)?;
-        values.try_reserve(chunk_values).map_err(|_| FormatError::TooLarge(format!("{what}: not enough memory for {count} values")))?;
-        values.extend(chunk.as_chunks::<4>().0.iter().map(|bytes| f32::from_le_bytes(*bytes)));
-        remaining -= chunk_values;
-    }
-
-    Ok(values)
-}
-
-fn read_exact(r: &mut impl Read, buf: &mut [u8], what: &str) -> Result<()> {
-    r.read_exact(buf).map_err(|e| malformed(KIND, format!("{what}: {e}")))
-}
-
-fn u32_at(b: &[u8], i: usize) -> u32 {
-    b.get(i * 4..i * 4 + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]])).unwrap_or(0)
-}
-
-/// Read and check a `.bin` header: returns (width, height, comps, count).
-fn read_header(r: &mut impl Read, what: &str) -> Result<(u32, u32, usize, usize)> {
-    let mut h = [0u8; BIN_HEADER_BYTES];
-    read_exact(r, &mut h, what)?;
-    if h.get(..4) != Some(MAGIC.as_slice()) {
-        return Err(malformed(KIND, format!("{what}: bad magic")));
-    }
-    let v = u32_at(&h, 1);
-    if v > BIN_VERSION {
-        return Err(FormatError::NewerVersion { found: v, supported: BIN_VERSION });
-    }
-    Ok((u32_at(&h, 2), u32_at(&h, 3), u32_at(&h, 4) as usize, u32_at(&h, 5) as usize))
-}
-
-/// Error unless the entry has no bytes left (also makes the zip reader verify the CRC).
-fn expect_end(r: &mut impl Read, what: &str) -> Result<()> {
-    let mut b = [0u8; 1];
-    match r.read(&mut b) {
-        Ok(0) => Ok(()),
-        Ok(_) => Err(malformed(KIND, format!("{what}: trailing data"))),
-        Err(e) => Err(malformed(KIND, format!("{what}: {e}"))),
-    }
+/// Transfer the bytes charged by the shared codec to this project's one load budget.
+fn codec_result<T>(result: std::result::Result<T, craft_tcraft::Error>, shared: &craft_zip::Budget, budget: &mut LoadBudget, what: &str) -> Result<T> {
+    budget.take(shared.used()).map_err(FormatError::TooLarge)?;
+    result.map_err(|error| match error {
+        craft_tcraft::Error::Budget(_) => FormatError::TooLarge(budget.exceeded_message()),
+        craft_tcraft::Error::Limit(message) => FormatError::TooLarge(format!("{what}: {message}")),
+        craft_tcraft::Error::NewerVersion(found) => FormatError::NewerVersion { found, supported: craft_tcraft::VERSION },
+        other => malformed(KIND, format!("{what}: {other}")),
+    })
 }
 
 fn read_tiles(reader: &mut impl Read, size: (u32, u32), components: usize, budget: &mut LoadBudget, what: &str) -> Result<TileImage> {
-    budget.take(BIN_HEADER_BYTES as u64).map_err(FormatError::TooLarge)?;
-    let (width, height, stored_components, count) = read_header(reader, what)?;
-    if (width, height) != size || stored_components != components {
-        return Err(malformed(
-            KIND,
-            format!("{what}: {width}×{height}×{stored_components} does not match the texture set ({}×{}×{components})", size.0, size.1),
-        ));
-    }
-
-    let mut image = TileImage::new(width, height, components);
-    if count > (image.tiles_x() as usize) * (image.tiles_y() as usize) {
-        return Err(malformed(KIND, format!("{what}: {count} tiles is more than the image holds")));
-    }
-
-    let mut bytes = vec![0u8; TILE_AREA * components * 2];
-    let mut position_bytes = [0u8; 8];
-    for _ in 0..count {
-        budget.take((position_bytes.len() + bytes.len()) as u64).map_err(FormatError::TooLarge)?;
-        read_exact(reader, &mut position_bytes, what)?;
-        let (tx, ty) = (u32_at(&position_bytes, 0), u32_at(&position_bytes, 1));
-        if tx >= image.tiles_x() || ty >= image.tiles_y() || image.is_allocated(tx, ty) {
-            return Err(malformed(KIND, format!("{what}: bad or repeated tile ({tx}, {ty})")));
-        }
-
-        read_exact(reader, &mut bytes, what)?;
-        let data: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).collect();
-        image.set_tile(tx, ty, Some(Arc::new(data)));
-    }
-
-    expect_end(reader, what)?;
-
-    Ok(image)
+    let layout = craft_tcraft::Layout { width: size.0, height: size.1, components };
+    let mut shared = craft_zip::Budget::new("project", budget.remaining());
+    let mut image = None;
+    let result = craft_tcraft::read_tiles(reader, layout, MAX_TEXELS, &mut shared, |x, y, values| {
+        image.get_or_insert_with(|| TileImage::new(size.0, size.1, components)).set_tile(x, y, Some(Arc::new(values)));
+        Ok(())
+    });
+    codec_result(result, &shared, budget, what)?;
+    Ok(image.unwrap_or_else(|| TileImage::new(size.0, size.1, components)))
 }
 
-/// A baked map: (width, height, data).
 fn read_baked(reader: &mut impl Read, declared_bytes: u64, components: usize, budget: &mut LoadBudget, what: &str) -> Result<(u32, u32, Vec<f32>)> {
-    budget.take(BIN_HEADER_BYTES as u64).map_err(FormatError::TooLarge)?;
-    let (width, height, stored_components, _) = read_header(reader, what)?;
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_TEXELS || stored_components != components {
-        return Err(malformed(KIND, format!("{what}: bad size {width}×{height}×{stored_components}")));
-    }
-
-    let value_count = u64::from(width) * u64::from(height) * components as u64;
-    let payload_bytes = value_count * 4;
-    if declared_bytes != BIN_HEADER_BYTES as u64 + payload_bytes {
-        return Err(malformed(KIND, format!("{what}: {declared_bytes} bytes for a {width}×{height}×{components} map")));
-    }
-
-    budget.take(payload_bytes).map_err(FormatError::TooLarge)?;
-    let value_count = usize::try_from(value_count).map_err(|_| FormatError::TooLarge(format!("{what}: too many values for this platform")))?;
-    let data = read_f32s(reader, value_count, what)?;
-    expect_end(reader, what)?;
-
-    Ok((width, height, data))
+    let mut shared = craft_zip::Budget::new("project", budget.remaining());
+    let result = craft_tcraft::read_baked(reader, declared_bytes, components, MAX_TEXELS, &mut shared);
+    let (layout, values) = codec_result(result, &shared, budget, what)?;
+    Ok((layout.width, layout.height, values))
 }
 
 /// Texture set holding a paint layer, a content effect or a mask effect id.

@@ -11,6 +11,8 @@ workspace = true
 [dependencies]
 craft-materialx = { workspace = true }
 craft-mesh = { workspace = true }
+craft-tcraft = { workspace = true }
+craft-zip = { workspace = true }
 texturecraft-core = { workspace = true }
 texturecraft-texel = { workspace = true }
 texturecraft-geom = { workspace = true }
