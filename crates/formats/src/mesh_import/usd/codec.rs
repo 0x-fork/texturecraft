@@ -119,43 +119,14 @@ pub(crate) fn encoded_ints_len(n: usize, width: usize) -> usize {
     if n == 0 { 0 } else { width.saturating_add(n.saturating_mul(2).saturating_add(7) / 8).saturating_add(n.saturating_mul(width)) }
 }
 
-fn read_signed(b: &[u8], at: usize, width: usize) -> Option<i64> {
-    let s = b.get(at..at.checked_add(width)?)?;
-    Some(match width {
-        1 => i64::from(i8::from_le_bytes(s.try_into().ok()?)),
-        2 => i64::from(i16::from_le_bytes(s.try_into().ok()?)),
-        4 => i64::from(i32::from_le_bytes(s.try_into().ok()?)),
-        _ => i64::from_le_bytes(s.try_into().ok()?),
-    })
-}
-
-/// Decode `n` integers of `width` (4 or 8) bytes; 32-bit values are sign-extended (reinterpret
-/// as u32 for unsigned data).
+/// Decode packed integers after the caller charges its aggregate decoded-byte budget.
 pub(crate) fn decode_ints(data: &[u8], n: usize, width: usize) -> Result<Vec<i64>> {
-    let err = || malformed(KIND, "truncated integer array");
-    if n == 0 {
-        return Ok(Vec::new());
-    }
-    let common = read_signed(data, 0, width).ok_or_else(err)?;
-    let codes_at = width;
-    let mut at = codes_at + n.div_ceil(4);
-    let mut out = Vec::with_capacity(n);
-    let mut prev = 0i64;
-    for i in 0..n {
-        let code = (data.get(codes_at + i / 4).ok_or_else(err)? >> (2 * (i % 4))) & 3;
-        let delta = match code {
-            0 => common,
-            c => {
-                let w = (width >> (3 - c as usize)).max(1);
-                let v = read_signed(data, at, w).ok_or_else(err)?;
-                at += w;
-                v
-            }
-        };
-        prev = if width == 4 { i64::from((prev as i32).wrapping_add(delta as i32)) } else { prev.wrapping_add(delta) };
-        out.push(prev);
-    }
-    Ok(out)
+    let width = match width {
+        4 => craft_usd::integers::Width::I32,
+        8 => craft_usd::integers::Width::I64,
+        _ => return Err(malformed(KIND, "unsupported integer width")),
+    };
+    craft_usd::integers::decode(data, n, width, super::MAX_DECODED_BYTES).map_err(|e| malformed(KIND, e.to_string()))
 }
 
 /// Encode integers of `width` (4 or 8) bytes (values must fit the width).

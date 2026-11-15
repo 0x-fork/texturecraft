@@ -421,6 +421,13 @@ fn integer_coding_round_trips() {
 }
 
 #[test]
+fn shared_integer_decoder_rejects_unsupported_width_and_oversized_output() {
+    assert!(codec::decode_ints(&[], 1, 3).is_err());
+    assert!(codec::decode_ints(&[], super::MAX_DECODED_BYTES / 8 + 1, 8).is_err());
+    assert!(codec::decode_ints(&[], 0, 4).unwrap().is_empty());
+}
+
+#[test]
 fn shared_crate_lz4_retains_chunk_and_budget_policy() {
     let mut frame = vec![2];
     for raw in [b"abc".as_slice(), b"def".as_slice()] {
