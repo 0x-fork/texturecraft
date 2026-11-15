@@ -87,6 +87,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     let mut cameras = Vec::new();
     cameras.resize_with(scene.cameras.len().min(super::MAX_CAMERAS), || None);
     let mut stack: Vec<_> = scene.roots.iter().rev().map(|i| (*i, global, String::new(), 0usize)).collect();
+    let mut reached = vec![false; scene.nodes.len()];
     let mut visited = 0usize;
     let mut points = 0usize;
     while let Some((id, parent, inherited, depth)) = stack.pop() {
@@ -95,6 +96,9 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
             return Err(FormatError::TooLarge("FBX hierarchy exceeds its traversal limit".into()));
         }
         let node = scene.nodes.get(id).ok_or_else(|| malformed(KIND, "node index out of range"))?;
+        if let Some(seen) = reached.get_mut(id) {
+            *seen = true;
+        }
         let world = parent * to_mat(node.transform);
         let part = if node.name == format!("{inherited} geometry") { inherited } else { node.name.clone() };
         for child in node.children.iter().rev() {
@@ -153,7 +157,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
             sink.warn(format!("{bad_uvs} polygon corners have no UV in the FBX UV layer (set to 0, 0)"));
         }
     }
-    if visited < scene.nodes.len() {
+    if scene.nodes.iter().enumerate().any(|(i, node)| node.mesh.is_some() && !reached.get(i).copied().unwrap_or(false)) {
         return Err(malformed(KIND, "cycle in model hierarchy"));
     }
     for warning in scene.warnings {
