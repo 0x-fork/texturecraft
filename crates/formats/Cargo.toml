@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+craft-usd.workspace = true
 craft-materialx = { workspace = true }
 craft-mesh = { workspace = true }
 craft-mcmat = { workspace = true }
