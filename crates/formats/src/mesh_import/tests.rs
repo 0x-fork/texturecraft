@@ -414,6 +414,43 @@ fn stl_ascii_and_binary() {
     assert_eq!(import_mesh_bytes("c.stl", &b).unwrap().mesh.triangle_count(), 2);
 }
 
+#[test]
+fn stl_shared_reader_keeps_flat_normals_and_surfaces_shared_repairs_and_colors() {
+    let mut bytes = stl_binary();
+    // VisCAM/SolidView: bit 15 marks a facet color; red occupies bits 10..14.
+    bytes[132..134].copy_from_slice(&0xfc00u16.to_le_bytes());
+    // A third facet repeats that color after an uncolored facet. The shared reader groups its
+    // parts by color, so the adapter must restore the source facet order.
+    bytes.extend([0.0f32; 3].iter().flat_map(|v| v.to_le_bytes()));
+    for v in [[0.0f32, 0.0, 1.0], [1.0, 0.0, 1.0], [1.0, 1.0, 1.0]] {
+        bytes.extend(v.iter().flat_map(|x| x.to_le_bytes()));
+    }
+    bytes.extend(0xfc00u16.to_le_bytes());
+    // Some exporters leave the header count at zero despite having facets.
+    bytes[80..84].copy_from_slice(&0u32.to_le_bytes());
+    let imported = import_mesh_bytes("colored.stl", &bytes).unwrap();
+    assert_eq!(imported.mesh.triangle_count(), 3);
+    assert_eq!(imported.mesh.submeshes.len(), 1);
+    assert_eq!(imported.mesh.submeshes[0].name, "colored");
+    assert_eq!(
+        imported.mesh.positions,
+        vec![
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::ZERO,
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::Y,
+            Vec3::Z,
+            Vec3::new(1.0, 0.0, 1.0),
+            Vec3::new(1.0, 1.0, 1.0)
+        ]
+    );
+    assert_eq!(imported.mesh.normals, vec![Vec3::Z; 9]);
+    assert!(imported.mesh.colors.iter().any(|c| c.x > 0.99 && c.y < 0.01 && c.z < 0.01));
+    assert!(imported.report.warnings.iter().any(|w| w.contains("counts no facets")));
+}
+
 /// Every prefix and some corruptions of a valid file: errors, never panics (and never an
 /// error from the panic guard, which would mean a parser panicked).
 pub(crate) fn hammer(name: &str, good: &[u8]) {
@@ -572,4 +609,23 @@ fn ply_face_element_before_vertex_element() {
     assert_eq!(mesh.positions.len(), 3);
     let bad = format!("{head}3 0 1 5\n0 0 0\n1 0 0\n0 1 0\n");
     assert!(import_mesh_bytes("a.ply", bad.as_bytes()).is_err());
+}
+
+#[test]
+fn group_index_preserves_order_and_reuses_nonadjacent_material_parts() {
+    let mut raw = super::RawMesh::default();
+    for i in 0..1000 {
+        raw.group("shared", &i.to_string()).extend_from_slice(&[0, 1, 2]);
+    }
+    for i in (0..1000).rev() {
+        raw.group("shared", &i.to_string()).extend_from_slice(&[3, 4, 5]);
+    }
+    raw.group("other", "0").extend_from_slice(&[6, 7, 8]);
+    assert_eq!(raw.groups.len(), 1001);
+    for (i, (material, part, indices)) in raw.groups.iter().take(1000).enumerate() {
+        assert_eq!(material, "shared");
+        assert_eq!(part, &i.to_string());
+        assert_eq!(indices, &[0, 1, 2, 3, 4, 5]);
+    }
+    assert_eq!(raw.groups[1000], ("other".into(), "0".into(), vec![6, 7, 8]));
 }

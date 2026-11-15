@@ -1,5 +1,7 @@
 //! Wavefront OBJ (via `tobj`): polygons fan-triangulated, one vertex per unique v/vt/vn.
 
+use std::io::BufReader;
+
 use texturecraft_geom::glam::{Vec2, Vec3, Vec4};
 
 use super::{RawMesh, check_triangles, check_vertices};
@@ -27,34 +29,20 @@ fn read_inner(bytes: &[u8]) -> Result<RawMesh> {
     }
 
     let library: String = names.iter().map(|name| format!("newmtl {name}\n")).collect();
-    // tobj also splits models at material changes. Give each explicit object/group
-    // declaration its own key so repeated materials regroup within that declaration only.
-    let mut source = String::from("mtllib texturecraft-usemtl.mtl\n");
-    let mut part_names = Vec::new();
-    for line in text.lines() {
-        let trimmed = line.trim();
-        match trimmed.split_whitespace().next() {
-            Some("o" | "g") => {
-                source.push_str(&format!("o {}\n", part_names.len()));
-                part_names.push(trimmed[1..].trim());
-            }
-            _ => {
-                source.push_str(line);
-                source.push('\n');
-            }
-        }
-    }
+    // Rewrite declaration keys lazily, preserving main's bounded streaming input
+    let mut source = super::obj_source::ObjSource::new(&text);
 
     // Polygons stay whole so the wireframe can show them; `RawMesh::polygon` triangulates
     let options = tobj::LoadOptions { single_index: true, triangulate: false, ignore_points: true, ignore_lines: true };
     let (models, materials) =
-        tobj::load_obj_buf(&mut source.as_bytes(), &options, |_| tobj::load_mtl_buf(&mut library.as_bytes())).map_err(|e| malformed(KIND, e))?;
+        tobj::load_obj_buf(&mut BufReader::new(&mut source), &options, |_| tobj::load_mtl_buf(&mut library.as_bytes())).map_err(|e| malformed(KIND, e))?;
     let materials = materials.unwrap_or_default();
 
     let mut raw = RawMesh::default();
     let any_uvs = models.iter().any(|m| !m.mesh.indices.is_empty() && m.mesh.texcoords.len() == (m.mesh.positions.len() / 3) * 2);
     let (mut normals, mut uvs, mut colors) = (Some(Vec::new()), any_uvs.then(Vec::new), Vec::new());
     let mut partial_uvs = false;
+    let mut triangles = 0;
     for model in &models {
         let mesh = &model.mesh;
         if mesh.indices.is_empty() {
@@ -66,7 +54,9 @@ fn read_inner(bytes: &[u8]) -> Result<RawMesh> {
         // Corners per face; without arities every face is a triangle
         let arities: Vec<usize> =
             if mesh.face_arities.is_empty() { vec![3; mesh.indices.len() / 3] } else { mesh.face_arities.iter().map(|a| *a as usize).collect() };
-        check_triangles(raw.triangle_count(), arities.iter().map(|a| a.saturating_sub(2)).sum())?;
+        let model_triangles = arities.iter().map(|a| a.saturating_sub(2)).sum();
+        check_triangles(triangles, model_triangles)?;
+        triangles += model_triangles;
         let base = raw.positions.len() as u32;
         raw.positions.extend(mesh.positions.as_chunks::<3>().0.iter().map(|p| Vec3::new(p[0], p[1], p[2])));
         if mesh.normals.len() == vertex_count * 3 {
@@ -116,7 +106,7 @@ fn read_inner(bytes: &[u8]) -> Result<RawMesh> {
 
     // Restore user-facing names after all faces have been grouped by declaration.
     for (_, part, _) in &mut raw.groups {
-        if let Some(name) = part.parse::<usize>().ok().and_then(|id| part_names.get(id)) {
+        if let Some(name) = part.parse::<usize>().ok().and_then(|id| source.part_names.get(id)) {
             *part = (*name).to_owned();
         }
     }
@@ -130,4 +120,24 @@ fn read_inner(bytes: &[u8]) -> Result<RawMesh> {
     raw.colors = models.iter().any(|model| !model.mesh.vertex_color.is_empty()).then_some(colors);
 
     Ok(raw)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "release benchmark for declaration-heavy OBJ input"]
+    fn declaration_import_benchmark() {
+        for count in [10_000, 50_000] {
+            let mut source = String::from("v 0 0 0\nv 1 0 0\nv 0 1 0\n");
+            for _ in 0..count {
+                source.push_str("o repeated\nf 1 2 3\n");
+            }
+            let start = std::time::Instant::now();
+            let raw = super::read(source.as_bytes()).unwrap();
+            println!("{count} declarations: {:?}", start.elapsed());
+            assert_eq!(raw.groups.len(), count);
+            assert_eq!(raw.triangle_count(), count);
+            assert!(raw.groups.iter().all(|(_, name, tris)| name == "repeated" && tris.len() == 3));
+        }
+    }
 }
