@@ -19,7 +19,6 @@ texturecraft-geom = { workspace = true }
 texturecraft-compose = { workspace = true }
 image = { workspace = true }
 gltf = { workspace = true }
-tobj = { workspace = true }
 flate2 = { workspace = true }
 lz4_flex = { workspace = true }
 half = { workspace = true }

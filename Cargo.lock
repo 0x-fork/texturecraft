@@ -842,7 +842,7 @@ dependencies = [
 [[package]]
 name = "craft-mesh"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=d6ed8c20f12188c1f39c89b3a8436bd0d09c3748#d6ed8c20f12188c1f39c89b3a8436bd0d09c3748"
+source = "git+https://github.com/storytold/craft-libs?rev=284b0d815b69178cf4eb67321b7cc6c03202553c#284b0d815b69178cf4eb67321b7cc6c03202553c"
 
 [[package]]
 name = "craft-quit"
@@ -4434,7 +4434,6 @@ dependencies = [
  "texturecraft-geom",
  "texturecraft-texel",
  "thiserror 2.0.21",
- "tobj",
  "zip",
 ]
 
@@ -4630,12 +4629,6 @@ dependencies = [
  "serde_core",
  "zerovec",
 ]
-
-[[package]]
-name = "tobj"
-version = "4.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eb8e04167c1c0c76b5de63226fd733485ad63ef71e40de31e16272f47b099e2"
 
 [[package]]
 name = "tokio"
