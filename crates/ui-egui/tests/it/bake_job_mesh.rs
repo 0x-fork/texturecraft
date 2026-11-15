@@ -1,4 +1,4 @@
-//! A bake job belongs to the mesh it started on: when Edit > Change mesh (or a reimport) swaps
+//! A bake job belongs to the mesh it started on: when `file.changeMesh` (or a reimport) swaps
 //! the mesh meanwhile, the job is cancelled and its result is dropped.
 
 use std::sync::Arc;

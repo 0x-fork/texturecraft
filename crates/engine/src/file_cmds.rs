@@ -39,8 +39,8 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         cmd!(
             "file.changeMesh",
-            "Change mesh...",
-            ["Edit"],
+            "Change mesh",
+            [],
             None,
             "{path: the new mesh file, preserveStrokes?: bool (painted pixels follow the surface where the UVs differ; default true)} → {preserved?: texels re-projected}. Keeps layers, texture sets and settings; texture sets map to the new mesh by material index",
             always,

@@ -613,7 +613,7 @@ fn a_failed_multi_set_bake_restores_settings_pixels_and_history() {
     assert_eq!(session.history_labels(), history);
 }
 
-/// Edit > Change mesh swaps the mesh under a baked project: the high poly and the skew map stay,
+/// `file.changeMesh` swaps the mesh under a baked project: the high poly and the skew map stay,
 /// the project counts as changed, and image resources are decoded in the new session.
 #[test]
 fn changing_the_mesh_keeps_the_bake_setup_and_marks_the_project_changed() {
