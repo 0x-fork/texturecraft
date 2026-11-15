@@ -60,7 +60,7 @@ pub(crate) fn package(file_name: &str, bytes: &[u8], found: &mut dyn FnMut(&str)
         doc.scene_with_options(
             &limits,
             &mut craft_mesh::no_external,
-            &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true, prefer_last_parent: true },
+            &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true, prefer_last_parent: true, only_object_connections: true },
         )
         .map_err(convert)?;
         craft_mesh::fbx::package::write(&doc, file_name, bytes, &limits, package_limits(), found).map_err(convert)
@@ -78,7 +78,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         .scene_with_options(
             &limits,
             &mut craft_mesh::no_external,
-            &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true, prefer_last_parent: true },
+            &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true, prefer_last_parent: true, only_object_connections: true },
         )
         .map_err(convert)?;
     let to_mat = |m: craft_mesh::Mat4| Mat4::from_cols_array(&m.map(|v| v as f32));
