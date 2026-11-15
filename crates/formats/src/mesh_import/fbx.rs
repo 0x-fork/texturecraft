@@ -74,8 +74,8 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         return Err(malformed(KIND, "not an FBX file (no FBXHeaderExtension / FBXVersion)"));
     }
     let colors = doc.diffuse_materials(&limits, files).map_err(convert)?;
-    let scene = doc
-        .scene_with_options(
+    let (scene, placements) = doc
+        .scene_with_placements(
             &limits,
             &mut craft_mesh::no_external,
             &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true, prefer_last_parent: true, only_object_connections: true },
@@ -86,34 +86,34 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     let mut sink = PolygonSink::default();
     let mut cameras = Vec::new();
     cameras.resize_with(scene.cameras.len().min(super::MAX_CAMERAS), || None);
-    // Keep parent indices rather than copying names into every pending child: a hostile
-    // hierarchy may fan one very long model name out to many children.
-    let stack_limit = limits.max_data_bytes / std::mem::size_of::<(usize, Mat4, Option<usize>, usize)>();
+    // Bound the stored world matrices and pending node indices together: neither depends on
+    // copying model names, even when a hierarchy fans out widely.
+    let placement_bytes =
+        scene.nodes.len().checked_mul(std::mem::size_of::<Option<Mat4>>()).ok_or_else(|| FormatError::TooLarge("FBX hierarchy size overflow".into()))?;
+    let remaining = limits.max_data_bytes.checked_sub(placement_bytes).ok_or_else(|| FormatError::TooLarge("FBX hierarchy exceeds its memory limit".into()))?;
+    let stack_limit = remaining / std::mem::size_of::<(usize, Mat4, usize)>();
     if scene.roots.len() > stack_limit {
         return Err(FormatError::TooLarge("FBX hierarchy exceeds its memory limit".into()));
     }
-    let mut stack: Vec<_> = scene.roots.iter().rev().map(|i| (*i, global, None::<usize>, 0usize)).collect();
-    let mut reached = vec![false; scene.nodes.len()];
+    let mut stack: Vec<_> = scene.roots.iter().rev().map(|i| (*i, global, 0usize)).collect();
+    let mut worlds = vec![None; scene.nodes.len()];
     let mut visited = 0usize;
     let mut points = 0usize;
-    while let Some((id, parent, inherited, depth)) = stack.pop() {
+    while let Some((id, parent, depth)) = stack.pop() {
         visited += 1;
         if visited > limits.max_nodes || depth > limits.max_depth {
             return Err(FormatError::TooLarge("FBX hierarchy exceeds its traversal limit".into()));
         }
         let node = scene.nodes.get(id).ok_or_else(|| malformed(KIND, "node index out of range"))?;
-        if let Some(seen) = reached.get_mut(id) {
-            *seen = true;
-        }
         let world = parent * to_mat(node.transform);
-        let parent_name = inherited.and_then(|i| scene.nodes.get(i)).map_or("", |n| n.name.as_str());
-        let synthetic = inherited.is_some() && node.mesh.is_some() && node.name.strip_suffix(" geometry") == Some(parent_name);
-        let next_parent = if synthetic { inherited } else { Some(id) };
+        if let Some(slot) = worlds.get_mut(id) {
+            *slot = Some(world);
+        }
         for child in node.children.iter().rev() {
             if stack.len() >= stack_limit {
                 return Err(FormatError::TooLarge("FBX hierarchy exceeds its memory limit".into()));
             }
-            stack.push((*child, world, next_parent, depth + 1));
+            stack.push((*child, world, depth + 1));
         }
         if let Some(index) = node.camera
             && let (Some(camera), Some(slot)) = (scene.cameras.get(index), cameras.get_mut(index))
@@ -124,6 +124,11 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
             };
             *slot = Some(RawCamera::placed(camera.name.clone(), world, Vec3::NEG_Z, fov, ortho));
         }
+    }
+    for placement in placements {
+        let id = placement.node;
+        let node = scene.nodes.get(id).ok_or_else(|| malformed(KIND, "placement index out of range"))?;
+        let world = worlds.get(id).copied().flatten().ok_or_else(|| malformed(KIND, "cycle in model hierarchy"))?;
         let Some(index) = node.mesh else { continue };
         let mesh = scene.meshes.get(index).ok_or_else(|| malformed(KIND, "mesh index out of range"))?;
         points = points.checked_add(mesh.positions.len()).ok_or_else(|| FormatError::TooLarge("FBX instance work overflow".into()))?;
@@ -132,7 +137,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         }
         let normal_transform = Mat3::from_mat4(world).inverse().transpose();
         let flip = world.determinant() < 0.0;
-        sink.part = if synthetic { parent_name.to_string() } else { node.name.clone() };
+        sink.part = placement.model.and_then(|i| scene.nodes.get(i)).map_or_else(String::new, |n| n.name.clone());
         let (mut bad_normals, mut bad_uvs) = (0usize, 0usize);
         for group in &mesh.parts {
             let material = group.material.and_then(|m| scene.materials.get(m)).map_or("Default", |m| m.name.as_str());
@@ -167,9 +172,6 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         if bad_uvs > 0 {
             sink.warn(format!("{bad_uvs} polygon corners have no UV in the FBX UV layer (set to 0, 0)"));
         }
-    }
-    if scene.nodes.iter().enumerate().any(|(i, node)| node.mesh.is_some() && !reached.get(i).copied().unwrap_or(false)) {
-        return Err(malformed(KIND, "cycle in model hierarchy"));
     }
     for warning in scene.warnings {
         sink.warn(warning);
