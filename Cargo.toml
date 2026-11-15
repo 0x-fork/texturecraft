@@ -69,7 +69,7 @@ rustix = { version = "1", default-features = false, features = ["std", "fs", "pr
 craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "390fe98b0dd3fb84db7c3af7cbd958db4e8cc585" }
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "390fe98b0dd3fb84db7c3af7cbd958db4e8cc585", features = ["serde"] }
 craft-materialx = { git = "https://github.com/storytold/craft-libs", rev = "390fe98b0dd3fb84db7c3af7cbd958db4e8cc585" }
-craft-mesh = { git = "https://github.com/storytold/craft-libs", rev = "4a84c00372972fb99755cba34978a5e73387c3f0", default-features = false, features = ["stl", "fbx"] }
+craft-mesh = { git = "https://github.com/storytold/craft-libs", rev = "17e18e31c29fb8c4bf56bb7242ff9dcdb3d3a66f", default-features = false, features = ["stl", "fbx"] }
 craft-mcmat = { git = "https://github.com/storytold/craft-libs", rev = "828b07f3c9f3f6a2e935087b859016a5e46b1c31" }
 craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "828b07f3c9f3f6a2e935087b859016a5e46b1c31" }
 # Who draws the window frame, and the app-drawn strip as the title bar (crates/ui-egui/src/titlebar.rs).

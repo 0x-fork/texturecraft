@@ -53,7 +53,7 @@ pub(crate) fn package(file_name: &str, bytes: &[u8], found: &mut dyn FnMut(&str)
     }
     crate::guard(KIND, || {
         let limits = limits();
-        let doc = craft_mesh::fbx::read_document(bytes, &limits).map_err(convert)?;
+        let doc = craft_mesh::fbx::read_document_strict(bytes, &limits).map_err(convert)?;
         if doc.version == 0 {
             return Err(malformed(KIND, "not an FBX file (no FBXHeaderExtension / FBXVersion)"));
         }
@@ -65,7 +65,7 @@ pub(crate) fn package(file_name: &str, bytes: &[u8], found: &mut dyn FnMut(&str)
 
 fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     let limits = limits();
-    let doc = craft_mesh::fbx::read_document(bytes, &limits).map_err(convert)?;
+    let doc = craft_mesh::fbx::read_document_strict(bytes, &limits).map_err(convert)?;
     if doc.version == 0 {
         return Err(malformed(KIND, "not an FBX file (no FBXHeaderExtension / FBXVersion)"));
     }
