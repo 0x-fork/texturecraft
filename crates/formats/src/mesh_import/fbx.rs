@@ -77,6 +77,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     let global = to_mat(doc.axes_to_y_up()) * Mat4::from_scale(Vec3::splat((doc.unit_scale().unwrap_or(1.0) / 100.0) as f32));
     let mut sink = PolygonSink::default();
     let mut cameras = Vec::new();
+    cameras.resize_with(scene.cameras.len().min(super::MAX_CAMERAS), || None);
     let mut stack: Vec<_> = scene.roots.iter().rev().map(|i| (*i, global, String::new(), 0usize)).collect();
     let mut visited = 0usize;
     let mut points = 0usize;
@@ -87,19 +88,17 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         }
         let node = scene.nodes.get(id).ok_or_else(|| malformed(KIND, "node index out of range"))?;
         let world = parent * to_mat(node.transform);
-        let part = if node.name.ends_with(" geometry") { inherited } else { node.name.clone() };
+        let part = if node.name == format!("{inherited} geometry") { inherited } else { node.name.clone() };
         for child in node.children.iter().rev() {
             stack.push((*child, world, part.clone(), depth + 1));
         }
         if let Some(index) = node.camera {
-            if cameras.len() < super::MAX_CAMERAS {
-                if let Some(camera) = scene.cameras.get(index) {
-                    let (fov, ortho) = match camera.projection {
-                        craft_mesh::Projection::Perspective { yfov, .. } => (yfov.to_degrees() as f32, None),
-                        craft_mesh::Projection::Orthographic { ymag, .. } => (40.0, Some(ymag as f32)),
-                    };
-                    cameras.push(RawCamera::placed(camera.name.clone(), world, Vec3::NEG_Z, fov, ortho));
-                }
+            if let (Some(camera), Some(slot)) = (scene.cameras.get(index), cameras.get_mut(index)) {
+                let (fov, ortho) = match camera.projection {
+                    craft_mesh::Projection::Perspective { yfov, .. } => (yfov.to_degrees() as f32, None),
+                    craft_mesh::Projection::Orthographic { ymag, .. } => (40.0, Some(ymag as f32)),
+                };
+                *slot = Some(RawCamera::placed(camera.name.clone(), world, Vec3::NEG_Z, fov, ortho));
             }
         }
         let Some(index) = node.mesh else { continue };
@@ -153,7 +152,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         sink.warn(warning);
     }
     let mut raw = sink.finish();
-    raw.cameras = cameras;
+    raw.cameras = cameras.into_iter().flatten().collect();
     raw.base_colors = colors.into_iter().map(|c| RawBaseColor { material: c.name, factor: Vec4::from_array(c.factor), image: c.image }).collect();
     Ok(raw)
 }
