@@ -18,7 +18,6 @@
 //! count of 0, followed by `width × height × components` f32 LE. Pixels of a UV-tiled texture
 //! set cover its whole atlas (`resolution` per tile, see `TileGrid`).
 
-use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::io::{Cursor, Read, Seek, Write};
 use std::sync::Arc;
@@ -31,12 +30,10 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use self::entries::Entry;
 use self::load_budget::LoadBudget;
-use self::metadata_reader::MetadataReader;
 use crate::{FormatError, MAX_IMAGE_SIZE, Result, malformed};
 
 mod entries;
 mod load_budget;
-mod metadata_reader;
 mod project_open_limit;
 #[cfg(not(target_arch = "wasm32"))]
 pub use entries::{DEFAULT_RAM_PERCENT, DEFAULT_RESERVED_CORES, available_save_resources, save_ram_budget, set_save_resources};
@@ -342,37 +339,25 @@ fn load<R: Read + Seek>(reader: R) -> Result<ProjectFile> {
 }
 
 fn check_archive<R: Read + Seek>(zip: &mut ZipArchive<R>, limit_bytes: u64) -> Result<()> {
-    if zip.len() > MAX_ENTRIES {
-        return Err(FormatError::TooLarge(format!("project file has more than {MAX_ENTRIES} entries")));
-    }
-
-    // Count every declared payload, including ignored entries, before any decompression
-    let mut declared_budget = LoadBudget::new(limit_bytes);
-    for index in 0..zip.len() {
-        let entry = zip.by_index_raw(index).map_err(zip_err)?;
-        declared_budget.take(entry.size()).map_err(FormatError::TooLarge)?;
-    }
-
-    // Shared compressed ranges can amplify one payload into many apparent files
-    if zip.has_overlapping_entries().map_err(zip_err)? {
-        return Err(malformed(KIND, "overlapping ZIP entries are not supported"));
-    }
-
-    Ok(())
+    craft_zip::inspect_seekable(zip, MAX_ENTRIES, limit_bytes).map_err(|error| match error {
+        craft_zip::InspectError::TooManyEntries { .. } => FormatError::TooLarge(format!("project file has more than {MAX_ENTRIES} entries")),
+        craft_zip::InspectError::DeclaredBytesExceeded { .. } => FormatError::TooLarge(LoadBudget::new(limit_bytes).exceeded_message()),
+        craft_zip::InspectError::OverlappingEntries => malformed(KIND, "overlapping ZIP entries are not supported"),
+        craft_zip::InspectError::Zip(error) => zip_err(error),
+    })
 }
 
-fn open_archive<'a, R: Read + Seek>(reader: R, metadata_only: &'a Cell<bool>, metadata_bytes: u64) -> Result<ZipArchive<MetadataReader<'a, R>>> {
-    let reader = MetadataReader::new(reader, metadata_only, metadata_bytes)?;
+fn open_archive<R: Read + Seek>(reader: R, metadata_bytes: u64) -> Result<ZipArchive<craft_zip::MetadataReader<R>>> {
+    let (reader, indexing) = craft_zip::MetadataReader::new(reader, metadata_bytes)?;
     // Project archives start at byte zero; avoid scanning payloads to guess an embedded ZIP offset
     let config = zip::read::Config { archive_offset: zip::read::ArchiveOffset::Known(0) };
     let archive = ZipArchive::with_config(config, reader).map_err(zip_err)?;
-    metadata_only.set(false);
+    indexing.finish();
     Ok(archive)
 }
 
 fn load_with_budget<R: Read + Seek>(reader: R, mut budget: LoadBudget) -> Result<ProjectFile> {
-    let metadata_only = Cell::new(true);
-    let mut zip = open_archive(reader, &metadata_only, MAX_ZIP_METADATA_BYTES)?;
+    let mut zip = open_archive(reader, MAX_ZIP_METADATA_BYTES)?;
     check_archive(&mut zip, budget.remaining())?;
 
     let json = read_all(&mut zip.by_name("project.json").map_err(zip_err)?, MAX_JSON, &mut budget, "project.json")?;

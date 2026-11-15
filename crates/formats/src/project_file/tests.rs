@@ -831,23 +831,19 @@ fn archive_indexing_does_not_scan_large_payloads_and_rejects_large_metadata() {
     writer.start_file("resource", SimpleFileOptions::default().compression_method(CompressionMethod::Stored)).unwrap();
     writer.write_all(&vec![7; 1 << 20]).unwrap();
     let bytes = writer.finish().unwrap().into_inner();
-    let metadata_only = Cell::new(true);
 
-    let mut archive = open_archive(Cursor::new(bytes), &metadata_only, 4096).unwrap();
+    let mut archive = open_archive(Cursor::new(bytes), 4096).unwrap();
     let mut first_byte = [0; 1];
     archive.by_index(0).unwrap().read_exact(&mut first_byte).unwrap();
 
     assert_eq!(first_byte, [7]);
-    assert!(!metadata_only.get());
 
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     writer.start_file("a".repeat(5000), SimpleFileOptions::default()).unwrap();
     writer.write_all(&[7]).unwrap();
     let bytes = writer.finish().unwrap().into_inner();
-    let metadata_only = Cell::new(true);
 
-    assert!(open_archive(Cursor::new(bytes), &metadata_only, 4096).is_err());
-    assert!(metadata_only.get(), "failed indexing must not enable payload access");
+    assert!(open_archive(Cursor::new(bytes), 4096).is_err());
 }
 
 #[test]
@@ -858,9 +854,8 @@ fn zip64_entry_counts_remain_supported_and_bounded() {
             writer.start_file(format!("e{index}"), SimpleFileOptions::default().compression_method(CompressionMethod::Stored)).unwrap();
         }
         let bytes = writer.finish().unwrap().into_inner();
-        let metadata_only = Cell::new(true);
 
-        let mut archive = open_archive(Cursor::new(bytes), &metadata_only, MAX_ZIP_METADATA_BYTES).unwrap();
+        let mut archive = open_archive(Cursor::new(bytes), MAX_ZIP_METADATA_BYTES).unwrap();
         let result = check_archive(&mut archive, 0);
 
         assert_eq!(archive.len(), count);
