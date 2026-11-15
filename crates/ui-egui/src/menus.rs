@@ -156,6 +156,10 @@ pub fn invoke(app: &mut TextureCraftApp, ctx: &egui::Context, id: &str) {
         "ui.newProject" => app.ui.windows.new_project = true,
         "ui.export" => app.ui.windows.export = true,
         "ui.quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        #[cfg(not(target_arch = "wasm32"))]
+        "ui.projectConfig" => crate::project_config::open(app),
+        // The browser can't change the mesh file, so only the Display panel is left to open.
+        #[cfg(target_arch = "wasm32")]
         "ui.projectConfig" => crate::rail_popup::open(app, crate::docking::Panel::Display),
         "ui.settings" => app.ui.windows.settings = true,
         "ui.mode.bake" => app.ui.mode = Mode::Baking,

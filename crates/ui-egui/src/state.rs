@@ -76,9 +76,23 @@ pub struct Windows {
     /// The start window: new, open, recent projects (the app opens it at launch).
     #[serde(skip)]
     pub start: bool,
+    /// Edit > Project Configuration: what is chosen so far, applied by OK.
+    #[serde(skip)]
+    pub project_config: Option<ProjectConfig>,
     /// What waits on the unsaved-changes dialog: save, don't save or cancel.
     #[serde(skip)]
     pub unsaved: Option<Unsaved>,
+}
+
+/// Edit > Project Configuration, the 3D mesh section.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ProjectConfig {
+    /// A mesh file picked with Select..., not applied until OK.
+    pub mesh: Option<String>,
+    /// The Reimport mesh box.
+    pub reimport: bool,
+    /// The project the window was opened on (`Session::project_id`).
+    pub project: u64,
 }
 
 /// An action that replaces or ends the project, held while the project has unsaved changes.
