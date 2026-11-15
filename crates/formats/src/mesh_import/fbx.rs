@@ -8,6 +8,11 @@ fn limits() -> craft_mesh::Limits {
     craft_mesh::Limits {
         max_vertices: super::MAX_VERTICES,
         max_triangles: texturecraft_geom::MAX_TRIANGLES,
+        max_face_corners: super::MAX_VERTICES,
+        max_meshes: super::MAX_VERTICES,
+        max_parts: super::MAX_VERTICES,
+        max_materials: super::MAX_VERTICES,
+        max_nodes: super::MAX_VERTICES,
         max_data_bytes: 1 << 31,
         max_extras: 100_000,
         ..Default::default()
@@ -52,7 +57,8 @@ pub(crate) fn package(file_name: &str, bytes: &[u8], found: &mut dyn FnMut(&str)
         if doc.version == 0 {
             return Err(malformed(KIND, "not an FBX file (no FBXHeaderExtension / FBXVersion)"));
         }
-        doc.scene_with_options(&limits, &mut craft_mesh::no_external, &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true }).map_err(convert)?;
+        doc.scene_with_options(&limits, &mut craft_mesh::no_external, &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true })
+            .map_err(convert)?;
         craft_mesh::fbx::package::write(&doc, file_name, bytes, &limits, package_limits(), found).map_err(convert)
     })
 }
@@ -64,8 +70,9 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         return Err(malformed(KIND, "not an FBX file (no FBXHeaderExtension / FBXVersion)"));
     }
     let colors = doc.diffuse_materials(&limits, files).map_err(convert)?;
-    let scene =
-        doc.scene_with_options(&limits, &mut craft_mesh::no_external, &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true }).map_err(convert)?;
+    let scene = doc
+        .scene_with_options(&limits, &mut craft_mesh::no_external, &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true })
+        .map_err(convert)?;
     let to_mat = |m: craft_mesh::Mat4| Mat4::from_cols_array(&m.map(|v| v as f32));
     let global = to_mat(doc.axes_to_y_up()) * Mat4::from_scale(Vec3::splat((doc.unit_scale().unwrap_or(1.0) / 100.0) as f32));
     let mut sink = PolygonSink::default();
