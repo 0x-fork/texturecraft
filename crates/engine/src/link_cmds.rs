@@ -252,6 +252,11 @@ impl LinkJob {
     /// `PATH`); returns `.mcmat` bytes. Blocks for the cook (about a second at 2K).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn run(&self) -> Result<Vec<u8>> {
+        self.run_with_cli(&materialcraft_tool("materialcraft-cli", "MATERIALCRAFT_CLI"))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn run_with_cli(&self, cli: &std::path::Path) -> Result<Vec<u8>> {
         let other = |e: String| EngineError::Other(e);
         let n = NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!("texturecraft-link-{}-{n}", std::process::id()));
@@ -271,8 +276,7 @@ impl LinkJob {
             }
             let out = dir.join(format!("out.{MCMAT_EXT}"));
             let params = json!({"path": utf8(&out)?, "size": self.size, "values": self.values, "inputs": inputs});
-            let cli = materialcraft_tool("materialcraft-cli", "MATERIALCRAFT_CLI");
-            let mut command = quiet(&cli);
+            let mut command = quiet(cli);
             if let Some(graph) = &self.graph {
                 // Opening the source starts on its first graph; select the graph saved in the link.
                 let script = json!({"open": src, "steps": [
@@ -495,4 +499,55 @@ fn put_maps(s: &mut Session, stem: &str, maps: &[(Channel, Vec<u8>, texturecraft
         names.push(name);
     }
     names
+}
+
+#[cfg(all(test, unix))]
+mod subprocess_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn cook_uses_the_saved_graph_and_source_type_without_global_environment() {
+        let id = NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("texturecraft-cook-test-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cli = dir.join("materialcraft-cli");
+        let script = r#"#!/bin/sh
+set -eu
+case "$1" in
+  batch)
+    grep -F '"graph":"Second"' "$2" >/dev/null
+    grep -F '"id":"file.exportMaterial"' "$2" >/dev/null
+    test -f "$(dirname "$2")/source.sbs"
+    test -f "$(dirname "$2")/input0.png"
+    cp "$(dirname "$0")/result.mcmat" "$(dirname "$2")/out.mcmat"
+    ;;
+  run)
+    test "$(basename "$2")" = "source.mcraft"
+    cp "$(dirname "$0")/result.mcmat" "$(dirname "$2")/out.mcmat"
+    ;;
+  *) exit 1 ;;
+esac
+"#;
+        std::fs::write(&cli, script).unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(dir.join("result.mcmat"), b"cooked").unwrap();
+        let mut job = LinkJob {
+            layer: LayerId(1),
+            package: Arc::new(b"source".to_vec()),
+            source_ext: "sbs",
+            graph: Some("Second".into()),
+            size: 64,
+            values: Map::new(),
+            inputs: vec![("curvature".into(), b"png".to_vec())],
+        };
+        assert_eq!(job.run_with_cli(&cli).unwrap(), b"cooked");
+        job.graph = None;
+        job.source_ext = "mcraft";
+        assert_eq!(job.run_with_cli(&cli).unwrap(), b"cooked");
+        job.graph = Some("wrong".into());
+        assert!(job.run_with_cli(&cli).is_err());
+        assert!(job.run_with_cli(&dir.join("missing")).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

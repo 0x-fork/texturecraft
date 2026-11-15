@@ -96,6 +96,12 @@ fn version_two_preserves_the_sbs_source_for_future_cooks() {
     assert_eq!(job.source_ext, "sbs");
     assert_eq!(job.graph.as_deref(), Some("Brick_wall"));
     assert_eq!(job.package.as_slice(), b"package bytes");
+    let base = std::env::temp_dir().join(format!("texturecraft-sbs-source-{}", std::process::id()));
+    let saved = execute(&mut session, "material.link.saveSource", &json!({"layer": id.0, "path": base.to_str().unwrap()})).unwrap();
+    let path = saved["path"].as_str().unwrap();
+    assert!(path.ends_with(".sbs"));
+    assert_eq!(std::fs::read(path).unwrap(), b"package bytes");
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
