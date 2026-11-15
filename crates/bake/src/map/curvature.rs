@@ -7,6 +7,8 @@ use texturecraft_geom::{Hit, Mesh, Surface};
 
 const RING_COUNT: usize = 4;
 const WALL_RADIUS_TEXELS: f32 = 1.5;
+/// Map size per UV tile whose texels size the smooth-shading ring: at any other size the ring reaches as far on the mesh, so a rounded edge reads alike at every resolution
+const SPREAD_REFERENCE_RESOLUTION: f32 = 1024.0;
 const CONCAVE_WEIGHT: f32 = 1.5;
 const LOW_POLY_CONVEX_WEIGHT: f32 = 1.5;
 const HIGH_POLY_CONVEX_WEIGHT: f32 = 0.5;
@@ -64,7 +66,8 @@ impl Curvature {
             rays_per_sample,
             wall_count: ring.first().map_or(0, Vec::len),
             walls,
-            spread: walls * 4.0 / 3.0,
+            // Texels of a 1024 map (a factor of exactly 1 at 1024): a texel-sized ring halved a smooth bevel's response with each doubling of the map size
+            spread: walls * 4.0 / 3.0 * ((width as f32 * height as f32).sqrt() / SPREAD_REFERENCE_RESOLUTION),
             fallback,
             texels: (0..triangle_count).into_par_iter().map(|t| texel(t).filter(|v| v.is_finite()).unwrap_or(fallback)).collect(),
             low: CurvatureTuning {
