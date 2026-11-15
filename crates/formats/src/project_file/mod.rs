@@ -98,21 +98,23 @@ pub fn save_project_bytes(pf: &ProjectFile) -> Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
-/// Save atomically: `<path>.tmp` first, then rename over `path`.
+/// Save atomically through a newly created temporary file beside `path`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn save_project(path: &std::path::Path, pf: &ProjectFile) -> Result<()> {
-    let (tmp, file) = crate::create_temp(path)?;
-    let res = (|| -> Result<()> {
+pub fn save_project(path: &std::path::Path, project_file: &ProjectFile) -> Result<()> {
+    let (temporary_path, file) = crate::create_temp(path)?;
+    let result = (|| -> Result<()> {
         let mut file = std::io::BufWriter::new(file);
-        write_project(&mut file, pf)?;
-        file.into_inner().map_err(|e| e.into_error())?.sync_all()?;
-        std::fs::rename(&tmp, path)?;
+        write_project(&mut file, project_file)?;
+        file.into_inner().map_err(|error| error.into_error())?.sync_all()?;
+        std::fs::rename(&temporary_path, path)?;
         Ok(())
     })();
-    if res.is_err() {
-        let _ = std::fs::remove_file(&tmp);
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
     }
-    res
+
+    result
 }
 
 fn zip_err(e: zip::result::ZipError) -> FormatError {
