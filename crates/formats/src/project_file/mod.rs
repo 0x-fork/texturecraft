@@ -376,13 +376,9 @@ fn load_with_budget<R: Read + Seek>(reader: R, mut budget: LoadBudget) -> Result
     check_archive(&mut zip, budget.remaining())?;
 
     let json = read_all(&mut zip.by_name("project.json").map_err(zip_err)?, MAX_JSON, &mut budget, "project.json")?;
-    #[derive(serde::Deserialize)]
-    struct Version {
-        format_version: u32,
-    }
-    let v: Version = serde_json::from_slice(&json).map_err(|e| malformed(KIND, format!("project.json: {e}")))?;
-    if v.format_version > FORMAT_VERSION {
-        return Err(FormatError::NewerVersion { found: v.format_version, supported: FORMAT_VERSION });
+    let version = craft_tcraft::project_version(&json).map_err(|e| malformed(KIND, format!("project.json: {e}")))?;
+    if version > FORMAT_VERSION {
+        return Err(FormatError::NewerVersion { found: version, supported: FORMAT_VERSION });
     }
 
     let (project, mut recovered) = recovery::read_project(&json).map_err(|e| malformed(KIND, format!("project.json: {e}")))?;
