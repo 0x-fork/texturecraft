@@ -9,6 +9,8 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+# ICC v2 serialization prerequisite: craft-libs#1735; app colour policy stays local.
+craft-cms-icc-v2 = { package = "craft-cms", version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "6c09292724ec8dbe32950cb5042cfaa2a614fb6c" }
 craft-materialx = { workspace = true }
 craft-mesh = { workspace = true }
 craft-mcmat = { workspace = true }
