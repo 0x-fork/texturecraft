@@ -17,7 +17,8 @@ const SELECT_BUTTON_WIDTH: f32 = 90.0;
 
 /// Opens the window on the current project, with nothing chosen yet.
 pub(crate) fn open(app: &mut TextureCraftApp) {
-    app.ui.windows.project_config = Some(ProjectConfig { mesh: None, reimport: false, preserve: true, normal_format: None, confirm: false, project: app.session.project_id });
+    app.ui.windows.project_config =
+        Some(ProjectConfig { mesh: None, reimport: false, preserve: true, normal_format: None, confirm: false, project: app.session.project_id });
 }
 
 /// `text` with its beginning replaced by an ellipsis until `fits` accepts it (the end of a path
@@ -154,16 +155,16 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             "For the whole project: how normal map images set as mesh maps are read (set them again after a change), and the default for export",
         ));
         ui.add_space(4.0);
-        // Read only: the tiles are set when the project is created.
+        // Read only here; the Texture Set Settings panel changes them.
         ui.label(tr("UV Tile settings (UDIMs)"));
         if tiles.iter().all(|(_, t)| t.is_none()) {
-            ui.label(egui::RichText::new(tr("Off")).weak());
+            ui.label(egui::RichText::new(tr("No UV tiles")).weak());
         }
         for (name, t) in tiles.iter().filter(|(_, t)| t.is_some()) {
             let list = t.as_deref().unwrap_or_default();
-            ui.label(egui::RichText::new(if tiles.len() > 1 { trf("{set}: {tiles}", &[("set", name), ("tiles", list)]) } else { list.to_string() }).weak());
+            ui.label(egui::RichText::new(if tiles.len() > 1 { trf("{set}: {tiles}", &[("set", name), ("tiles", &list)]) } else { list.to_string() }).weak());
         }
-        ui.label(egui::RichText::new(tr("You can't change UV Tile settings once a project has been created.")).small().weak());
+        ui.label(egui::RichText::new(tr("Change them in Texture Set Settings")).small().weak());
 
         ui.add_space(12.0);
         ui.horizontal(|ui| {
@@ -187,15 +188,20 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     }
     // OK closes the window once everything worked; a failure leaves it open, choices kept, with its toast.
     // The mesh goes first: a project that couldn't change its mesh stays as it was.
+    let mut mesh_applied = false;
     let done = ok && {
         let reimport = config.reimport.then(|| app.session.remembered_mesh_path().map(str::to_string)).flatten();
-        let mesh_done = match mesh_command(changed.as_deref(), reimport.as_deref(), config.preserve) {
+        mesh_applied = match mesh_command(changed.as_deref(), reimport.as_deref(), config.preserve) {
             Some((command, params)) => app.run(command, params).is_some(),
             None => true,
         };
-        mesh_done
-            && match config.normal_format {
-                Some(format) => app.run("textureSet.settings", json!({"normalFormat": if format == NormalFormat::DirectX { "directX" } else { "openGl" }})).is_some(),
+        // The format is compared with what the project has now: the Texture Set Settings panel may have set it too.
+        let format = config.normal_format.filter(|format| *format != app.session.doc.project.normal_format);
+        mesh_applied
+            && match format {
+                Some(format) => {
+                    app.run("textureSet.settings", json!({"normalFormat": if format == NormalFormat::DirectX { "directX" } else { "openGl" }})).is_some()
+                }
                 None => true,
             }
     };
@@ -204,6 +210,10 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     } else if let Some(stored) = app.ui.windows.project_config.as_mut() {
         // Keep the choices made now; the file answer arrives later through the stored value.
         (stored.reimport, stored.preserve, stored.normal_format, stored.confirm) = (config.reimport, config.preserve, config.normal_format, false);
+        // A mesh already changed is not read again by a retry of the rest.
+        if ok && mesh_applied {
+            (stored.mesh, stored.reimport) = (None, false);
+        }
     }
 }
 

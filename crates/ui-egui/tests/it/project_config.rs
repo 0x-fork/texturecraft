@@ -13,6 +13,8 @@ use texturecraft_ui_egui::file_dialogs::{Answer, Request};
 
 const QUAD: &str = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 1/1 2/2 3/3 4/4\n";
 const TRIANGLE: &str = "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n";
+/// The format combo's tooltip, which is its accessible label.
+const FORMAT_HINT: &str = "For the whole project: how normal map images set as mesh maps are read (set them again after a change), and the default for export";
 const TITLE: &str = "Project configuration";
 
 /// A new folder for one test, removed when the test ends (also when it fails).
@@ -48,6 +50,20 @@ fn app_on_a_quad(dir: &std::path::Path) -> Harness<'static, TextureCraftApp> {
     h.state_mut().ui.prefs.language = "en".into();
     h.run_steps(4);
     h
+}
+
+/// The widget of `role` and `label` inside the window, which sits at the middle of the screen
+/// (a panel of the dock may show the same text).
+fn in_window<'h>(h: &'h Harness<'_, TextureCraftApp>, role: Role, label: &'h str) -> egui_kittest::Node<'h> {
+    let middle = egui::pos2(800.0, 480.0);
+    h.get_all_by_role_and_label(role, label)
+        .min_by(|a, b| a.rect().center().distance(middle).total_cmp(&b.rect().center().distance(middle)))
+        .expect("the widget in the window")
+}
+
+fn click_in_window(h: &mut Harness<'_, TextureCraftApp>, role: Role, label: &str) {
+    in_window(h, role, label).click();
+    h.run_steps(3);
 }
 
 fn open_window(h: &mut Harness<'_, TextureCraftApp>) {
@@ -288,14 +304,14 @@ fn the_normal_map_format_changes_on_ok_and_shows_in_the_texture_set_panel() {
     let dir = temp_dir("normal-format");
     let mut h = app_on_a_quad(&dir);
     open_window(&mut h);
-    click(&mut h, Role::ComboBox, "OpenGL");
-    click(&mut h, Role::Button, "DirectX");
+    click_in_window(&mut h, Role::ComboBox, FORMAT_HINT);
+    click_in_window(&mut h, Role::Button, "DirectX");
     assert_eq!(project_normal_format(&h), NormalFormat::OpenGl, "nothing changes before OK");
     click(&mut h, Role::Button, "OK");
     assert_eq!(project_normal_format(&h), NormalFormat::DirectX);
     h.state_mut().ui.dock.focus(texturecraft_ui_egui::docking::Panel::TextureSetSettings);
     h.run_steps(3);
-    assert!(h.query_by_label("DirectX").is_some(), "the Texture Set Settings panel shows the project's format");
+    assert!(h.query_all_by_value("DirectX").next().is_some(), "the Texture Set Settings panel shows the project's format");
     // One undo step puts it back
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run_steps(3);
@@ -308,8 +324,8 @@ fn cancel_discards_a_normal_map_format() {
     let dir = temp_dir("normal-format-cancel");
     let mut h = app_on_a_quad(&dir);
     open_window(&mut h);
-    click(&mut h, Role::ComboBox, "OpenGL");
-    click(&mut h, Role::Button, "DirectX");
+    click_in_window(&mut h, Role::ComboBox, FORMAT_HINT);
+    click_in_window(&mut h, Role::Button, "DirectX");
     click(&mut h, Role::Button, "Cancel");
     assert_eq!(project_normal_format(&h), NormalFormat::OpenGl);
 }
@@ -320,13 +336,13 @@ fn uv_tiles_are_shown_read_only() {
     let mut h = app_on_a_quad(&dir);
     open_window(&mut h);
     assert!(h.query_by_label("UV Tile settings (UDIMs)").is_some());
-    assert!(h.query_by_label("Off").is_some(), "a project without UV tiles");
-    assert!(h.query_by_label("You can't change UV Tile settings once a project has been created.").is_some());
+    assert!(h.query_by_label("No UV tiles").is_some(), "a project without UV tiles");
+    assert!(h.query_by_label("Change them in Texture Set Settings").is_some());
     click(&mut h, Role::Button, "Cancel");
 
     texturecraft_engine::execute(&mut h.state_mut().session, "textureSet.uvTiles", &json!({"ts": 0, "enabled": true})).unwrap();
     open_window(&mut h);
-    assert!(h.query_by_label("Off").is_none());
+    assert!(h.query_by_label("No UV tiles").is_none());
     assert!(h.query_by_label("1001").is_some(), "the tile list of a UDIM project");
 }
 
@@ -346,4 +362,111 @@ fn preserving_strokes_is_an_import_setting_of_a_mesh_that_is_read() {
     assert!(!h.state().ui.windows.project_config.as_ref().unwrap().preserve);
     click(&mut h, Role::Button, "OK");
     assert_eq!(h.state().session.mesh.triangle_count(), 1, "the mesh changed without reprojecting strokes");
+}
+
+/// The same quad with its UVs mirrored in u.
+const MIRRORED_QUAD: &str = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 1 0\nvt 0 0\nvt 0 1\nvt 1 1\nf 1/1 2/2 3/3 4/4\n";
+
+/// Paints the half of the quad with the larger x on its first layer.
+fn paint_the_right_half(h: &mut Harness<'_, TextureCraftApp>) -> texturecraft_engine::core::LayerId {
+    use texturecraft_engine::core::Channel;
+    let session = &mut h.state_mut().session;
+    let id = session.doc.project.texture_sets[0].stack[0];
+    let (size, cells) = {
+        let cache = &session.caches[0];
+        let xs: Vec<(usize, f32)> =
+            (0..cache.size.0 as usize * cache.size.1 as usize).filter_map(|i| cache.gbuf.surface(&session.mesh, i).map(|p| (i, p.pos.x))).collect();
+        let (low, high) = xs.iter().fold((f32::MAX, f32::MIN), |(l, h), (_, x)| (l.min(*x), h.max(*x)));
+        (cache.size, xs.into_iter().filter(|(_, x)| *x > (low + high) / 2.0).map(|(i, _)| i).collect::<Vec<_>>())
+    };
+    let image = session.doc.pixels.layer_mut(id, Channel::BaseColor, size);
+    for i in cells {
+        image.set(i as u32 % size.0, i as u32 / size.0, &[65535, 0, 0, 65535]);
+    }
+    id
+}
+
+/// Painted texels on the right and on the left half of the quad's surface, away from the middle.
+fn painted_halves(h: &Harness<'_, TextureCraftApp>, id: texturecraft_engine::core::LayerId) -> (usize, usize) {
+    use texturecraft_engine::core::Channel;
+    let session = &h.state().session;
+    let cache = &session.caches[0];
+    let image = session.doc.pixels.layer(id, Channel::BaseColor).unwrap();
+    let texels: Vec<(u32, u32, f32)> = (0..cache.size.0 * cache.size.1)
+        .filter_map(|i| cache.gbuf.surface(&session.mesh, i as usize).map(|p| (i % cache.size.0, i / cache.size.0, p.pos.x)))
+        .collect();
+    let (low, high) = texels.iter().fold((f32::MAX, f32::MIN), |(l, h), t| (l.min(t.2), h.max(t.2)));
+    let (middle, margin) = ((low + high) / 2.0, (high - low) * 0.05);
+    let painted = |x: u32, y: u32| image.get(x, y)[3] > 32768;
+    let right = texels.iter().filter(|t| t.2 > middle + margin && painted(t.0, t.1)).count();
+    let left = texels.iter().filter(|t| t.2 < middle - margin && painted(t.0, t.1)).count();
+    (right, left)
+}
+
+/// OK on a mirrored-UV mesh with the Preserve box as given; returns the painted (right, left) texels afterwards.
+fn painted_after_changing_to_mirrored_uvs(test: &str, preserve: bool) -> ((usize, usize), (usize, usize)) {
+    let dir = temp_dir(test);
+    let mut h = app_on_a_quad(&dir);
+    let mirrored = dir.join("mirrored.obj");
+    std::fs::write(&mirrored, MIRRORED_QUAD).unwrap();
+    let id = paint_the_right_half(&mut h);
+    let before = painted_halves(&h, id);
+    open_window(&mut h);
+    select(&mut h, &mirrored);
+    if !preserve {
+        click(&mut h, Role::CheckBox, "Preserve stroke positions on mesh");
+    }
+    click(&mut h, Role::Button, "OK");
+    assert!(!window_is_open(&h));
+    (before, painted_halves(&h, id))
+}
+
+#[test]
+fn preserve_on_moves_the_strokes_with_the_surface() {
+    let (before, after) = painted_after_changing_to_mirrored_uvs("preserve-on", true);
+    assert!(before.0 > 2000 && before.1 == 0, "painted on the right half: {before:?}");
+    assert!(after.0 > 2000 && after.1 < 200, "still on the right half of the surface: {after:?}");
+}
+
+#[test]
+fn preserve_off_leaves_the_strokes_in_the_uv_layout() {
+    let (_, after) = painted_after_changing_to_mirrored_uvs("preserve-off", false);
+    assert!(after.1 > 2000 && after.0 < 200, "the paint stayed where it was in UV space, now on the left half: {after:?}");
+}
+
+#[test]
+fn a_mesh_and_a_format_change_in_one_ok() {
+    use texturecraft_engine::core::NormalFormat;
+    let dir = temp_dir("both");
+    let mut h = app_on_a_quad(&dir);
+    let tri = dir.join("tri.obj");
+    std::fs::write(&tri, TRIANGLE).unwrap();
+    open_window(&mut h);
+    select(&mut h, &tri);
+    click_in_window(&mut h, Role::ComboBox, FORMAT_HINT);
+    click_in_window(&mut h, Role::Button, "DirectX");
+    click(&mut h, Role::Button, "OK");
+    assert!(!window_is_open(&h));
+    assert_eq!(h.state().session.mesh.triangle_count(), 1);
+    assert_eq!(project_normal_format(&h), NormalFormat::DirectX);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(3);
+    assert_eq!(project_normal_format(&h), NormalFormat::OpenGl, "the format is one undo step");
+    assert_eq!(h.state().session.mesh.triangle_count(), 1, "and the mesh stays");
+}
+
+#[test]
+fn a_format_the_project_already_has_is_not_set_again() {
+    use texturecraft_engine::core::NormalFormat;
+    let dir = temp_dir("same-format");
+    let mut h = app_on_a_quad(&dir);
+    open_window(&mut h);
+    click_in_window(&mut h, Role::ComboBox, FORMAT_HINT);
+    click_in_window(&mut h, Role::Button, "DirectX");
+    // The Texture Set Settings panel sets it meanwhile
+    texturecraft_engine::execute(&mut h.state_mut().session, "textureSet.settings", &json!({"normalFormat": "directX"})).unwrap();
+    let steps = h.state().session.history_labels().len();
+    click(&mut h, Role::Button, "OK");
+    assert_eq!(project_normal_format(&h), NormalFormat::DirectX);
+    assert_eq!(h.state().session.history_labels().len(), steps, "no extra undo step");
 }

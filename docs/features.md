@@ -85,7 +85,7 @@ Everything TextureCraft does today, by area. What's still missing is in [`ROADMA
   **Edit › Project Configuration...** (desktop) does the same from the 3D MESH section: *Select...* picks the
   file, *Reimport mesh* is ticked for you (or tick it alone to read the same file again), OK applies. *Import settings* decides whether painted
   strokes follow the surface (on by default), and PROJECT SETTINGS sets the project's normal map format and
-  shows its UV tiles (read only).
+  lists its UV tiles (read only; Texture Set Settings changes them).
 - **UDIM / UV tiles:** detected on import or switched on later, with a resolution per tile (blurs,
   other filters and height-to-normal slopes keep their size in UV space at any tile resolution)
   and one texture per tile on export (`$udim`).
