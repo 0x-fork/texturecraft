@@ -758,7 +758,7 @@ dependencies = [
 [[package]]
 name = "craft-cms"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=6c09292724ec8dbe32950cb5042cfaa2a614fb6c#6c09292724ec8dbe32950cb5042cfaa2a614fb6c"
+source = "git+https://github.com/storytold/craft-libs?rev=272a095b61257917693da3d09f2f8ecccd7f0295#272a095b61257917693da3d09f2f8ecccd7f0295"
 dependencies = [
  "md-5",
  "rayon",
