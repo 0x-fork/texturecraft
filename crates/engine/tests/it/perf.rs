@@ -404,34 +404,36 @@ fn bench_layer_thumbs_4k() {
 #[ignore]
 fn bench_sliced_filters_4k() {
     for blur in [false, true] {
-        let mut s = Session::new_project("sliced", primitives::sphere(1.0, 64, 32), "builtin:sphere", None, 4096).unwrap();
-        s.viewport = Vec2::new(800.0, 800.0);
-        let run = |s: &mut Session, id: &str, p: Value| execute(s, id, &p).unwrap();
-        run(&mut s, "layer.add.fill", json!({"color": [0.6, 0.5, 0.4], "roughness": 0.6}));
-        run(&mut s, "layer.add.fill", json!({"color": [0.1, 0.3, 0.6]}));
-        run(&mut s, "mask.add.black", Value::Null);
-        run(&mut s, "effect.add.generator", json!({"generator": "position", "level": 0.5}));
+        let mut session = Session::new_project("sliced", primitives::sphere(1.0, 64, 32), "builtin:sphere", None, 4096).unwrap();
+        session.viewport = Vec2::new(800.0, 800.0);
+        let run = |session: &mut Session, id: &str, params: Value| execute(session, id, &params).unwrap();
+        run(&mut session, "layer.add.fill", json!({"color": [0.6, 0.5, 0.4], "roughness": 0.6}));
+        run(&mut session, "layer.add.fill", json!({"color": [0.1, 0.3, 0.6]}));
+        run(&mut session, "mask.add.black", Value::Null);
+        run(&mut session, "effect.add.generator", json!({"generator": "position", "level": 0.5}));
         if blur {
-            run(&mut s, "effect.add.filter", json!({"filter": "blur", "radius": 8}));
+            run(&mut session, "effect.add.filter", json!({"filter": "blur", "radius": 8}));
         }
-        s.update();
 
-        s.caches[0].invalidate_all();
-        let t = Instant::now();
-        s.update();
-        let direct = t.elapsed();
+        session.update();
 
-        s.caches[0].invalidate_all();
+        session.caches[0].invalidate_all();
+        let started = Instant::now();
+        session.update();
+        let direct = started.elapsed();
+
+        session.caches[0].invalidate_all();
         let clock = Instant::now();
-        let ms = || clock.elapsed().as_secs_f64() * 1000.0;
-        let (mut frames, mut worst) = (0, Duration::ZERO);
-        while s.pending_tiles() > 0 {
-            let t = Instant::now();
-            s.update_for(30.0, ms);
-            worst = worst.max(t.elapsed());
+        let elapsed_ms = || clock.elapsed().as_secs_f64() * 1000.0;
+        let (mut frames, mut longest_frame) = (0, Duration::ZERO);
+        while session.pending_tiles() > 0 {
+            let started = Instant::now();
+            session.update_for(30.0, elapsed_ms);
+            longest_frame = longest_frame.max(started.elapsed());
             frames += 1;
         }
+
         let label = if blur { "blurred mask" } else { "no filter" };
-        println!("[sliced 4096², {label}] one call {direct:.2?}; in 30 ms slices {frames} frames, worst {worst:.2?}, total {:.2?}", clock.elapsed());
+        println!("[sliced 4096², {label}] one call {direct:.2?}; in 30 ms slices {frames} frames, worst {longest_frame:.2?}, total {:.2?}", clock.elapsed());
     }
 }

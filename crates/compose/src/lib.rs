@@ -13,6 +13,8 @@ mod curvature_size_level;
 pub mod curvature_sizes;
 pub mod display;
 pub mod eval;
+mod held_fields;
+mod image_identity;
 pub mod pattern;
 pub mod store;
 pub mod thumb;

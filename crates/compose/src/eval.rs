@@ -18,8 +18,9 @@ use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_geom::{Mesh, NO_TRI, UvGBuffer};
 use texturecraft_texel::{DilationMap, TILE, TILE_AREA, TileImage, from_u16, noise, to_u16, to_u16_signed};
 
-use crate::below::{Band, BelowCache, HeldFields, Level, StackKey};
+use crate::below::{Band, BelowCache, Level, StackKey};
 use crate::curvature_sizes::CurvatureSizes;
+use crate::held_fields::HeldFields;
 use crate::pattern::{Coords, decal_uv, image_samples, procedural, world_noise};
 use crate::store::{BakedMaps, ImageStore, PixelStore, decode};
 
@@ -445,16 +446,18 @@ fn lines_per_task(length: usize) -> usize {
 
 /// Three running-sum box blurs (≈ Gaussian) of a `width × height` image along its rows, then its columns, each in parallel.
 pub(crate) fn blur(data: &mut [f32], width: usize, height: usize, radius: usize) {
-    let to_fixed = |value: &f32| if value.is_finite() { (f64::from(value.clamp(-1e6, 1e6)) * FIX).round() as i64 } else { 0 };
+    // Bound samples before fixed-point accumulation
+    const MAX_INPUT_MAGNITUDE: f32 = 1e6;
+
+    let to_fixed = |value: &f32| if value.is_finite() { (f64::from(value.clamp(-MAX_INPUT_MAGNITUDE, MAX_INPUT_MAGNITUDE)) * FIX).round() as i64 } else { 0 };
     let mut fixed: Vec<i64> = data.par_iter().with_min_len(MIN_PARALLEL_TEXELS).map(to_fixed).collect();
     blur_rows(&mut fixed, width, radius);
 
     let mut columns = transpose(&fixed, width, height);
     blur_rows(&mut columns, height, radius);
-    data.par_iter_mut()
-        .with_min_len(MIN_PARALLEL_TEXELS)
-        .zip(transpose(&columns, height, width))
-        .for_each(|(target, blurred)| *target = (blurred as f64 / FIX) as f32);
+    transpose_into(&columns, height, width, &mut fixed);
+
+    data.par_iter_mut().with_min_len(MIN_PARALLEL_TEXELS).zip(fixed).for_each(|(target, blurred)| *target = (blurred as f64 / FIX) as f32);
 }
 
 /// The box blurs `blur` runs along each axis
@@ -465,11 +468,12 @@ fn blur_rows(data: &mut [i64], w: usize, r: usize) {
     if w == 0 {
         return;
     }
+
     data.par_chunks_mut(w).with_min_len(lines_per_task(w)).for_each(|row| {
-        let mut tmp = vec![0i64; row.len()];
+        let mut scratch = vec![0i64; row.len()];
         for _ in 0..BLUR_BOX_PASSES {
-            box_line(row, &mut tmp, r);
-            row.copy_from_slice(&tmp);
+            box_line(row, &mut scratch, r);
+            row.copy_from_slice(&scratch);
         }
     });
 }
@@ -477,7 +481,8 @@ fn blur_rows(data: &mut [i64], w: usize, r: usize) {
 /// One box blur of radius `r` of a line (texels past the ends count as 0).
 fn box_line(src: &[i64], dst: &mut [i64], r: usize) {
     let n = (2 * r + 1) as i64;
-    // Rounded division of a window sum.
+
+    // Rounded division of a window sum
     let avg = |acc: i64| (2 * acc + n).div_euclid(2 * n);
     let mut acc: i64 = src.iter().take(r + 1).sum();
     for (i, d) in dst.iter_mut().enumerate() {
@@ -492,6 +497,11 @@ fn box_line(src: &[i64], dst: &mut [i64], r: usize) {
 /// `src` (`w × h`, row-major) transposed to `h × w`.
 fn transpose(src: &[i64], w: usize, h: usize) -> Vec<i64> {
     let mut out = vec![0i64; src.len()];
+    transpose_into(src, w, h, &mut out);
+    out
+}
+
+fn transpose_into(src: &[i64], w: usize, h: usize, out: &mut [i64]) {
     if h > 0 {
         out.par_chunks_mut(h).with_min_len(lines_per_task(h)).enumerate().for_each(|(x, col)| {
             for (y, d) in col.iter_mut().enumerate() {
@@ -499,7 +509,6 @@ fn transpose(src: &[i64], w: usize, h: usize) -> Vec<i64> {
             }
         });
     }
-    out
 }
 
 /// Covered texels of tile (tx, ty): (x, y, offset inside the tile).
@@ -619,9 +628,12 @@ fn filter_region(
     (rx0, ry0, w, h): (u32, u32, u32, u32),
     start: Option<(usize, &Field)>,
 ) -> Option<Field> {
+    // Tiny coverage sums make normalization unstable
+    const MIN_FILTER_WEIGHT: f32 = 1e-6;
+
     let opacity = effects.iter().filter(|effect| effect.visible).nth(index).map(|effect| effect.opacity.clamp(0.0, 1.0)).unwrap_or(1.0);
     let (radius_texels, _) = filter_extent(radius, op, inp.gbuf.width.max(inp.gbuf.height));
-    let comps = match job {
+    let component_count = match job {
         Job::Mask(_) => 1,
         Job::Content(_) => 4,
     };
@@ -632,7 +644,7 @@ fn filter_region(
     let parts: Vec<Vec<(u32, u32, [f32; 4])>> = region_tiles
         .par_iter()
         .map(|&(tx, ty)| {
-            let full = anchor_plan(inp, id, channels, tx, ty, Some(below));
+            let anchor_nodes = anchor_plan(inp, id, channels, tx, ty, Some(below));
             let preview_tile = inp.preview.and_then(|preview| preview.alpha.tile(tx, ty));
             let mut mask = None;
             let mut nodes = Vec::new();
@@ -646,22 +658,23 @@ fn filter_region(
                 }
                 Job::Content(channel) => {
                     nodes = plan(inp, &[id], &[channel], tx, ty, 0, Some(below));
-                    if let Some(chan) = nodes.first_mut().and_then(|node| node.chans.first_mut()) {
-                        chan.effects.truncate(index);
-                        chan.start = start;
+                    if let Some(channel_plan) = nodes.first_mut().and_then(|node| node.chans.first_mut()) {
+                        channel_plan.effects.truncate(index);
+                        channel_plan.start = start;
                     }
                 }
             }
             tile_texels(inp.gbuf, tx, ty)
                 .map(|(x, y, offset)| {
                     let mut texel = Texel::new(inp, x, y, offset, stroke_at(preview_tile, offset));
-                    if !full.is_empty() {
-                        texel.anchors_below(&full, id);
+                    if !anchor_nodes.is_empty() {
+                        texel.anchors_below(&anchor_nodes, id);
                     }
+
                     let value = match (&mask, nodes.first()) {
                         (Some(mask_stack), _) => [texel.mask(mask_stack), 0.0, 0.0, 0.0],
-                        (None, Some(node)) => match node.chans.first().and_then(|chan| texel.content(&node.content, chan)) {
-                            Some((color, cov)) => [color[0] * cov, color[1] * cov, color[2] * cov, cov],
+                        (None, Some(node)) => match node.chans.first().and_then(|channel_plan| texel.content(&node.content, channel_plan)) {
+                            Some((color, alpha)) => [color[0] * alpha, color[1] * alpha, color[2] * alpha, alpha],
                             None => [0.0; 4],
                         },
                         (None, None) => [0.0; 4],
@@ -674,65 +687,77 @@ fn filter_region(
 
     // Scatter into the region, a row of tiles at a time (the region is tile aligned)
     let texel_count = (w * h) as usize;
-    let mut orig = vec![0.0f32; texel_count * comps];
-    let mut cover = vec![0.0f32; texel_count];
+    let mut original_values = vec![0.0f32; texel_count * component_count];
+    let mut coverage = vec![0.0f32; texel_count];
     let row_tiles = (rx1.div_ceil(TILE) - rx0 / TILE).max(1) as usize;
     let band = (TILE * w) as usize;
-    orig.par_chunks_mut(band * comps).zip(cover.par_chunks_mut(band)).zip(parts.par_chunks(row_tiles)).for_each(|((orig, cover), row)| {
-        for &(x, y, value) in row.iter().flatten() {
-            let texel = (((y - ry0) % TILE) * w + (x - rx0)) as usize;
-            if let (Some(covered), Some(pixel)) = (cover.get_mut(texel), orig.get_mut(texel * comps..(texel + 1) * comps)) {
-                *covered = 1.0;
-                pixel.copy_from_slice(&value[..comps]);
+    original_values.par_chunks_mut(band * component_count).zip(coverage.par_chunks_mut(band)).zip(parts.par_chunks(row_tiles)).for_each(
+        |((original_values, coverage), row)| {
+            for &(x, y, value) in row.iter().flatten() {
+                let texel = (((y - ry0) % TILE) * w + (x - rx0)) as usize;
+                if let (Some(covered), Some(pixel)) = (coverage.get_mut(texel), original_values.get_mut(texel * component_count..(texel + 1) * component_count))
+                {
+                    *covered = 1.0;
+                    pixel.copy_from_slice(&value[..component_count]);
+                }
             }
-        }
-    });
+        },
+    );
 
-    // High pass centers on the channel's mid value (0 for signed channels like height)
-    let mid = match job {
+    // Release scattered texels before allocating filter buffers
+    drop(parts);
+
+    // High pass centers on the channel's midpoint value (0 for signed channels like height)
+    let midpoint = match job {
         Job::Content(channel) if channel.kind() == ChannelKind::Signed => 0.0,
         _ => 0.5,
     };
 
     // A smaller UV tile has fewer texels per UV unit, so its filters reach fewer texels
     let filtered = |scale: f32| -> Vec<f32> {
-        let res = ((inp.tile_res() as f32 * scale).round() as u32).max(1);
-        let scaled_radius = neighbourhood_filters(effects, res)
+        let sampling_resolution = ((inp.tile_res() as f32 * scale).round() as u32).max(1);
+        let scaled_radius = neighbourhood_filters(effects, sampling_resolution)
             .find(|filter| filter.0 == index)
             .map_or(radius_texels, |filter| filter.1.round().clamp(1.0, radius_texels as f32) as u32);
         if !is_box_blur(op) {
-            return gather(op, &orig, &cover, comps, (rx0, ry0, w, h), scaled_radius as f32, res, opacity);
+            return gather(op, &original_values, &coverage, component_count, (rx0, ry0, w, h), scaled_radius as f32, sampling_resolution, opacity);
         }
 
         // Weighted so uncovered texels don't bleed in
         let (width, height, blur_radius) = (w as usize, h as usize, scaled_radius as usize);
-        let mut weights = cover.clone();
+        let mut weights = coverage.clone();
         blur(&mut weights, width, height, blur_radius);
-        let mut data = orig.clone();
-        for component in 0..comps {
-            let mut sums: Vec<f32> =
-                orig.par_chunks(comps).with_min_len(MIN_PARALLEL_TEXELS).map(|pixel| pixel.get(component).copied().unwrap_or(0.0)).collect();
+        let mut data = original_values.clone();
+        for component in 0..component_count {
+            let mut sums: Vec<f32> = original_values
+                .par_chunks(component_count)
+                .with_min_len(MIN_PARALLEL_TEXELS)
+                .map(|pixel| pixel.get(component).copied().unwrap_or(0.0))
+                .collect();
             blur(&mut sums, width, height, blur_radius);
-            data.par_chunks_mut(comps).with_min_len(MIN_PARALLEL_TEXELS).zip(sums.par_iter()).zip(weights.par_iter()).for_each(|((pixel, sum), weight)| {
-                // Content is premultiplied, so the mid value is too (coverage itself is kept)
-                let cov = if comps == 4 { pixel.get(3).copied().unwrap_or(0.0) } else { 1.0 };
-                if *weight > 1e-6
-                    && let Some(slot) = pixel.get_mut(component)
-                {
-                    let (original, blurred) = (*slot, sum / weight);
-                    let result = match op {
-                        Op::Blur(Some(amount)) => original + amount * (original - blurred),
-                        Op::HighPass if component < 3 => original - blurred + mid * cov,
-                        // Away from 0 by at most the value itself: 0 at the edge, full inside
-                        Op::Bevel if component < 3 => original.signum() * original.abs().min((2.0 * blurred * original.signum() - original.abs()).max(0.0)),
-                        Op::Glow(amount) if component < 3 => original + amount * blurred,
-                        Op::HighPass | Op::Bevel | Op::Glow(_) => original,
-                        _ => blurred,
-                    };
-                    *slot = original + (result - original) * opacity;
-                }
-            });
+            data.par_chunks_mut(component_count).with_min_len(MIN_PARALLEL_TEXELS).zip(sums.par_iter()).zip(weights.par_iter()).for_each(
+                |((pixel, sum), weight)| {
+                    // Content is premultiplied, so the midpoint value is too (coverage itself is kept)
+                    let alpha = if component_count == 4 { pixel.get(3).copied().unwrap_or(0.0) } else { 1.0 };
+                    if *weight > MIN_FILTER_WEIGHT
+                        && let Some(slot) = pixel.get_mut(component)
+                    {
+                        let (original, blurred) = (*slot, sum / weight);
+                        let result = match op {
+                            Op::Blur(Some(amount)) => original + amount * (original - blurred),
+                            Op::HighPass if component < 3 => original - blurred + midpoint * alpha,
+                            // Away from 0 by at most the value itself: 0 at the edge, full inside
+                            Op::Bevel if component < 3 => original.signum() * original.abs().min((2.0 * blurred * original.signum() - original.abs()).max(0.0)),
+                            Op::Glow(amount) if component < 3 => original + amount * blurred,
+                            Op::HighPass | Op::Bevel | Op::Glow(_) => original,
+                            _ => blurred,
+                        };
+                        *slot = original + (result - original) * opacity;
+                    }
+                },
+            );
         }
+
         data
     };
 
@@ -746,9 +771,9 @@ fn filter_region(
     let mut data = filtered(first);
     for &scale in rest {
         let other = filtered(scale);
-        let row = w as usize * comps;
+        let row = w as usize * component_count;
         data.par_chunks_mut(row).zip(other.par_chunks(row)).enumerate().for_each(|(y, (dst, src))| {
-            for (x, (target, source)) in dst.chunks_mut(comps).zip(src.chunks(comps)).enumerate() {
+            for (x, (target, source)) in dst.chunks_mut(component_count).zip(src.chunks(component_count)).enumerate() {
                 if scales.at(rx0 + x as u32, ry0 + y as u32) == scale {
                     target.copy_from_slice(source);
                 }
@@ -756,17 +781,20 @@ fn filter_region(
         });
     }
 
-    unpremultiply(&mut data, comps);
-    Some(Field { x0: rx0, y0: ry0, w, h, comps, data })
+    unpremultiply(&mut data, component_count);
+    Some(Field { x0: rx0, y0: ry0, w, h, comps: component_count, data })
 }
 
 /// Clamp filtered masks to 0..1, and turn filtered content back into straight values.
 fn unpremultiply(data: &mut [f32], comps: usize) {
+    // Avoid amplifying rounding error near transparent texels
+    const MIN_COVERAGE: f32 = 1e-5;
+
     data.par_chunks_mut(comps).with_min_len(MIN_PARALLEL_TEXELS).for_each(|px| match px {
         [v] => *v = v.clamp(0.0, 1.0),
         [r, g, b, cov] => {
             *cov = cov.clamp(0.0, 1.0);
-            let inv = if *cov > 1e-5 { 1.0 / *cov } else { 0.0 };
+            let inv = if *cov > MIN_COVERAGE { 1.0 / *cov } else { 0.0 };
             *r *= inv;
             *g *= inv;
             *b *= inv;
@@ -807,12 +835,14 @@ fn fields_of(inp: &Inputs, channels: &[Channel], list: &[LayerId], tiles: &[(u32
         if layer.is_group() || neighbourhood(&layer.content_effects, working_width).is_none() {
             continue;
         }
+
         for channel in channels.iter().filter(|channel| layer.channels.contains_key(channel)) {
             if let Some(filtered) = field(inp, channels, &out, id, Job::Content(*channel), tiles) {
                 out.insert(FieldKey::Content(id, *channel), filtered);
             }
         }
     }
+
     out
 }
 
@@ -1683,9 +1713,10 @@ pub fn composite_tiles_cached(inp: &Inputs, out: &mut Composite, tiles: &[(u32, 
     if (inp.gbuf.width, inp.gbuf.height) != (out.resolution, out.height) {
         return;
     }
+
     let split = below.as_deref_mut().and_then(|b| b.prepare(inp));
-    // A pass over more tiles than the cache holds records only what fits: recording the rest
-    // would just evict it again. Tiles hold the stack per level plus a tape of varying size.
+
+    // Avoid caching tiles that would immediately evict each other
     let levels = split.as_ref().map_or(1, Vec::len);
     let estimate = TILE_AREA * levels * set.channel_list().iter().map(|c| c.components()).sum::<usize>() * std::mem::size_of::<f32>();
     let tile_bytes = below.as_deref().and_then(BelowCache::tile_bytes).unwrap_or(estimate).max(1);
@@ -1694,21 +1725,25 @@ pub fn composite_tiles_cached(inp: &Inputs, out: &mut Composite, tiles: &[(u32, 
     for t in tiles {
         blocks.entry((t.1 / BLOCK, t.0 / BLOCK)).or_default().push(*t);
     }
+
     let channels = set.channel_list();
     let hot = split.as_deref().and_then(<[Level]>::last);
-    // Fields are only kept without a live stroke (its preview is not part of what a stack key compares)
-    let holds = below.is_some() && inp.preview.is_none() && has_neighbourhood(inp, &set.stack);
-    let key = if holds { StackKey::new(inp.project, inp.pixels, inp.baked, inp.images, inp.ts, &set.stack).map(Arc::new) } else { None };
+
+    // A stroke preview is absent from StackKey, so it disables field retention
+    let retain_fields = below.is_some() && inp.preview.is_none() && has_neighbourhood(inp, &set.stack);
+    let key = if retain_fields { StackKey::new(inp.project, inp.pixels, inp.baked, inp.images, inp.ts, &set.stack).map(Arc::new) } else { None };
     let size = (inp.gbuf.width, inp.gbuf.height);
-    // Fields kept before a stroke began are not used under it, nor held while it lasts
+
+    // Release fields when a stroke or stack change disables retention
     if key.is_none()
         && let Some(cache) = below.as_deref_mut()
     {
         cache.held = None;
     }
-    for (at, block) in &blocks {
-        let lacks = |tile: &(u32, u32)| below.as_deref().zip(split.as_deref()).is_none_or(|(cache, _)| cache.tile(*tile).is_none());
-        let fresh: Vec<(u32, u32)> = block.iter().copied().filter(lacks).collect();
+
+    for (block_index, block) in &blocks {
+        let uncached = |tile: &(u32, u32)| below.as_deref().zip(split.as_deref()).is_none_or(|(cache, _)| cache.tile(*tile).is_none());
+        let fresh: Vec<(u32, u32)> = block.iter().copied().filter(uncached).collect();
         let held = below.as_deref().and_then(|cache| cache.held.as_ref()).filter(|held| {
             key.as_ref().is_some_and(|key| **key == *held.key)
                 && held.size == size
@@ -1717,19 +1752,23 @@ pub fn composite_tiles_cached(inp: &Inputs, out: &mut Composite, tiles: &[(u32, 
         });
         let ahead: Vec<(u32, u32)> = match (&key, below.as_deref()) {
             (Some(_), Some(cache)) if held.is_none() => {
-                cache.ahead.iter().copied().filter(|tile| (tile.1 / BLOCK, tile.0 / BLOCK) == *at && !block.contains(tile)).collect()
+                cache.ahead.iter().copied().filter(|tile| (tile.1 / BLOCK, tile.0 / BLOCK) == *block_index && !block.contains(tile)).collect()
             }
             _ => Vec::new(),
         };
         let fields: Arc<Fields> = match (held, &key) {
             (Some(held), _) => held.fields.clone(),
             (None, Some(key)) if !ahead.is_empty() => {
-                // These tiles and the ones that follow them, filtered at once and kept
-                let wide: Vec<(u32, u32)> = block.iter().chain(&ahead).copied().collect();
-                let wide_fresh: Vec<(u32, u32)> = wide.iter().copied().filter(lacks).collect();
-                let fields = Arc::new(block_fields(inp, &channels, &set.stack, hot, &wide_fresh, &wide));
-                let hot_tiles: std::collections::BTreeSet<(u32, u32)> = wide.iter().copied().collect();
-                let stack_tiles = if hot.is_some() && wide_fresh.len() < wide.len() { wide_fresh.into_iter().collect() } else { hot_tiles.clone() };
+                // Filter the current and following tiles as one run
+                let planned_tiles: Vec<(u32, u32)> = block.iter().chain(&ahead).copied().collect();
+                let uncached_planned_tiles: Vec<(u32, u32)> = planned_tiles.iter().copied().filter(uncached).collect();
+                let fields = Arc::new(block_fields(inp, &channels, &set.stack, hot, &uncached_planned_tiles, &planned_tiles));
+                let hot_tiles: std::collections::BTreeSet<(u32, u32)> = planned_tiles.iter().copied().collect();
+                let stack_tiles = if hot.is_some() && uncached_planned_tiles.len() < planned_tiles.len() {
+                    uncached_planned_tiles.into_iter().collect()
+                } else {
+                    hot_tiles.clone()
+                };
                 if let Some(cache) = below.as_deref_mut() {
                     cache.held = Some(HeldFields { key: key.clone(), size, stack_tiles, hot_tiles, fields: fields.clone() });
                 }
@@ -1737,11 +1776,13 @@ pub fn composite_tiles_cached(inp: &Inputs, out: &mut Composite, tiles: &[(u32, 
             }
             _ => Arc::new(block_fields(inp, &channels, &set.stack, hot, &fresh, block)),
         };
+
         let quota = match below.as_deref() {
             Some(_) if fits => usize::MAX,
             Some(b) => b.limit().saturating_sub(b.bytes()) / tile_bytes,
             None => 0,
         };
+
         let cached = below.as_deref().zip(split.as_deref());
         let records = composite_block(inp, &set.stack, out, block, cached, quota, &fields);
         if let Some(b) = below.as_deref_mut() {
@@ -1753,7 +1794,8 @@ pub fn composite_tiles_cached(inp: &Inputs, out: &mut Composite, tiles: &[(u32, 
             }
         }
     }
-    // Nothing follows in this pass: its fields are not kept past it
+
+    // Release fields at the end of the pass
     if let Some(cache) = below.filter(|cache| cache.ahead.is_empty()) {
         cache.held = None;
     }
@@ -1812,9 +1854,10 @@ fn composite_block(
     let recorded: std::collections::BTreeSet<(u32, u32)> = if split.is_some() { fresh.iter().copied().take(quota).collect() } else { Default::default() };
     let lanes: Vec<Lane> = channels.iter().map(|c| Lane { ch: c.index(), n: c.components(), signed: c.kind() == ChannelKind::Signed }).collect();
     let stride: usize = lanes.iter().map(|l| l.n).sum();
-    let nlev = split.map_or(0, <[Level]>::len);
+    let level_count = split.map_or(0, <[Level]>::len);
     let defaults: Acc = Channel::ALL.map(Channel::default_value);
-    // Tiles split into bands of rows, so a handful of tiles still keeps every thread busy.
+
+    // Tiles split into bands of rows, so a handful of tiles still keeps every thread busy
     let bands = TILE / BAND;
     let tasks: Vec<((u32, u32), u32)> = tiles.iter().flat_map(|t| (0..bands).map(move |b| (*t, b))).collect();
     let mut results: Vec<BandResult> = tasks
@@ -1825,17 +1868,17 @@ fn composite_block(
             let levels = split.map(|l| plan_levels(inp, l, &channels, tx, ty, fields, warm.is_some()));
             let nodes = if levels.is_none() { plan(inp, stack, &channels, tx, ty, 0, Some(fields)) } else { Vec::new() };
             let rows = (BAND * TILE) as usize;
-            let mut accs = vec![defaults; nlev];
-            let mut masks = vec![0.0f32; nlev];
+            let mut level_values = vec![defaults; level_count];
+            let mut masks = vec![0.0f32; level_count];
             let mut tape = match warm {
                 Some(b) => Tape::Replay(b, 0),
                 None if record => Tape::Record(Vec::new()),
                 None => Tape::Off,
             };
-            // The levels whose stack the band stores (its header): a level with nothing drawn
-            // before the path layer repeats the level above it.
+
+            // Empty lower stacks reuse the enclosing level instead of storing a duplicate
             let stored: Vec<bool> = match (&levels, warm) {
-                (Some(_), Some(_)) => tape.take(nlev).iter().map(|v| *v > 0.0).collect(),
+                (Some(_), Some(_)) => tape.take(level_count).iter().map(|v| *v > 0.0).collect(),
                 (Some(levels), None) => levels.iter().map(|l| !l.below.is_empty()).collect(),
                 (None, _) => Vec::new(),
             };
@@ -1844,7 +1887,7 @@ fn composite_block(
             }
             let slots = stored.iter().filter(|s| **s).count() * stride;
             let preview_tile = inp.preview.and_then(|p| p.alpha.tile(tx, ty));
-            let mut bufs: Vec<Vec<u16>> = channels.iter().map(|c| vec![0u16; rows * c.components()]).collect();
+            let mut channel_buffers: Vec<Vec<u16>> = channels.iter().map(|c| vec![0u16; rows * c.components()]).collect();
             let mut anchors = Vec::new();
             let mut any = false;
             for ly in band * BAND..(band + 1) * BAND {
@@ -1857,20 +1900,20 @@ fn composite_block(
                     if x >= w {
                         break;
                     }
-                    let gi = (y * w + x) as usize;
-                    // Offset in the tile, and in this band.
-                    let o = (ly * TILE + lx) as usize;
-                    let ob = ((ly - band * BAND) * TILE + lx) as usize;
-                    let covered = inp.gbuf.tri.get(gi).is_some_and(|t| *t != NO_TRI);
+                    let gbuffer_index = (y * w + x) as usize;
+                    let tile_offset = (ly * TILE + lx) as usize;
+                    let band_offset = ((ly - band * BAND) * TILE + lx) as usize;
+                    let covered = inp.gbuf.tri.get(gbuffer_index).is_some_and(|t| *t != NO_TRI);
                     let mut acc = defaults;
                     if covered {
                         any = true;
-                        let mut tex = Texel::new(inp, x, y, o, stroke_at(preview_tile, o));
-                        // Reuse one anchor buffer per band.
-                        tex.anchors = std::mem::take(&mut anchors);
+                        let mut texel = Texel::new(inp, x, y, tile_offset, stroke_at(preview_tile, tile_offset));
+
+                        // Reuse one anchor buffer per band
+                        texel.anchors = std::mem::take(&mut anchors);
                         match &levels {
                             Some(levels) => {
-                                // The texel's stream starts with the stack at each level.
+                                // The texel's stream starts with the stack at each level
                                 let start = match &mut tape {
                                     Tape::Record(t) => {
                                         t.resize(t.len() + slots, 0.0);
@@ -1879,38 +1922,39 @@ fn composite_block(
                                     _ => 0,
                                 };
                                 if warm.is_some() {
-                                    load_levels(tape.take(slots), &lanes, stride, &stored, &defaults, &mut accs);
+                                    load_levels(tape.take(slots), &lanes, stride, &stored, &defaults, &mut level_values);
                                 }
-                                acc = tex.eval_split(defaults, levels, &mut accs, &mut masks, warm.is_some(), &mut tape);
+                                acc = texel.eval_split(defaults, levels, &mut level_values, &mut masks, warm.is_some(), &mut tape);
                                 if let Tape::Record(t) = &mut tape
                                     && let Some(below) = t.get_mut(start..start + slots)
                                 {
-                                    store_levels(below, &lanes, stride, &stored, &accs);
+                                    store_levels(below, &lanes, stride, &stored, &level_values);
                                 }
                             }
                             None => {
-                                tex.eval(&nodes, &mut acc);
+                                texel.eval(&nodes, &mut acc);
                             }
                         }
-                        anchors = tex.anchors;
+                        anchors = texel.anchors;
                         anchors.clear();
                     }
-                    for (l, buf) in lanes.iter().zip(&mut bufs) {
+                    for (l, buf) in lanes.iter().zip(&mut channel_buffers) {
                         let v = acc.get(l.ch).copied().unwrap_or([0.0; 3]);
                         for (k, x) in v.iter().take(l.n).enumerate() {
-                            let enc = if l.signed { to_u16_signed(*x) } else { to_u16(*x) };
-                            if let Some(slot) = buf.get_mut(ob * l.n + k) {
-                                *slot = enc;
+                            let encoded = if l.signed { to_u16_signed(*x) } else { to_u16(*x) };
+                            if let Some(slot) = buf.get_mut(band_offset * l.n + k) {
+                                *slot = encoded;
                             }
                         }
                     }
                 }
             }
             let cache = if let Tape::Record(t) = tape { Some(t) } else { None };
-            (bufs, cache, any)
+            (channel_buffers, cache, any)
         })
         .collect();
-    // Join the bands of each tile (in parallel; uncovered tiles are freed).
+
+    // Join the bands of each tile (in parallel; uncovered tiles are freed)
     let joined: Vec<Joined> = results
         .par_chunks(bands as usize)
         .map(|parts| {
@@ -1936,7 +1980,8 @@ fn composite_block(
                 img.set_tile(tx, ty, d);
             }
         }
-        // Tiles without covered texels cost nothing to composite: not worth caching.
+
+        // Tiles without covered texels cost nothing to composite: not worth caching
         if any && let Some(bands) = parts.iter_mut().map(|p| p.1.take()).collect::<Option<Vec<Band>>>() {
             records.push(((tx, ty), bands));
         }
@@ -2396,6 +2441,53 @@ mod tests {
 
     fn close(a: [f32; 3], b: [f32; 3]) -> bool {
         (0..3).all(|i| (a[i] - b[i]).abs() < 2e-4)
+    }
+
+    #[test]
+    fn retained_filter_buffers_release_after_the_last_tile() {
+        let mut fixture = fixture();
+        const RESOLUTION: u32 = 128;
+        fixture.gbuf = UvGBuffer::new(&fixture.mesh, 0, RESOLUTION, RESOLUTION);
+        fixture.project.texture_sets[0] = TextureSet::new("Plane", 0, RESOLUTION);
+        let layer = fill_layer(&mut fixture.project, [0.4; 3], 0.5);
+        let mut mask = Mask::new(MaskBackground::White);
+        mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 8.0 })));
+        fixture.project.layer_mut(layer).unwrap().mask = Some(mask);
+
+        let second_layer = fill_layer(&mut fixture.project, [0.2; 3], 0.7);
+        let mut second_mask = Mask::new(MaskBackground::White);
+        second_mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 4.0 })));
+        fixture.project.layer_mut(second_layer).unwrap().mask = Some(second_mask);
+
+        let images = ImageStore::default();
+        let input = Inputs {
+            project: &fixture.project,
+            ts: 0,
+            mesh: &fixture.mesh,
+            gbuf: &fixture.gbuf,
+            pixels: &fixture.pixels,
+            baked: &fixture.baked,
+            block_scales: fixture.project.texture_sets[0].block_scales(),
+            preview: None,
+            images: &images,
+            bounds: fixture.mesh.bounds(),
+        };
+        let mut output = Composite::new(&fixture.project.texture_sets[0].channel_list(), RESOLUTION);
+        let mut cache = BelowCache::default();
+        cache.ahead = vec![(1, 0), (0, 1), (1, 1)];
+
+        composite_tiles_cached(&input, &mut output, &[(0, 0)], Some(&mut cache));
+        let retained = cache.held.as_ref().expect("filter fields should be retained while tiles follow");
+        let field_bytes: usize = retained.fields.values().map(|field| field.data.capacity() * std::mem::size_of::<f32>()).sum();
+        let field_count = retained.fields.len();
+        let weak_fields = Arc::downgrade(&retained.fields);
+        assert_eq!(field_count, 2);
+        assert!(field_bytes > 0);
+        println!("retained fields: {field_count}, buffer capacity: {field_bytes} bytes");
+
+        cache.ahead.clear();
+        composite_tiles_cached(&input, &mut output, &[(1, 0)], Some(&mut cache));
+        assert!(weak_fields.upgrade().is_none(), "the last tile must release retained field buffers");
     }
 
     #[test]
