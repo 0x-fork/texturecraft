@@ -44,8 +44,12 @@ fn elide_start(text: &str, fits: impl Fn(&str) -> bool) -> String {
 
 /// The keys of the open window, read in `menus::shortcuts` before any panel draws: Escape closes
 /// it (and goes no further, so it doesn't cancel a stroke), Enter confirms it unless a text field
-/// or button had the keyboard (`nothing_focused`), whose Enter belongs to it.
-pub(crate) fn keys_in(app: &mut TextureCraftApp, input: &mut egui::InputState, nothing_focused: bool) {
+/// or button had the keyboard (`nothing_focused`), whose Enter belongs to it. An open dropdown
+/// (`popup_open`) takes both keys first: Escape closes only it, Enter doesn't press OK behind it.
+pub(crate) fn keys_in(app: &mut TextureCraftApp, input: &mut egui::InputState, nothing_focused: bool, popup_open: bool) {
+    if popup_open {
+        return;
+    }
     let escape = input.consume_key(Modifiers::NONE, Key::Escape);
     let enter = input.consume_key(Modifiers::NONE, Key::Enter);
     if escape {
@@ -191,9 +195,16 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let mut mesh_applied = false;
     let done = ok && {
         let reimport = config.reimport.then(|| app.session.remembered_mesh_path().map(str::to_string)).flatten();
-        mesh_applied = match mesh_command(changed.as_deref(), reimport.as_deref(), config.preserve) {
-            Some((command, params)) => app.run(command, params).is_some(),
-            None => true,
+        mesh_applied = if config.reimport && changed.is_none() && reimport.is_none() {
+            // The file went away after the box was ticked: say so and stay open (the tick is dropped, so a second OK applies the rest).
+            app.toast(tr("File not found"), true);
+            config.reimport = false;
+            false
+        } else {
+            match mesh_command(changed.as_deref(), reimport.as_deref(), config.preserve) {
+                Some((command, params)) => app.run(command, params).is_some(),
+                None => true,
+            }
         };
         // The format is compared with what the project has now: the Texture Set Settings panel may have set it too.
         let format = config.normal_format.filter(|format| *format != app.session.doc.project.normal_format);

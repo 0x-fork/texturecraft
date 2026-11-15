@@ -209,6 +209,61 @@ fn escape_closes_the_window_and_leaves_a_stroke_alone() {
 }
 
 #[test]
+fn escape_with_the_dropdown_open_closes_only_the_dropdown() {
+    let dir = temp_dir("escape-dropdown");
+    let mut h = app_on_a_quad(&dir);
+    open_window(&mut h);
+    click_in_window(&mut h, Role::ComboBox, FORMAT_HINT);
+    assert!(egui::Popup::is_any_open(&h.ctx), "the dropdown is open");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(!egui::Popup::is_any_open(&h.ctx), "Escape closed the dropdown");
+    assert!(window_is_open(&h), "and left the window");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(3);
+    assert!(!window_is_open(&h), "the next Escape closes the window");
+}
+
+#[test]
+fn enter_with_the_dropdown_open_does_not_press_ok() {
+    let dir = temp_dir("enter-dropdown");
+    let mut h = app_on_a_quad(&dir);
+    std::fs::write(dir.join("quad.obj"), TRIANGLE).unwrap();
+    open_window(&mut h);
+    h.state_mut().ui.windows.project_config.as_mut().unwrap().reimport = true;
+    click_in_window(&mut h, Role::ComboBox, FORMAT_HINT);
+    // Nothing focused, as the shortcut handler needs for Enter to mean OK
+    h.ctx.memory_mut(|m| {
+        if let Some(id) = m.focused() {
+            m.surrender_focus(id);
+        }
+    });
+    h.run_steps(1);
+    assert!(egui::Popup::is_any_open(&h.ctx), "the dropdown is still open");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(window_is_open(&h), "Enter did not press OK behind the dropdown");
+    assert_eq!(h.state().session.mesh.triangle_count(), 2, "nothing was applied");
+}
+
+#[test]
+fn ok_after_the_ticked_file_went_missing_reports_it_and_stays_open() {
+    let dir = temp_dir("ticked-then-missing");
+    let mut h = app_on_a_quad(&dir);
+    open_window(&mut h);
+    click_in_window(&mut h, Role::CheckBox, "Reimport mesh");
+    assert!(own_tick(&h));
+    std::fs::remove_file(dir.join("quad.obj")).unwrap();
+    click(&mut h, Role::Button, "OK");
+    assert!(window_is_open(&h), "the window stays open");
+    assert!(h.state().toasts.iter().any(|t| t.error && t.text == "File not found"), "the error shows as a toast");
+    assert!(!own_tick(&h), "the tick that can't be applied is dropped");
+    assert_eq!(h.state().session.mesh.triangle_count(), 2);
+    click(&mut h, Role::Button, "OK");
+    assert!(!window_is_open(&h), "a second OK has nothing left to read");
+}
+
+#[test]
 fn enter_confirms_but_not_a_text_fields_enter() {
     let dir = temp_dir("enter");
     let mut h = app_on_a_quad(&dir);
