@@ -86,7 +86,9 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     let mut sink = PolygonSink::default();
     let mut cameras = Vec::new();
     cameras.resize_with(scene.cameras.len().min(super::MAX_CAMERAS), || None);
-    let mut stack: Vec<_> = scene.roots.iter().rev().map(|i| (*i, global, String::new(), 0usize)).collect();
+    // Keep parent indices rather than copying names into every pending child: a hostile
+    // hierarchy may fan one very long model name out to many children.
+    let mut stack: Vec<_> = scene.roots.iter().rev().map(|i| (*i, global, None::<usize>, 0usize)).collect();
     let mut reached = vec![false; scene.nodes.len()];
     let mut visited = 0usize;
     let mut points = 0usize;
@@ -100,9 +102,14 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
             *seen = true;
         }
         let world = parent * to_mat(node.transform);
-        let part = if node.name == format!("{inherited} geometry") { inherited } else { node.name.clone() };
+        let parent_name = inherited.and_then(|i| scene.nodes.get(i)).map_or("", |n| n.name.as_str());
+        let synthetic = node.mesh.is_some() && node.name.strip_suffix(" geometry") == Some(parent_name);
+        let next_parent = if synthetic { inherited } else { Some(id) };
         for child in node.children.iter().rev() {
-            stack.push((*child, world, part.clone(), depth + 1));
+            if stack.len() >= limits.max_data_bytes / std::mem::size_of::<(usize, Mat4, Option<usize>, usize)>() {
+                return Err(FormatError::TooLarge("FBX hierarchy exceeds its memory limit".into()));
+            }
+            stack.push((*child, world, next_parent, depth + 1));
         }
         if let Some(index) = node.camera
             && let (Some(camera), Some(slot)) = (scene.cameras.get(index), cameras.get_mut(index))
@@ -121,7 +128,7 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
         }
         let normal_transform = Mat3::from_mat4(world).inverse().transpose();
         let flip = world.determinant() < 0.0;
-        sink.part = part;
+        sink.part = if synthetic { parent_name.to_string() } else { node.name.clone() };
         let (mut bad_normals, mut bad_uvs) = (0usize, 0usize);
         for group in &mesh.parts {
             let material = group.material.and_then(|m| scene.materials.get(m)).map_or("Default", |m| m.name.as_str());
