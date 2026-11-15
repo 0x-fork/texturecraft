@@ -149,6 +149,19 @@ mod tests {
     }
 
     #[test]
+    fn displacement_only_image_supplies_uv_tiling() {
+        let xml = br#"<materialx>
+          <open_pbr_surface name="S"><input name="base_color" value="0.3,0.4,0.5"/></open_pbr_surface>
+          <tiledimage name="H"><input name="file" value="height.png"/><input name="uvtiling" value="4,2"/></tiledimage>
+          <displacement name="D"><input name="displacement" nodename="H"/></displacement>
+          <surfacematerial name="M"><input name="surfaceshader" nodename="S"/><input name="displacementshader" nodename="D"/></surfacematerial>
+        </materialx>"#;
+        let material = read_materialx(xml, None).unwrap();
+        assert_eq!(get(&material, Channel::Height), Some(&Value::Image("height.png".into())));
+        assert_eq!(material.uv_tiling, [4.0, 2.0]);
+    }
+
+    #[test]
     fn open_pbr_inputs_become_channels() {
         let m = read_materialx(OPENPBR.as_bytes(), None).unwrap();
         assert_eq!(m.name, "Stone");
