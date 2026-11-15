@@ -97,6 +97,7 @@ fn paste(session: &mut Session, params: &Value) -> Result<Value> {
     for (anchor, channel) in effect.kind.anchors_read() {
         anchor_source(session, CMD, owner, anchor, channel)?;
     }
+
     let (set, _, _) = session.doc.project.locate(owner).ok_or_else(|| bad(CMD, "the layer is not in a stack"))?;
     let (size, channels) = session.doc.project.texture_set(set).map(|texture_set| (texture_set.size(), texture_set.channel_list()))?;
 
@@ -132,5 +133,6 @@ fn paste(session: &mut Session, params: &Value) -> Result<Value> {
         }
         Ok(pasted)
     })?;
+
     Ok(json!({ "effect": pasted.0 }))
 }

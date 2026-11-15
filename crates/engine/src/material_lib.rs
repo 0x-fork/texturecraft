@@ -36,7 +36,7 @@ fn fe(e: texturecraft_formats::FormatError) -> EngineError {
     EngineError::Other(e.to_string())
 }
 
-/// Image resources a layer subtree uses (fill sources, mask fills and generator inputs).
+/// Image resources a layer subtree uses (fill sources and mask or content effects).
 pub(crate) fn images_used(project: &Project, id: LayerId, out: &mut Vec<String>, depth: usize) {
     if depth > texturecraft_core::project::MAX_DEPTH {
         return;
@@ -51,7 +51,7 @@ pub(crate) fn images_used(project: &Project, id: LayerId, out: &mut Vec<String>,
         }
         out.extend(fill.link.as_ref().map(|link| link.package.clone()));
     }
-    for effect in layer.mask.iter().flat_map(|mask| mask.effects.iter()) {
+    for effect in layer.mask.iter().flat_map(|mask| mask.effects.iter()).chain(&layer.content_effects) {
         out.extend(effect.kind.images_read().map(str::to_string));
     }
     for child in layer.children() {

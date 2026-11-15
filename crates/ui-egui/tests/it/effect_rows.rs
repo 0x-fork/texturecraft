@@ -37,13 +37,16 @@ fn dragging_an_effect_row_reorders_its_stack() {
     let order =
         |harness: &Harness<'_, TextureCraftApp>| harness.state().session.doc.project.layers[&layer].content_effects.iter().map(|e| e.id.0).collect::<Vec<_>>();
     assert_eq!(order(&harness), [a, b, c]);
-    // The rows list the top first: C, B, A. A dropped on C's upper half goes to the top.
+
+    // Rows show C, B, A; dropping A above C moves it to the top
     drag(&mut harness, "Effect A", "Effect C", false);
     assert_eq!(order(&harness), [b, c, a]);
-    // A dropped on B's lower half goes back to the bottom.
+
+    // Dropping A below B returns it to the bottom
     drag(&mut harness, "Effect A", "Effect B", true);
     assert_eq!(order(&harness), [a, b, c]);
-    // C dropped on A's upper half lands between A and B.
+
+    // Dropping C above A places it between A and B
     drag(&mut harness, "Effect C", "Effect A", false);
     assert_eq!(order(&harness), [a, c, b]);
 }

@@ -141,9 +141,10 @@ fn add_mask_menu(app: &mut TextureCraftApp, ui: &mut Ui, row: Option<u64>) {
 
 pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tk = Tokens::get(ui.ctx());
-    // Wraps in a narrow column instead of widening the rows below past the panel.
+
+    // Wrap in a narrow column so rows stay within the panel
     ui.horizontal_wrapped(|ui| {
-        // The menu buttons as compact as the icon buttons beside them.
+        // Keep menu buttons as compact as the adjacent icon buttons
         ui.spacing_mut().button_padding.x = 4.0;
         ui.spacing_mut().item_spacing.x = 4.0;
         let chans = app.session.doc.project.texture_set(app.session.ts()).map(|t| t.channel_list()).unwrap_or_default();
@@ -185,7 +186,8 @@ pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
         for id in stack {
             layer_tree(app, ui, id, 0, &mut count);
         }
-        // Click on empty space deselects nothing; the space below the rows drops at the bottom.
+
+        // Empty space keeps the selection and drops below the rows
         let free = ui.available_height();
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), if free.is_finite() { free.max(24.0) } else { 24.0 }), Sense::hover());
         if let Some(dragged) = dnd_release::<u64>(&resp) {
@@ -262,8 +264,8 @@ fn effect_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
 }
 
 /// Layer rows alternate between two shades so neighbours read as separate items.
-fn row_shade(tk: &Tokens, index: usize) -> Color32 {
-    if index.is_multiple_of(2) { tk.row } else { tk.row.lerp_to_gamma(tk.row_hover, 0.45) }
+fn row_shade(tokens: &Tokens, index: usize) -> Color32 {
+    if index.is_multiple_of(2) { tokens.row } else { tokens.row.lerp_to_gamma(tokens.row_hover, ALTERNATE_LAYER_SHADE) }
 }
 
 /// Width of the blend mode / opacity column at the right of a layer row.
@@ -344,10 +346,25 @@ const EFFECT_OPACITY_WIDTH: f32 = 36.0;
 /// Height of the "Content effects" / "Mask effects" header rows.
 const GROUP_HEADER_H: f32 = 20.0;
 
+// Group header spacing leaves room for the label and effect count
+const GROUP_HEADER_CARET_OFFSET: f32 = 15.0;
+const GROUP_HEADER_LABEL_GAP: f32 = 10.0;
+const GROUP_HEADER_LABEL_RESERVE: f32 = 28.0;
+const GROUP_HEADER_COUNT_PADDING: f32 = 8.0;
+const GROUP_HEADER_LABEL_FONT_SIZE: f32 = 10.5;
+/// Hover tint of alternating layer rows
+const ALTERNATE_LAYER_SHADE: f32 = 0.45;
+/// Maximum layer-tree nesting shown by the dock
+const MAX_LAYER_TREE_DEPTH: usize = 12;
+/// Checkerboard cells along each thumbnail edge
+const THUMB_CHECKER_CELLS: usize = 4;
+/// Keep the group label and count readable when the panel is narrow
+const GROUP_HEADER_MIN_REMAINING_WIDTH: f32 = 90.0;
+
 /// Keep both thumbnail targets inside the row before spending space on indentation
 fn layer_thumbnail_layout(width: f32, depth: usize, folder: bool, preferred_size: f32) -> (f32, f32) {
-    let controls = 7.0 + 20.0 + if folder { 14.0 } else { 0.0 };
-    let thumbnail_space = (width - controls - 4.0 - 4.0).max(0.0);
+    let controls = ROW_LEFT_PADDING + LAYER_EYE_COLUMN_WIDTH + if folder { FOLDER_CARET_SIZE } else { 0.0 };
+    let thumbnail_space = (width - controls - THUMBNAIL_SPACING - ROW_CONTROL_GAP).max(0.0);
     let size = preferred_size.min(thumbnail_space * 0.5);
     let indent = (depth as f32 * INDENT).min((thumbnail_space - size * 2.0).max(0.0));
     (indent, size)
@@ -355,9 +372,9 @@ fn layer_thumbnail_layout(width: f32, depth: usize, folder: bool, preferred_size
 
 /// Drop secondary controls before allowing them to cover thumbnail targets or the name
 fn layer_name_layout(rect: Rect, left: f32) -> (Rect, bool) {
-    let right = rect.right() - 4.0;
-    let show_blend = right - RIGHT_COLUMN - 4.0 - left >= 20.0;
-    let name_right = if show_blend { right - RIGHT_COLUMN - 4.0 } else { right };
+    let right = rect.right() - ROW_CONTROL_GAP;
+    let show_blend = right - RIGHT_COLUMN - ROW_CONTROL_GAP - left >= MIN_NAME_WIDTH;
+    let name_right = if show_blend { right - RIGHT_COLUMN - ROW_CONTROL_GAP } else { right };
     (Rect::from_min_max(pos2(left, rect.top() + 4.0), pos2(name_right.max(left), rect.bottom() - 4.0)), show_blend)
 }
 
@@ -368,57 +385,61 @@ fn effect_row_indent(width: f32, level: usize, preview: f32) -> f32 {
 
 /// X of the centre of the eye column at indent `level` in a row spanning from `left`.
 fn level_x(left: f32, level: usize) -> f32 {
-    left + 7.0 + level as f32 * INDENT + 8.0
+    left + ROW_LEFT_PADDING + level as f32 * INDENT + EYE_SIZE * 0.5
 }
 
 fn layer_tree(app: &mut TextureCraftApp, ui: &mut Ui, id: LayerId, depth: usize, count: &mut usize) {
     let Some(layer) = app.session.doc.project.layers.get(&id).cloned() else { return };
+
     let index = *count;
     *count += 1;
     layer_row(app, ui, &layer, depth, index);
-    let mask_effects = layer.mask.as_ref().map_or(0, |m| m.effects.len());
+    let mask_effects = layer.mask.as_ref().map_or(0, |mask| mask.effects.len());
     if !layer.content_effects.is_empty() {
         effect_group(app, ui, &layer, depth, false, mask_effects > 0);
     }
     if mask_effects > 0 {
         effect_group(app, ui, &layer, depth, true, false);
     }
-    // A line under the layer and its effects separates it from the next layer.
-    let tk = Tokens::get(ui.ctx());
-    let r = ui.available_rect_before_wrap();
-    ui.painter().hline(r.x_range(), r.top() - 0.5, Stroke::new(1.0, tk.separator));
+
+    // A line under the layer and its effects separates it from the next layer
+    let tokens = Tokens::get(ui.ctx());
+    let available = ui.available_rect_before_wrap();
+    ui.painter().hline(available.x_range(), available.top() - 0.5, Stroke::new(1.0, tokens.separator));
     if let LayerKind::Group { children, collapsed } = &layer.kind
         && !collapsed
-        && depth < 12
+        && depth < MAX_LAYER_TREE_DEPTH
     {
-        for c in children.iter().rev() {
-            layer_tree(app, ui, *c, depth + 1, count);
+        for child in children.iter().rev() {
+            layer_tree(app, ui, *child, depth + 1, count);
         }
     }
 }
 
 /// The picture for `target` inside `rect` (drawn over the well), whether there is one yet.
 fn thumb_box(ui: &Ui, app: &mut TextureCraftApp, rect: Rect, target: ThumbTarget, dim: bool) -> bool {
-    let tk = Tokens::get(ui.ctx());
-    let p = ui.painter();
-    p.rect_filled(rect, 2.0, tk.field);
-    // A checkerboard shows through where the layer has nothing (transparent texels).
-    let cells = 4;
-    let cell = rect.width() / cells as f32;
-    let check = tk.field.lerp_to_gamma(tk.row_hover, 0.6);
-    for y in 0..cells {
-        for x in (0..cells).filter(|x| (x + y) % 2 == 0) {
-            p.rect_filled(Rect::from_min_size(rect.min + vec2(x as f32 * cell, y as f32 * cell), vec2(cell, cell)), 0.0, check);
+    let tokens = Tokens::get(ui.ctx());
+    let painter = ui.painter();
+    painter.rect_filled(rect, THUMBNAIL_ROUNDING, tokens.field);
+
+    // A checkerboard shows through where the layer has nothing (transparent texels)
+    let cell_size = rect.width() / THUMB_CHECKER_CELLS as f32;
+    let check = tokens.field.lerp_to_gamma(tokens.row_hover, 0.6);
+    for y in 0..THUMB_CHECKER_CELLS {
+        for x in (0..THUMB_CHECKER_CELLS).filter(|x| (x + y) % 2 == 0) {
+            painter.rect_filled(Rect::from_min_size(rect.min + vec2(x as f32 * cell_size, y as f32 * cell_size), vec2(cell_size, cell_size)), 0.0, check);
         }
     }
-    // Only rows on screen ask for a picture.
+
+    // Only rows on screen ask for a picture
     if ui.is_rect_visible(rect)
-        && let Some(tex) = app.layer_panel.texture(ui.ctx(), &app.session, target)
+        && let Some(texture) = app.layer_panel.texture(ui.ctx(), &app.session, target)
     {
         let tint = if dim { Color32::WHITE.gamma_multiply(0.4) } else { Color32::WHITE };
-        ui.painter().image(tex, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
+        painter.image(texture, rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), tint);
         return true;
     }
+
     false
 }
 
@@ -494,6 +515,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         {
             *collapsed = !*collapsed;
         }
+
         x += FOLDER_CARET_SIZE;
     }
 
@@ -729,37 +751,50 @@ fn content_glyph(p: &egui::Painter, tk: &Tokens, thumb: Rect, layer: &Layer) {
 /// The "Content effects" or "Mask effects" header of `layer` and, unless folded, its effect rows
 /// hung off tree lines. `more_below`: a second group follows, so the tree line goes on.
 fn effect_group(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize, mask: bool, more_below: bool) {
-    let tk = Tokens::get(ui.ctx());
-    let stack: &[Effect] = if mask { layer.mask.as_ref().map_or(&[], |m| &m.effects) } else { &layer.content_effects };
+    let tokens = Tokens::get(ui.ctx());
+    let stack: &[Effect] = if mask { layer.mask.as_ref().map_or(&[], |layer_mask| &layer_mask.effects) } else { &layer.content_effects };
     let key = (layer.id.0, mask);
     let folded = app.layer_panel.folded.contains(&key);
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), GROUP_HEADER_H), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), GROUP_HEADER_H), Sense::click());
     let label = if mask { tr("Mask effects") } else { tr("Content effects") };
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
-    let p = ui.painter().clone();
-    p.rect_filled(rect, 0.0, if resp.hovered() { tk.row_hover } else { tk.panel });
-    let indent = ((depth + 1) as f32 * INDENT).min((rect.width() - 90.0).max(0.0));
-    tree_lines(&p, &tk, rect, indent, &[], more_below);
-    let x = rect.left() + 15.0 + indent;
-    p.text(
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 0.0, if response.hovered() { tokens.row_hover } else { tokens.panel });
+    let indent = ((depth + 1) as f32 * INDENT).min((rect.width() - GROUP_HEADER_MIN_REMAINING_WIDTH).max(0.0));
+    tree_lines(&painter, &tokens, rect, indent, &[], more_below);
+    let x = rect.left() + GROUP_HEADER_CARET_OFFSET + indent;
+    painter.text(
         pos2(x, rect.center().y),
         egui::Align2::CENTER_CENTER,
         if folded { ic::CARET_RIGHT } else { ic::CARET_DOWN },
-        egui::FontId::proportional(10.0),
-        tk.text_dim,
+        egui::FontId::proportional(LAYER_SUBTITLE_FONT_SIZE),
+        tokens.text_dim,
     );
-    let galley = elided(&p, label.to_string(), 10.5, tk.text_dim, (rect.right() - 28.0 - x - 10.0).max(0.0));
-    p.galley(pos2(x + 10.0, rect.center().y - galley.size().y * 0.5), galley, tk.text_dim);
-    p.text(pos2(rect.right() - 8.0, rect.center().y), egui::Align2::RIGHT_CENTER, stack.len().to_string(), egui::FontId::proportional(10.0), tk.text_dim);
-    if resp.on_hover_text(tr("Fold or unfold these effects")).clicked() && !app.layer_panel.folded.remove(&key) {
+    let galley = elided(
+        &painter,
+        label.to_string(),
+        GROUP_HEADER_LABEL_FONT_SIZE,
+        tokens.text_dim,
+        (rect.right() - GROUP_HEADER_LABEL_RESERVE - x - GROUP_HEADER_LABEL_GAP).max(0.0),
+    );
+    painter.galley(pos2(x + GROUP_HEADER_LABEL_GAP, rect.center().y - galley.size().y * 0.5), galley, tokens.text_dim);
+    painter.text(
+        pos2(rect.right() - GROUP_HEADER_COUNT_PADDING, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        stack.len().to_string(),
+        egui::FontId::proportional(LAYER_SUBTITLE_FONT_SIZE),
+        tokens.text_dim,
+    );
+    if response.on_hover_text(tr("Fold or unfold these effects")).clicked() && !app.layer_panel.folded.remove(&key) {
         app.layer_panel.folded.insert(key);
     }
     if folded {
         return;
     }
+
     let trunks: Vec<usize> = if more_below { vec![depth] } else { Vec::new() };
-    for (i, e) in stack.iter().rev().enumerate() {
-        effect_row(app, ui, layer, stack, e, depth + 2, &trunks, i + 1 == stack.len(), mask);
+    for (row_index, effect) in stack.iter().rev().enumerate() {
+        effect_row(app, ui, layer, stack, effect, row_index, depth + 2, &trunks, row_index + 1 == stack.len(), mask);
     }
 }
 
@@ -860,6 +895,7 @@ fn effect_row(
     layer: &Layer,
     stack: &[Effect],
     effect: &Effect,
+    row_index: usize,
     level: usize,
     trunks: &[usize],
     last: bool,
@@ -868,14 +904,15 @@ fn effect_row(
     let tokens = Tokens::get(ui.ctx());
     let (effect_id, visible) = (effect.id, effect.visible);
     let selected = app.session.selected_layer() == Some(layer.id) && app.session.target == StackTarget::Effect(effect_id);
-    let preview_size = effect_preview_size(layer_preview_size(app));
-    let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), effect_row_height(layer_preview_size(app))), Sense::click_and_drag());
+    let layer_preview = layer_preview_size(app);
+    let preview_size = effect_preview_size(layer_preview);
+    let (rect, row) = ui.allocate_exact_size(vec2(ui.available_width(), effect_row_height(layer_preview)), Sense::click_and_drag());
     row.widget_info(|| egui::WidgetInfo::selected(egui::Role::ListItem, true, selected, &effect.name));
 
     // Background, tree lines and the selected row's accent edge
     let painter = ui.painter().clone();
+
     // Effect rows alternate two shades just above the panel, counted from the top of their list
-    let row_index = stack.iter().rev().position(|other| other.id == effect_id).unwrap_or(0);
     let background = if selected {
         tokens.row_selected
     } else if row.hovered() {
@@ -1046,7 +1083,7 @@ fn layer_context_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
             ui.close();
         }
     };
-    // An instance without a mask of its own edits its source's; adding one overrides it.
+    // An instance edits its source mask until it gets its own
     let project = &app.session.doc.project;
     let has_mask = project.layers.get(&project.mask_owner(layer.id)).is_some_and(|l| l.mask.is_some());
     run(app, ui, tr("Add white mask"), "mask.add.white", json!({"layer": lid}), layer.mask.is_none());
@@ -1133,7 +1170,7 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
                 app.run("textureSet.uvTiles", json!({"ts": ts, "enabled": tiled}));
             }
             ui.end_row();
-            // Each tile's own size (per-tile resolution).
+            // Each tile's own size (per-tile resolution)
             for &udim in &set.uv_tiles {
                 let r = set.tile_resolution(udim);
                 ui.label(RichText::new(format!("   {udim}")).color(tk.text_dim));
@@ -1213,7 +1250,7 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
                             .color(tk.text_dim),
                     );
                 });
-                // An image resource instead of a bake, or no map.
+                // An image resource instead of a bake, or no map
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.menu_button(RichText::new(ic::DOTS_THREE).size(13.0), |ui| {
                         if let Some(name) = image_menu(app, ui) {
@@ -1227,7 +1264,7 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
                     });
                 });
             });
-            // A shelf image dropped on the row becomes this mesh map.
+            // A shelf image dropped on the row becomes this mesh map
             let resp = row.response.interact(Sense::hover()).on_hover_text(tr("Drop an image from the Assets panel here to use it as this mesh map"));
             if let Some(name) = image_drop(ui, &resp) {
                 app.run("textureSet.meshMap.set", json!({"ts": ts, "map": m.id(), "image": name}));
@@ -1240,7 +1277,7 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
 pub(crate) fn image_menu(app: &mut TextureCraftApp, ui: &mut Ui) -> Option<String> {
     ui.label(caption(tr("Images")));
     let mut picked = None;
-    // Bounded, so Import... and the items after it stay on screen with many images.
+    // Bounded so Import... and later items stay on screen with many images
     egui::ScrollArea::vertical().id_salt("image_menu").max_height(240.0).show(ui, |ui| {
         for name in app.session.doc.resources.keys() {
             if ui.button(name.as_str()).clicked() {
@@ -2382,7 +2419,7 @@ fn fill_channel(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Valu
                 }
             }
         });
-        // A shelf image dropped on the channel becomes its source.
+        // A shelf image dropped on the channel becomes its source
         if let Some(name) = image_drop(ui, &group.response.interact(Sense::hover())) {
             app.run("layer.fill.set", set(json!({"image": name})));
         }

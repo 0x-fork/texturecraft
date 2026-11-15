@@ -1,7 +1,8 @@
 //! Generator inputs that read an anchor point or an image, through engine commands.
 
 use serde_json::{Value, json};
-use texturecraft_engine::core::Channel;
+use std::sync::Arc;
+use texturecraft_engine::core::{BakedMap, Channel, EffectKind, Source};
 use texturecraft_engine::geom::primitives;
 use texturecraft_engine::{Session, execute};
 
@@ -74,4 +75,58 @@ fn removing_unused_resources_keeps_an_image_read_by_a_generator_input() {
 
     execute(&mut session, "file.removeUnused", &Value::Null).unwrap();
     assert!(session.doc.resources.contains_key(&name), "the image is still read by the generator input");
+}
+
+#[test]
+fn removing_unused_resources_keeps_an_image_read_by_a_content_effect() {
+    let mut session = session();
+    let image = image::RgbaImage::from_pixel(4, 4, image::Rgba([128, 128, 128, 255]));
+    let mut bytes = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+    let name = session.import_resource_bytes("content.png", bytes).unwrap();
+    execute(&mut session, "layer.add.fill", &Value::Null).unwrap();
+    let effect = id(execute(&mut session, "effect.add.fill", &json!({"target": "content"})).unwrap(), "effect");
+    execute(&mut session, "layer.fill.set", &json!({"effect": effect, "channel": "baseColor", "image": name})).unwrap();
+
+    execute(&mut session, "file.removeUnused", &Value::Null).unwrap();
+
+    assert!(session.doc.resources.contains_key(&name), "the content effect still reads the image");
+}
+
+#[test]
+fn generator_input_rejects_a_resource_that_is_not_an_image() {
+    let mut session = session();
+    session.doc.resources.insert("linked.mcmat".into(), Arc::new(vec![1, 2, 3]));
+    execute(&mut session, "layer.add.fill", &Value::Null).unwrap();
+    execute(&mut session, "mask.add.black", &Value::Null).unwrap();
+    let generator = id(execute(&mut session, "effect.add.generator", &json!({"generator": "dirt"})).unwrap(), "effect");
+
+    let result = execute(&mut session, "effect.set", &json!({"effect": generator, "input": "ambientOcclusion", "inputImage": "linked.mcmat"}));
+
+    assert!(result.is_err(), "a package resource has no image pixels for the generator to sample");
+}
+
+#[test]
+fn importing_a_missing_generator_input_invalidates_the_composite() {
+    let mut session = session();
+    execute(&mut session, "layer.add.fill", &json!({"color": [1.0, 1.0, 1.0]})).unwrap();
+    execute(&mut session, "mask.add.black", &Value::Null).unwrap();
+    let effect = id(execute(&mut session, "effect.add.generator", &json!({"generator": "ambientOcclusion"})).unwrap(), "effect");
+    session
+        .edit("Reference an absent image", |session| {
+            let effect = session.doc.project.effect_mut(texturecraft_engine::core::LayerId(effect)).unwrap();
+            let EffectKind::Generator(generator) = &mut effect.kind else { panic!("expected generator") };
+            generator.inputs.insert(BakedMap::AmbientOcclusion, Source::image("later.png"));
+            Ok(())
+        })
+        .unwrap();
+    let before = center(&mut session, Channel::BaseColor)[0];
+
+    let image = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 255]));
+    let mut bytes = Vec::new();
+    image.write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+    session.import_resource_bytes("later.png", bytes).unwrap();
+    let after = center(&mut session, Channel::BaseColor)[0];
+
+    assert!((after - before).abs() > 0.2, "the new image must update the generator's composited mask: {before} -> {after}");
 }

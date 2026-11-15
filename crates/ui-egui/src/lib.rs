@@ -674,6 +674,7 @@ impl eframe::App for TextureCraftApp {
         self.poll_bake(ctx);
         self.poll_resize(ctx);
         self.poll_link_cooks(ctx);
+        self.thumbs.sync_images(&self.session.images, self.session.revision);
         // The library shelf rescans when the window comes back (MaterialCraft may have sent a material)
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
         if focused && !self.focused {

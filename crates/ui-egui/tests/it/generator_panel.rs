@@ -77,6 +77,19 @@ fn restore_defaults_puts_the_generator_back_to_its_kind_defaults() {
 }
 
 #[test]
+fn changing_kind_in_the_panel_preserves_the_effect() {
+    let (mut harness, effect) = harness(false);
+    let history = harness.state().session.history_labels().len();
+    harness.get_all_by_role(Role::ComboBox).find(|node| node.value().as_deref() == Some("Curvature")).unwrap().click();
+    harness.run_steps(2);
+    harness.get_by_label("Dirt").click();
+    harness.run_steps(3);
+
+    assert_eq!(generator(&harness, effect).kind, GeneratorKind::Dirt);
+    assert_eq!(harness.state().session.history_labels().len(), history + 1);
+}
+
+#[test]
 fn an_input_can_read_a_uniform_value_and_the_mesh_map_again() {
     let (mut harness, effect) = harness(false);
     harness.get_all_by_role(Role::ComboBox).find(|node| node.value().as_deref() == Some("Mesh map: Curvature")).unwrap().scroll_to_me();

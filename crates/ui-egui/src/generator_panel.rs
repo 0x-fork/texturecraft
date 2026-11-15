@@ -33,10 +33,8 @@ pub(crate) fn generator_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer
     ui.label(caption(tr("Generator")));
     egui::ComboBox::from_id_salt("gen_kind").selected_text(tr(generator.kind.label())).show_ui(ui, |ui| {
         for kind in GeneratorKind::ALL {
-            if ui.selectable_label(kind == generator.kind, tr(kind.label())).clicked() {
-                // Another kind starts from its own defaults: this effect is removed and one of that kind added
-                app.run("effect.remove", json!({"effect": id}));
-                app.run("effect.add.generator", json!({"generator": format!("{kind:?}")}));
+            if ui.selectable_label(kind == generator.kind, tr(kind.label())).clicked() && kind != generator.kind {
+                app.run("effect.set", json!({"effect": id, "generator": format!("{kind:?}")}));
             }
         }
     });
@@ -134,15 +132,26 @@ fn resolution(app: &mut TextureCraftApp, ui: &mut Ui, id: u64, resolution: Outpu
     })
     .on_hover_text(tr("Scales the base resolution: below 1 the generator is computed coarser and smoothed back up."));
 
-    let Ok(texture_set) = app.session.doc.project.texture_set(app.session.ts()).map(|set| set.resolution) else { return };
+    let Ok(texture_set) = app.session.doc.project.texture_set(app.session.ts()) else { return };
 
-    let size = resolution.output_size(texture_set, texture_set);
+    let (smallest, largest) = texture_set
+        .uv_tiles
+        .iter()
+        .map(|&udim| resolution.output_size(texture_set.tile_resolution(udim), texture_set.resolution))
+        .fold((u32::MAX, 0), |(smallest, largest), size| (smallest.min(size), largest.max(size)));
+    let (smallest, largest) = if largest == 0 {
+        let size = resolution.output_size(texture_set.resolution, texture_set.resolution);
+        (size, size)
+    } else {
+        (smallest, largest)
+    };
+    let size_label = if smallest == largest { format!("{smallest} × {smallest}") } else { format!("{smallest}–{largest} × {smallest}–{largest}") };
     ui.horizontal(|ui| {
         ui.label(RichText::new(tr("Output size")).color(tokens.text_dim));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(format!("{size} × {size}")));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(size_label));
     })
     .response
-    .on_hover_text(tr("A finer output than the texture set gives the same result as the texture set's resolution."));
+    .on_hover_text(tr("An output finer than a UV tile gives the same result as that tile's resolution."));
 }
 
 /// The most powers of two a resolution factor scales by, either way.

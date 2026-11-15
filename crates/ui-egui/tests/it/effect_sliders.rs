@@ -15,9 +15,9 @@ fn selected_generator() -> (Harness<'static, TextureCraftApp>, LayerId) {
         .project
         .layers
         .values()
-        .find_map(|label_rect| {
-            let mask = label_rect.mask.iter().flat_map(|m| m.effects.iter());
-            label_rect.content_effects.iter().chain(mask).find(|e| matches!(e.kind, EffectKind::Generator(_))).map(|e| (label_rect.id, e.id))
+        .find_map(|layer| {
+            let mask_effects = layer.mask.iter().flat_map(|mask| mask.effects.iter());
+            layer.content_effects.iter().chain(mask_effects).find(|effect| matches!(effect.kind, EffectKind::Generator(_))).map(|effect| (layer.id, effect.id))
         })
         .unwrap();
     texturecraft_engine::execute(&mut session, "layer.select", &json!({"layer": layer.0, "target": effect.0})).unwrap();
@@ -59,22 +59,22 @@ fn dragging_a_slider_applies_it() {
 fn dragging_a_generator_slider_applies_live_as_one_undo_step() {
     let (mut harness, effect) = selected_generator();
     let level = |harness: &Harness<'_, TextureCraftApp>| match &harness.state().session.doc.project.effect(effect).unwrap().1.kind {
-        EffectKind::Generator(g) => g.level,
+        EffectKind::Generator(generator) => generator.level,
         _ => panic!("a generator"),
     };
     let steps = harness.state().session.history_labels().len();
     let track_rect = track(&harness, "Level");
-    let at = |x: f32| egui::pos2(track_rect.left() + x, track_rect.center().y);
-    harness.drag_at(at(10.0));
+    let point_at = |x: f32| egui::pos2(track_rect.left() + x, track_rect.center().y);
+    harness.drag_at(point_at(10.0));
     harness.run_steps(2);
     let mut last = 0.0;
     for x in [60.0, 160.0] {
-        harness.hover_at(at(x));
+        harness.hover_at(point_at(x));
         harness.run_steps(2);
         assert!(level(&harness) > last && level(&harness) != 0.5, "the level follows the drag before it is released: {last} -> {}", level(&harness));
         last = level(&harness);
     }
-    harness.drop_at(at(160.0));
+    harness.drop_at(point_at(160.0));
     harness.run_steps(3);
     assert_eq!(level(&harness), last);
     assert_eq!(harness.state().session.history_labels().len(), steps + 1, "one undo step for the drag");
@@ -116,7 +116,7 @@ fn clicking_a_slider_track_applies_it() {
 /// The number field in the row of the slider labelled `label`.
 fn number_field<'a>(harness: &'a Harness<'_, TextureCraftApp>, label: &str) -> egui_kittest::Node<'a> {
     let row = harness.get_by_label(label).rect().center().y;
-    harness.get_all(by().role(Role::TextInput)).find(|n| (n.rect().center().y - row).abs() < 4.0).unwrap()
+    harness.get_all(by().role(Role::TextInput)).find(|node| (node.rect().center().y - row).abs() < 4.0).unwrap()
 }
 
 /// Focus the balance field and press `keys`, then type `text`, one key per frame like a person.

@@ -45,7 +45,10 @@ impl OutputResolution {
         };
         let factor = self.factor.clamp(*OutputResolution::FACTORS.start(), *OutputResolution::FACTORS.end());
         let scaled = if factor >= 0 { base.saturating_mul(1 << factor) } else { base >> -factor };
-        scaled.clamp((uv_tile / OutputResolution::MAX_CELL).max(1), OutputResolution::MAX_SIZE)
+
+        // Hostile tile sizes can make the minimum exceed the supported maximum
+        let minimum = (uv_tile / OutputResolution::MAX_CELL).clamp(1, OutputResolution::MAX_SIZE);
+        scaled.clamp(minimum, OutputResolution::MAX_SIZE)
     }
 
     /// How many texels of the UV tile one output texel covers per side (1 when the output is as fine or finer).
@@ -106,5 +109,12 @@ mod tests {
 
         let tiny = OutputResolution { mode: ResolutionMode::Custom, custom: 1, factor: -3 };
         assert_eq!(tiny.cell(4096, 4096), OutputResolution::MAX_CELL);
+    }
+
+    #[test]
+    fn hostile_uv_tile_size_does_not_panic() {
+        let resolution = OutputResolution::default();
+
+        assert_eq!(resolution.output_size(u32::MAX, 2048), OutputResolution::MAX_SIZE);
     }
 }

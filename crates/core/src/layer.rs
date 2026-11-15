@@ -1112,10 +1112,11 @@ impl EffectKind {
             .collect()
     }
 
-    /// The image resources this effect's sources read (a fill or a generator input).
+    /// The image resources this effect's sources read (a fill, material or generator input).
     pub fn images_read(&self) -> impl Iterator<Item = &str> {
         let sources: Vec<&Source> = match self {
             EffectKind::Fill { source, .. } => vec![source],
+            EffectKind::Material(fill) => fill.sources.values().collect(),
             EffectKind::Generator(generator) => generator.inputs.values().collect(),
             _ => Vec::new(),
         };
@@ -1157,6 +1158,15 @@ impl Effect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn material_effect_images_are_reported_as_used() {
+        let mut fill = Fill::default();
+        fill.sources.insert(Channel::BaseColor, Source::image("material.png"));
+        let effect = EffectKind::Material(fill);
+
+        assert_eq!(effect.images_read().collect::<Vec<_>>(), vec!["material.png"]);
+    }
 
     #[test]
     fn generator_offset_shifts_the_mask_value() {

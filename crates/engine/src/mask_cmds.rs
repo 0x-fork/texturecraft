@@ -94,7 +94,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Edit effect",
             [],
             None,
-            "{effect, visible?, blend?, opacity?, name?, filter?: id from filter.list (a filter effect only: swaps its type, keeping position, blend and opacity; its current id edits it in place), level?, softness?, noise?, noiseScale?, offset?, invert?, blur?, balance?, contrast?, resolution?, customResolution?, resolutionFactor?, input?: mesh map id + one of inputImage?, inputValue?, inputAnchor?, inputBaked?: true (a generator), mode?, sizes?, value?, anchor?, anchorChannel?, inLow?, inHigh?, gamma?, outLow?, outHigh?, tolerance?, colors?: [[r,g,b], ...] (a color selection's ID colors), filter parameters (see effect.add.filter)}",
+            "{effect, visible?, blend?, opacity?, name?, filter?: id from filter.list (a filter effect only: swaps its type, keeping position, blend and opacity; its current id edits it in place), generator?: kind (a generator effect only: changes kind in place), level?, softness?, noise?, noiseScale?, offset?, invert?, blur?, balance?, contrast?, resolution?, customResolution?, resolutionFactor?, input?: mesh map id + one of inputImage?, inputValue?, inputAnchor?, inputBaked?: true (a generator), mode?, sizes?, value?, anchor?, anchorChannel?, inLow?, inHigh?, gamma?, outLow?, outHigh?, tolerance?, colors?: [[r,g,b], ...] (a color selection's ID colors), filter parameters (see effect.add.filter)}",
             has_layer,
             set
         ),
@@ -141,7 +141,7 @@ fn add_mask(s: &mut Session, p: &Value, bg: MaskBackground) -> Result<Value> {
 }
 
 fn add_color_mask(s: &mut Session, p: &Value) -> Result<Value> {
-    let color = color_param(p, "color").unwrap_or([1.0, 0.0, 0.0]);
+    let color = color_param("mask.add.colorSelection", p, "color")?.unwrap_or([1.0, 0.0, 0.0]);
     let tolerance = f32p(p, "tolerance").unwrap_or(0.1).clamp(0.0, 1.0);
     with_mask(s, p, "mask.add.colorSelection", "Add mask with color selection", |s, id| {
         let eid = s.doc.project.alloc_id();
@@ -242,7 +242,7 @@ fn push_effect(s: &mut Session, p: &Value, kind: EffectKind, blend: BlendMode) -
     let label = format!("Add {}", kind.name().to_ascii_lowercase());
     let eid = with_mask(s, p, "effect.add", &label, |s, id| {
         let eid = s.doc.project.alloc_id();
-        // An instance's content and (unless it has its own) mask belong to its source.
+        // An instance's content and inherited mask belong to its source
         let id = if content { s.doc.project.content_layer(id).map_or(id, |l| l.id) } else { s.doc.project.mask_owner(id) };
         let l = s.doc.project.layer_mut(id)?;
         let bg = if matches!(kind, EffectKind::Generator(_) | EffectKind::Fill { .. }) { MaskBackground::Black } else { MaskBackground::White };
@@ -285,7 +285,7 @@ fn add_fill(s: &mut Session, p: &Value) -> Result<Value> {
     let blend = blend_param("effect.add.fill", p, "blend")?.unwrap_or(BlendMode::Normal);
     let id = layer_param(s, "effect.add.fill", p)?;
     if content_target(p, "effect.add.fill")? {
-        let mut fill = crate::layer_cmds::fill_from(p);
+        let mut fill = crate::layer_cmds::fill_from("effect.add.fill", p)?;
         if fill.sources.is_empty() {
             fill.sources = s.doc.project.layer(id)?.channels.keys().map(|c| (*c, Source::uniform_of(*c))).collect();
         }
@@ -337,7 +337,7 @@ fn generator_from(command: &str, params: &Value, generator: &mut Generator) -> R
     if let Some(invert) = boolp(params, "invert") {
         generator.invert = invert;
     }
-    if let Some(direction) = color_param(params, "direction") {
+    if let Some(direction) = color_param(command, params, "direction")? {
         generator.direction = direction;
     }
     if let Some(blur) = f32p(params, "blur") {
@@ -411,7 +411,7 @@ fn generator_input_param(session: &Session, owner: LayerId, params: &Value) -> R
     let baked = boolp(params, "inputBaked") == Some(true);
     let source = match (image, value, anchor, baked) {
         (Some(image), None, None, false) => {
-            if !session.doc.resources.contains_key(image) {
+            if !session.images.contains_key(image) {
                 return Err(bad(CMD, format!("no image resource `{image}`")));
             }
             Some(Source::Image { name: image.to_string(), normal_format: Default::default() })
@@ -507,6 +507,13 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
     const CMD: &str = "effect.set";
     let effect = effect_id(session, params, CMD)?;
     let blend = blend_param(CMD, params, "blend")?;
+    let generator_kind = params
+        .get("generator")
+        .map(|value| {
+            let name = value.as_str().ok_or_else(|| bad(CMD, "`generator` must be a string"))?;
+            GeneratorKind::parse(name).ok_or_else(|| bad(CMD, format!("unknown generator `{name}`")))
+        })
+        .transpose()?;
 
     // `anchor` picks a fill's anchor point, `anchorChannel` alone re-targets the current one
     let anchor = match session.doc.project.effect(effect) {
@@ -564,6 +571,13 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
 
         match &mut edited.kind {
             EffectKind::Generator(generator) => {
+                if let Some(kind) = generator_kind
+                    && kind != generator.kind
+                {
+                    generator.kind = kind;
+                    generator.detail = Generator::new(kind).detail;
+                    generator.inputs.retain(|map, _| kind.inputs().contains(map));
+                }
                 generator_from(CMD, params, generator)?;
                 if let Some((map, source)) = input {
                     if !generator.kind.inputs().contains(&map) {
@@ -575,6 +589,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
                     };
                 }
             }
+            _ if generator_kind.is_some() => return Err(bad(CMD, "`generator` requires a generator effect")),
             EffectKind::Levels(levels) => levels_from(params, levels),
             // The swapped filter was built with the parameters already
             EffectKind::Filter(_) if swaps_filter => {}

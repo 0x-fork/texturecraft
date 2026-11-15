@@ -77,7 +77,7 @@ fn generator_json(generator: &Generator) -> Value {
             json!({ "mode": format!("{:?}", generator.resolution.mode), "custom": generator.resolution.custom, "factor": generator.resolution.factor });
     }
     if !generator.inputs.is_empty() {
-        out["inputs"] = generator.inputs.iter().map(|(map, source)| (map.id().to_string(), json!(source))).collect::<serde_json::Map<_, _>>().into();
+        out["inputs"] = generator.inputs.iter().map(|(map, source)| (map.id().to_string(), source_json(source))).collect::<serde_json::Map<_, _>>().into();
     }
     if let Some(detail) = &generator.detail {
         out["mode"] = json!(format!("{:?}", detail.mode));
@@ -112,7 +112,7 @@ fn layer_json(s: &Session, l: &Layer, depth: usize) -> Value {
         v["geometryMask"] = json!(parts);
     }
     if matches!(l.kind, LayerKind::Paint) {
-        // Sorted: the store is a hash map, and inspect output must be stable.
+        // Sort the hash map entries for stable inspection output
         let mut painted: Vec<(&str, usize)> =
             s.doc.pixels.layers.iter().filter(|((id, _), _)| *id == l.id).map(|((_, c), img)| (c.id(), img.allocated_count())).collect();
         painted.sort_unstable();
