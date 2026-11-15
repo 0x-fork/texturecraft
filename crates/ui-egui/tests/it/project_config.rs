@@ -239,6 +239,7 @@ fn enter_with_the_dropdown_open_does_not_press_ok() {
         }
     });
     h.run_steps(1);
+    assert!(h.ctx.memory(|m| m.focused().is_none()), "nothing has the keyboard");
     assert!(egui::Popup::is_any_open(&h.ctx), "the dropdown is still open");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
@@ -254,6 +255,7 @@ fn ok_after_the_ticked_file_went_missing_reports_it_and_stays_open() {
     click_in_window(&mut h, Role::CheckBox, "Reimport mesh");
     assert!(own_tick(&h));
     std::fs::remove_file(dir.join("quad.obj")).unwrap();
+    h.run_steps(2);
     click(&mut h, Role::Button, "OK");
     assert!(window_is_open(&h), "the window stays open");
     assert!(h.state().toasts.iter().any(|t| t.error && t.text == "File not found"), "the error shows as a toast");
