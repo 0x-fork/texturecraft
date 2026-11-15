@@ -70,8 +70,8 @@ craft-i18n = { git = "https://github.com/storytold/craft-libs", rev = "390fe98b0
 craft-ui = { git = "https://github.com/storytold/craft-libs", rev = "390fe98b0dd3fb84db7c3af7cbd958db4e8cc585", features = ["serde"] }
 craft-materialx = { git = "https://github.com/storytold/craft-libs", rev = "390fe98b0dd3fb84db7c3af7cbd958db4e8cc585" }
 craft-mesh = { git = "https://github.com/storytold/craft-libs", rev = "d6ed8c20f12188c1f39c89b3a8436bd0d09c3748", default-features = false, features = ["stl"] }
-craft-mcmat = { git = "https://github.com/storytold/craft-libs", rev = "26980ff331efa6ec2cb2b9093dc5a154a8f66bdb" }
-craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "26980ff331efa6ec2cb2b9093dc5a154a8f66bdb" }
+craft-mcmat = { git = "https://github.com/storytold/craft-libs", rev = "b6d9feed23ceae249b40593ed84a668343091627" }
+craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "b6d9feed23ceae249b40593ed84a668343091627" }
 # Who draws the window frame, and the app-drawn strip as the title bar (crates/ui-egui/src/titlebar.rs).
 craft-window = { git = "https://github.com/storytold/craft-libs", rev = "390fe98b0dd3fb84db7c3af7cbd958db4e8cc585", features = ["egui"] }
 # Release checks, the update prompt and the update helper (crates/ui-egui/src/updates_ui.rs).
