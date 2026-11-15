@@ -56,7 +56,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save MaterialCraft package",
             [],
             None,
-            "{layer?, path} — writes the MaterialCraft package (.mcraft) behind a material layer, to open in MaterialCraft",
+            "{layer?, path} — writes the MaterialCraft source (.mcraft or .sbs) behind a material layer",
             has_layer,
             save_source
         ),
@@ -178,7 +178,9 @@ fn save_source(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "material.link.saveSource";
     let id = layer_param(s, CMD, p)?;
     let path = strp(p, "path").ok_or_else(|| bad(CMD, "`path` is required"))?;
-    let path = if path.to_ascii_lowercase().ends_with(&format!(".{MCRAFT_EXT}")) { path.to_string() } else { format!("{path}.{MCRAFT_EXT}") };
+    let link = link_of(s, CMD, id)?;
+    let ext = source_extension(&link.package);
+    let path = if path.to_ascii_lowercase().ends_with(&format!(".{ext}")) { path.to_string() } else { format!("{path}.{ext}") };
     let bytes = s.link_package(id)?;
     texturecraft_formats::write_atomic(std::path::Path::new(&path), &bytes).map_err(|e| bad(CMD, e.to_string()))?;
     Ok(json!({"path": path}))
@@ -195,6 +197,10 @@ fn save_source(_: &mut Session, _: &Value) -> Result<Value> {
 pub struct LinkJob {
     pub layer: LayerId,
     pub package: Arc<Vec<u8>>,
+    /// The source package extension (`mcraft` or `sbs`).
+    pub source_ext: &'static str,
+    /// The named graph in a linked material; direct package imports use its default.
+    pub graph: Option<String>,
     /// Pixels across (the texture set's resolution).
     pub size: u32,
     /// Every parameter's value, by id, in MaterialCraft's typed form.
@@ -226,7 +232,7 @@ fn quiet(program: &std::path::Path) -> std::process::Command {
     c
 }
 
-/// Open `package` (a `.mcraft` file) in the MaterialCraft app (`$MATERIALCRAFT`, next to this
+/// Open `package` (a `.mcraft` or `.sbs` file) in the MaterialCraft app (`$MATERIALCRAFT`, next to this
 /// program, or on `PATH`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_in_materialcraft(package: &std::path::Path) -> Result<()> {
@@ -234,6 +240,11 @@ pub fn open_in_materialcraft(package: &std::path::Path) -> Result<()> {
     quiet(&app).arg(package).spawn().map(drop).map_err(|e| {
         EngineError::Other(format!("MaterialCraft ({}) did not start: {e}. Install MaterialCraft next to TextureCraft or set MATERIALCRAFT", app.display()))
     })
+}
+
+/// Source file extensions are chosen from the linked resource name, never an untrusted path.
+pub fn source_extension(name: &str) -> &'static str {
+    if name.to_ascii_lowercase().ends_with(".sbs") { "sbs" } else { MCRAFT_EXT }
 }
 
 impl LinkJob {
@@ -252,7 +263,8 @@ impl LinkJob {
                 std::fs::write(&p, bytes).map_err(|e| other(format!("{name}: {e}")))?;
                 utf8(&p)
             };
-            let src = write("source.mcraft", &self.package)?;
+            let ext = if self.source_ext == "sbs" { "sbs" } else { MCRAFT_EXT };
+            let src = write(&format!("source.{ext}"), &self.package)?;
             let mut inputs = Map::new();
             for (i, (id, png)) in self.inputs.iter().enumerate() {
                 inputs.insert(id.clone(), json!(write(&format!("input{i}.png"), png)?));
@@ -260,7 +272,19 @@ impl LinkJob {
             let out = dir.join(format!("out.{MCMAT_EXT}"));
             let params = json!({"path": utf8(&out)?, "size": self.size, "values": self.values, "inputs": inputs});
             let cli = materialcraft_tool("materialcraft-cli", "MATERIALCRAFT_CLI");
-            let run = quiet(&cli).arg("run").arg(&src).arg("file.exportMaterial").arg(params.to_string()).output().map_err(|e| {
+            let mut command = quiet(&cli);
+            if let Some(graph) = &self.graph {
+                // Opening the source starts on its first graph; select the graph saved in the link.
+                let script = json!({"open": src, "steps": [
+                    {"id": "graph.open", "params": {"graph": graph}},
+                    {"id": "file.exportMaterial", "params": params},
+                ]});
+                let script_path = write("cook.json", script.to_string().as_bytes())?;
+                command.arg("batch").arg(script_path);
+            } else {
+                command.arg("run").arg(&src).arg("file.exportMaterial").arg(params.to_string());
+            }
+            let run = command.output().map_err(|e| {
                 other(format!(
                     "MaterialCraft's command line ({}) did not start: {e}. Install MaterialCraft next to TextureCraft or set MATERIALCRAFT_CLI",
                     cli.display()
@@ -301,7 +325,15 @@ impl Session {
         let bytes = if is_mcraft(bytes) {
             let ts = self.ts();
             let size = self.doc.project.texture_set(ts)?.resolution;
-            let job = LinkJob { layer: LayerId(0), package: Arc::new(bytes.to_vec()), size, values: Map::new(), inputs: Vec::new() };
+            let job = LinkJob {
+                layer: LayerId(0),
+                package: Arc::new(bytes.to_vec()),
+                source_ext: MCRAFT_EXT,
+                graph: None,
+                size,
+                values: Map::new(),
+                inputs: Vec::new(),
+            };
             cooked = job.run()?;
             cooked.as_slice()
         } else {
@@ -316,7 +348,7 @@ impl Session {
         let (id, names) = self.edit(&label, |s| {
             let ts = s.ts();
             let stem = texturecraft_formats::sanitize_resource_name(&m.manifest.name);
-            let package = unique(s, &format!("{stem}.{MCRAFT_EXT}"));
+            let package = unique(s, &format!("{stem}.{}", source_extension(&m.manifest.source)));
             s.doc.resources.insert(package.clone(), Arc::new(m.source.clone()));
             let link = MaterialLink {
                 name: m.manifest.name.clone(),
@@ -345,7 +377,7 @@ impl Session {
         Ok(id)
     }
 
-    /// The `.mcraft` package behind linked layer `id`.
+    /// The source package behind linked layer `id`.
     pub fn link_package(&self, id: LayerId) -> Result<Arc<Vec<u8>>> {
         let link = link_of(self, "material.link", id)?;
         self.doc.resources.get(&link.package).cloned().ok_or_else(|| EngineError::Other(format!("the package of {} is missing", link.name)))
@@ -376,7 +408,15 @@ impl Session {
 
         // UDIM tiles share one cook at the texture set's base resolution
         let size = self.doc.project.texture_set(texture_set)?.resolution;
-        Ok(LinkJob { layer: id, package: self.link_package(id)?, size, values, inputs })
+        Ok(LinkJob {
+            layer: id,
+            package: self.link_package(id)?,
+            source_ext: source_extension(&link.package),
+            graph: Some(link.graph.clone()),
+            size,
+            values,
+            inputs,
+        })
     }
 
     /// Swap in maps a [`LinkJob`] cooked (`.mcmat` bytes) and the values they were cooked with.
