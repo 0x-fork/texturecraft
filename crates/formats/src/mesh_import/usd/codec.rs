@@ -128,50 +128,14 @@ pub(crate) fn decode_ints(data: &[u8], n: usize, width: usize) -> Result<Vec<i64
     craft_usd::integers::decode(data, n, width, super::MAX_DECODED_BYTES).map_err(|e| malformed(KIND, e.to_string()))
 }
 
-/// Encode integers of `width` (4 or 8) bytes (values must fit the width).
-pub(crate) fn encode_ints(values: &[i64], width: usize) -> Vec<u8> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-    let wrap = |v: i64| if width == 4 { i64::from(v as i32) } else { v };
-    let mut prev = 0i64;
-    let deltas: Vec<i64> = values
-        .iter()
-        .map(|&v| {
-            let d = wrap(v.wrapping_sub(prev));
-            prev = v;
-            d
-        })
-        .collect();
-    let mut counts = std::collections::HashMap::new();
-    for d in &deltas {
-        *counts.entry(*d).or_insert(0usize) += 1;
-    }
-    let common = counts.into_iter().max_by_key(|&(v, c)| (c, v)).map_or(0, |(v, _)| v);
-    let mut out = Vec::with_capacity(encoded_ints_len(values.len(), width));
-    out.extend_from_slice(&common.to_le_bytes()[..width]);
-    let codes_at = out.len();
-    out.resize(codes_at + values.len().div_ceil(4), 0);
-    for (i, &d) in deltas.iter().enumerate() {
-        let small = |bits: u32| d >= -(1i64 << (bits - 1)) && d < (1i64 << (bits - 1));
-        let code: u8 = if d == common {
-            0
-        } else if small(width as u32 * 2) {
-            1
-        } else if small(width as u32 * 4) {
-            2
-        } else {
-            3
-        };
-        if code > 0 {
-            let w = (width >> (3 - code as usize)).max(1);
-            out.extend_from_slice(&d.to_le_bytes()[..w]);
-        }
-        if let Some(b) = out.get_mut(codes_at + i / 4) {
-            *b |= code << (2 * (i % 4));
-        }
-    }
-    out
+/// Encode packed integers with a combined scratch/output reservation cap.
+pub(crate) fn encode_ints(values: &[i64], width: usize) -> Result<Vec<u8>> {
+    let width = match width {
+        4 => craft_usd::integers::Width::I32,
+        8 => craft_usd::integers::Width::I64,
+        _ => return Err(malformed(KIND, "unsupported integer width")),
+    };
+    craft_usd::integers::encode(values, width, super::MAX_DECODED_BYTES).map_err(|e| malformed(KIND, e.to_string()))
 }
 
 /// Error for counts that cannot be real (more items than bytes left could describe).

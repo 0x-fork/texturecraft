@@ -408,13 +408,13 @@ fn usd_extension_detects_the_encoding() {
 fn integer_coding_round_trips() {
     let values: Vec<i64> = vec![0, 1, 2, 3, 3, 3, -5, 1000, -70000, i64::from(i32::MAX), i64::from(i32::MIN), 7, 7, 7, 8];
     for width in [4, 8] {
-        let enc = codec::encode_ints(&values, width);
+        let enc = codec::encode_ints(&values, width).unwrap();
         assert!(enc.len() <= codec::encoded_ints_len(values.len(), width));
         assert_eq!(codec::decode_ints(&enc, values.len(), width).unwrap(), values);
         assert!(codec::decode_ints(&enc[..enc.len() - 1], values.len(), width).is_err());
     }
     let wide = vec![i64::MAX, i64::MIN, 0, 1 << 40];
-    assert_eq!(codec::decode_ints(&codec::encode_ints(&wide, 8), 4, 8).unwrap(), wide);
+    assert_eq!(codec::decode_ints(&codec::encode_ints(&wide, 8).unwrap(), 4, 8).unwrap(), wide);
     let big: Vec<u8> = (0..5000u32).flat_map(|i| (i % 7).to_le_bytes()).collect();
     assert_eq!(codec::decompress(&codec::compress(&big).unwrap(), big.len()).unwrap(), big);
     assert!(codec::decompress(&[0, 0xF0], 10).is_err());
@@ -508,4 +508,11 @@ fn loose_layer_textures_are_packaged() {
         let f = self_contained_mesh(&format!("t.{ext}"), out.bytes.clone(), &mut |_: &str| None).unwrap();
         assert_eq!((f.name, f.bytes == out.bytes, f.warnings.len()), (format!("t.{ext}"), true, 1), "{ext}");
     }
+}
+
+#[test]
+fn shared_integer_writer_preserves_tie_wire_and_rejects_invalid_width() {
+    assert_eq!(codec::encode_ints(&[1, 3, 4, 6], 4).unwrap(), vec![2, 0, 0, 0, 17, 1, 1]);
+    assert!(codec::encode_ints(&[1], 3).is_err());
+    assert!(codec::encode_ints(&[], 8).unwrap().is_empty());
 }
