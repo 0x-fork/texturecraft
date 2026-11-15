@@ -237,3 +237,34 @@ fn tool_availability_snapshots() {
     harness.state_mut().ui.mode = Mode::Rendering;
     save(&mut harness, "rendering");
 }
+
+#[test]
+fn unavailable_effect_tools_hide_their_properties() {
+    for path in [false, true] {
+        let mut harness = app_harness();
+        let session = &mut harness.state_mut().session;
+        let layer = add_layer(session, "layer.add.paint");
+        select(session, layer, json!("content"));
+        let (effect, usable, blocked) = if path {
+            let result = execute(session, "tool.path", &json!({"uvPoints": [[0.2, 0.5], [0.8, 0.5]], "commit": true})).unwrap();
+            (result["committed"]["effect"].as_u64().unwrap(), Tool::Path, Tool::Paint)
+        } else {
+            execute(session, "mask.add.black", &json!({"layer": layer})).unwrap();
+            let result = execute(session, "effect.add.paint", &json!({"layer": layer, "target": "mask"})).unwrap();
+            (result["effect"].as_u64().unwrap(), Tool::Paint, Tool::Smudge)
+        };
+        select(session, layer, json!(effect));
+        session.tool.tool = usable;
+        harness.run_steps(4);
+        assert!(shows_text(&harness, "Size"));
+        harness.state_mut().session.tool.tool = blocked;
+        harness.run_steps(4);
+        assert!(!shows_text(&harness, "Size"), "unavailable effect tools hide brush controls");
+        if let Some(directory) = std::env::var_os("TC_UI_SNAPSHOTS") {
+            let directory = std::path::PathBuf::from(directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            let name = if path { "unavailable-path-effect.png" } else { "unavailable-mask-paint-effect.png" };
+            harness.render().unwrap().save(directory.join(name)).unwrap();
+        }
+    }
+}

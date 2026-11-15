@@ -669,6 +669,11 @@ impl Session {
         let from = if back { &self.path_steps.0 } else { &self.path_steps.1 };
         let Some((index, state)) = from.iter().enumerate().rfind(|(_, state)| !state.same_curve(&self.tool.path)) else { return Ok(false) };
 
+        // Returning false here would let undo/redo consume document history instead.
+        if self.quick_mask.editing {
+            return Err(EngineError::Other("paths can't edit the quick mask: stop editing it first".into()));
+        }
+
         let path = &mut self.tool.path;
         let previous = std::mem::replace(path, PathState { editing: path.editing, edited: path.edited, ..state.clone() });
         if let Err(error) = self.path_live() {
@@ -1084,6 +1089,29 @@ mod tests {
         assert_eq!(changed_tiles(&before, &before.clone(), effect), BTreeSet::new());
         assert_eq!(changed_tiles(&before, &after, effect), BTreeSet::from([(0, 0), (1, 0), (2, 1)]));
         assert_eq!(changed_tiles(&before, &after, LayerId(8)), BTreeSet::new());
+    }
+
+    #[test]
+    fn quick_mask_preserves_pending_path_undo_and_redo() {
+        let mut session = Session::new_project("t", texturecraft_geom::primitives::plane(1.0, 1), "builtin:test", None, 128).unwrap();
+        execute(&mut session, "tool.path", &json!({"uvPoints": [[0.2, 0.5], [0.8, 0.5]]})).unwrap();
+        session.path_checkpoint();
+        session.tool.path.points[0].y = 0.3;
+        session.path_live().unwrap();
+        for back in [true, false] {
+            let curve = session.tool.path.clone();
+            let steps = (session.path_steps.0.len(), session.path_steps.1.len());
+            let history = (session.history_labels(), session.redo_labels());
+            let pixels = session.doc.pixels.clone();
+            session.quick_mask.editing = true;
+            assert!(if back { session.undo() } else { session.redo() }.is_err());
+            assert!(curve.same_curve(&session.tool.path));
+            assert_eq!(steps, (session.path_steps.0.len(), session.path_steps.1.len()));
+            assert_eq!(history, (session.history_labels(), session.redo_labels()));
+            assert_eq!(format!("{:?}", pixels), format!("{:?}", session.doc.pixels));
+            session.quick_mask.editing = false;
+            if back { session.undo() } else { session.redo() }.unwrap();
+        }
     }
 
     #[test]

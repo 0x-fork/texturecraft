@@ -54,6 +54,7 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
         crate::toolbar::paint_bar(app, ui);
     }
 
+    finish_unavailable_tool_gestures(app);
     crate::id_color_pick::IdColorPick::end_when_stale(app);
     let tokens = Tokens::get(ui.ctx());
     let aux_view = match app.session.view {
@@ -1545,6 +1546,18 @@ fn tool_acts(app: &TextureCraftApp) -> bool {
     app.ui.mode == crate::state::Mode::Painting && app.session.tool_usable(app.session.tool.tool)
 }
 
+/// Both views must close gestures even when the selection disables their input handlers.
+fn finish_unavailable_tool_gestures(app: &mut TextureCraftApp) {
+    if !tool_acts(app) {
+        if app.session.stroke_active()
+            && let Err(error) = app.session.end_stroke()
+        {
+            app.toast(error.to_string(), true);
+        }
+        app.session.end_polygon_fill_box();
+    }
+}
+
 /// Tools that paint with the brush (and show its cursor).
 fn brush_tool(t: Tool) -> bool {
     matches!(t, Tool::Paint | Tool::Eraser | Tool::Projection | Tool::Smudge | Tool::Clone | Tool::Path)
@@ -1995,6 +2008,33 @@ fn bake_paint_overlay(app: &TextureCraftApp, ui: &Ui, painter: &egui::Painter, t
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_tools_finish_strokes_and_box_fills() {
+        use texturecraft_engine::{StackTarget, core::LayerId, geom::primitives};
+
+        for tool in [Tool::Paint, Tool::PolygonFill] {
+            let session = Session::new_project("t", primitives::plane(2.0, 4), "test", None, 128).unwrap();
+            let mut harness = egui_kittest::Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
+            let app = harness.state_mut();
+            app.session.tool.tool = tool;
+            let history = app.session.history_labels().len();
+            if tool == Tool::Paint {
+                app.session.begin_stroke_uv(Vec2::splat(0.5), 1.0).unwrap();
+                assert!(app.session.stroke_active());
+            } else {
+                assert!(app.session.drag_polygon_fill_box_uv(Vec2::ZERO, Vec2::ONE).unwrap() > 0);
+            }
+            app.session.target = StackTarget::Effect(LayerId(u64::MAX));
+            assert!(!tool_acts(app));
+            finish_unavailable_tool_gestures(app);
+            assert!(!app.session.stroke_active());
+            assert_eq!(app.session.history_labels().len(), history + 1);
+            assert_eq!(app.session.end_polygon_fill_box(), 0, "the interrupted box is already closed");
+            finish_unavailable_tool_gestures(app);
+            assert_eq!(app.session.history_labels().len(), history + 1, "cleanup records the gesture only once");
+        }
+    }
 
     #[test]
     fn stored_surfaces_release_after_a_frame_without_paths() {

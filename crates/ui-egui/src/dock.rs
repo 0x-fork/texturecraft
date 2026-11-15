@@ -2510,7 +2510,9 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                 tr("Paint on the mesh to edit this mask. Use the Material tab's mask value for gray.")
             };
             ui.label(RichText::new(hint).color(tokens.text_dim));
-            tool_properties(app, ui);
+            if app.session.tool_usable(app.session.tool.tool) {
+                tool_properties(app, ui);
+            }
         }
         EffectKind::Path(paths) => {
             ui.label(
@@ -2533,7 +2535,9 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                     }
                 });
             }
-            tool_properties(app, ui);
+            if app.session.tool_usable(app.session.tool.tool) {
+                tool_properties(app, ui);
+            }
         }
         EffectKind::Filter(filter) => filter_properties(app, ui, id, filter),
         EffectKind::ColorSelection { colors, tolerance } => crate::color_selection_editor::color_selection_properties(app, ui, effect_id, colors, *tolerance),
