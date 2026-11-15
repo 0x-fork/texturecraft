@@ -842,9 +842,9 @@ dependencies = [
 [[package]]
 name = "craft-mesh"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=17e18e31c29fb8c4bf56bb7242ff9dcdb3d3a66f#17e18e31c29fb8c4bf56bb7242ff9dcdb3d3a66f"
+source = "git+https://github.com/storytold/craft-libs?rev=f4edcdcad9ce138dc6bf36e8214b4844c0cf8fbc#f4edcdcad9ce138dc6bf36e8214b4844c0cf8fbc"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=17e18e31c29fb8c4bf56bb7242ff9dcdb3d3a66f)",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=f4edcdcad9ce138dc6bf36e8214b4844c0cf8fbc)",
  "miniz_oxide 0.9.1",
 ]
 
@@ -931,7 +931,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=17e18e31c29fb8c4bf56bb7242ff9dcdb3d3a66f#17e18e31c29fb8c4bf56bb7242ff9dcdb3d3a66f"
+source = "git+https://github.com/storytold/craft-libs?rev=828b07f3c9f3f6a2e935087b859016a5e46b1c31#828b07f3c9f3f6a2e935087b859016a5e46b1c31"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -941,7 +941,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=828b07f3c9f3f6a2e935087b859016a5e46b1c31#828b07f3c9f3f6a2e935087b859016a5e46b1c31"
+source = "git+https://github.com/storytold/craft-libs?rev=f4edcdcad9ce138dc6bf36e8214b4844c0cf8fbc#f4edcdcad9ce138dc6bf36e8214b4844c0cf8fbc"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",

@@ -57,8 +57,12 @@ pub(crate) fn package(file_name: &str, bytes: &[u8], found: &mut dyn FnMut(&str)
         if doc.version == 0 {
             return Err(malformed(KIND, "not an FBX file (no FBXHeaderExtension / FBXVersion)"));
         }
-        doc.scene_with_options(&limits, &mut craft_mesh::no_external, &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true })
-            .map_err(convert)?;
+        doc.scene_with_options(
+            &limits,
+            &mut craft_mesh::no_external,
+            &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true, prefer_last_parent: true },
+        )
+        .map_err(convert)?;
         craft_mesh::fbx::package::write(&doc, file_name, bytes, &limits, package_limits(), found).map_err(convert)
     })
 }
@@ -71,7 +75,11 @@ fn read_inner(bytes: &[u8], files: &mut Files) -> Result<RawMesh> {
     }
     let colors = doc.diffuse_materials(&limits, files).map_err(convert)?;
     let scene = doc
-        .scene_with_options(&limits, &mut craft_mesh::no_external, &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true })
+        .scene_with_options(
+            &limits,
+            &mut craft_mesh::no_external,
+            &craft_mesh::fbx::SceneOptions { apply_inactive_rotation: true, strict_geometry: true, prefer_last_parent: true },
+        )
         .map_err(convert)?;
     let to_mat = |m: craft_mesh::Mat4| Mat4::from_cols_array(&m.map(|v| v as f32));
     let global = to_mat(doc.axes_to_y_up()) * Mat4::from_scale(Vec3::splat((doc.unit_scale().unwrap_or(1.0) / 100.0) as f32));
