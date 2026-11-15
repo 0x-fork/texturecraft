@@ -54,7 +54,18 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
         crate::toolbar::paint_bar(app, ui);
     }
 
-    finish_unavailable_tool_gestures(app);
+    let stroke_end = ui.scope_id().with("paint_2d_stroke_end");
+    // A cancelled stroke can leave a pending 2D endpoint; do not attach it to a later gesture.
+    let pending_2d_endpoint = if !app.session.stroke_active() || !tool_acts(app) {
+        ui.data_mut(|data| {
+            let endpoint = data.get_temp(stroke_end);
+            data.remove::<crate::uv_paint_point::UvPaintPoint>(stroke_end);
+            endpoint
+        })
+    } else {
+        None
+    };
+    finish_unavailable_tool_gestures(app, pending_2d_endpoint);
     crate::id_color_pick::IdColorPick::end_when_stale(app);
     let tokens = Tokens::get(ui.ctx());
     let aux_view = match app.session.view {
@@ -1547,12 +1558,17 @@ fn tool_acts(app: &TextureCraftApp) -> bool {
 }
 
 /// Both views must close gestures even when the selection disables their input handlers.
-fn finish_unavailable_tool_gestures(app: &mut TextureCraftApp) {
+fn finish_unavailable_tool_gestures(app: &mut TextureCraftApp, pending_2d_endpoint: Option<crate::uv_paint_point::UvPaintPoint>) {
     if !tool_acts(app) {
-        if app.session.stroke_active()
-            && let Err(error) = app.session.end_stroke()
-        {
-            app.toast(error.to_string(), true);
+        if app.session.stroke_active() {
+            match app.session.end_stroke() {
+                Ok(()) => {
+                    if let Some(endpoint) = pending_2d_endpoint {
+                        app.last_paint_uv = Some(endpoint);
+                    }
+                }
+                Err(error) => app.toast(error.to_string(), true),
+            }
         }
         app.session.end_polygon_fill_box();
     }
@@ -1946,7 +1962,13 @@ fn paint_2d_input(app: &mut TextureCraftApp, ui: &Ui, response: &egui::Response,
     if response.clicked_by(PointerButton::Primary) || response.drag_stopped_by(PointerButton::Primary) {
         let finishing = app.session.stroke_active();
         match app.session.end_stroke() {
-            Ok(()) if finishing => app.last_paint_uv = ui.data(|data| data.get_temp(stroke_end)),
+            Ok(()) if finishing => {
+                app.last_paint_uv = ui.data_mut(|data| {
+                    let endpoint = data.get_temp(stroke_end);
+                    data.remove::<crate::uv_paint_point::UvPaintPoint>(stroke_end);
+                    endpoint
+                });
+            }
             Ok(()) => {}
             Err(error) => app.toast(error.to_string(), true),
         }
@@ -2027,11 +2049,11 @@ mod tests {
             }
             app.session.target = StackTarget::Effect(LayerId(u64::MAX));
             assert!(!tool_acts(app));
-            finish_unavailable_tool_gestures(app);
+            finish_unavailable_tool_gestures(app, None);
             assert!(!app.session.stroke_active());
             assert_eq!(app.session.history_labels().len(), history + 1);
             assert_eq!(app.session.end_polygon_fill_box(), 0, "the interrupted box is already closed");
-            finish_unavailable_tool_gestures(app);
+            finish_unavailable_tool_gestures(app, None);
             assert_eq!(app.session.history_labels().len(), history + 1, "cleanup records the gesture only once");
         }
     }
