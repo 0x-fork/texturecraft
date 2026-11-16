@@ -70,6 +70,10 @@ pub(crate) fn read(bytes: &[u8]) -> Result<RawMesh> {
             if el.count > body.remaining().saturating_add(ascii_slack) {
                 return Err(malformed(KIND, format!("element \"{}\" claims {} items but the file is too short", el.name, el.count)));
             }
+            // A vertex element still needs positions, as below.
+            if el.name == "vertex" {
+                return Err(malformed(KIND, "vertices have no x, y, z"));
+            }
             continue;
         }
         // Every item takes at least one byte, so the count can never exceed what is left.
@@ -220,6 +224,14 @@ mod shared_rows_tests {
         assert_eq!(read(bytes).unwrap().positions, vec![Vec3::new(0.0, 0.0, 0.0)]);
         let huge = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nelement edge 3\nend_header\n0 0 0\n";
         assert!(read(huge).is_err());
+    }
+
+    #[test]
+    fn propertyless_vertex_element_is_still_rejected() {
+        let bytes = b"ply\nformat ascii 1.0\nelement vertex 1\nelement face 1\nproperty list uchar int vertex_indices\nend_header\n3 0 0 0\n";
+        let Err(e) = read(bytes) else { panic!("a vertex element without x, y, z must not open") };
+        let err = e.to_string();
+        assert!(err.contains("vertices have no x, y, z"), "{err}");
     }
 
     #[test]
