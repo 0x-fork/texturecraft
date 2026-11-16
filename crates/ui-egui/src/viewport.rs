@@ -1709,7 +1709,7 @@ pub(crate) fn brush_cursor(app: &TextureCraftApp, ui: &Ui, rect: Rect, position:
 /// windowing layer reports it for Windows Ink pens, and in the browser for pens that send touch
 /// events (tablets and phones); other pens come through as a mouse.
 /// shortcut: the windowing layer reports no pen tilt, so tilt can't drive the brush angle yet.
-fn pen_pressure(ui: &Ui) -> f32 {
+pub fn pen_pressure(ui: &Ui) -> f32 {
     let id = egui::Id::unique("pen_pressure");
     let touch = ui.input(|i| {
         i.raw.events.iter().rev().find_map(|e| match e {
@@ -1731,10 +1731,8 @@ fn pen_pressure(ui: &Ui) -> f32 {
             1.0
         }
         _ => {
-            let (pressed, active) = ui.input(|i| {
-                (i.pointer.any_pressed(), i.pointer.primary_down() || i.pointer.any_down() || i.pointer.primary_released() || i.pointer.any_released())
-            });
-            if active && !pressed {
+            let (primary_pressed, active) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down() || i.pointer.primary_released()));
+            if active && !primary_pressed {
                 ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(1.0)
             } else {
                 ui.data_mut(|d| d.remove_temp::<f32>(id));

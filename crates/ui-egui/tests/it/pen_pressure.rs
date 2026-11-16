@@ -112,3 +112,30 @@ fn mouse_stroke_immediately_after_pen_release_uses_full_pressure() {
     });
     assert!(immediate_mouse > baseline * 0.9, "mouse stroke after pen release keeps full pressure: {immediate_mouse} vs {baseline}");
 }
+
+#[test]
+fn secondary_pressed_during_active_primary_pen_stroke_retains_light_pressure() {
+    let session = texturecraft_engine::sample_session(256, 64).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 1500.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
+    h.run_steps(2);
+
+    let ctx = h.ctx.clone();
+    let mut raw = egui::RawInput::default();
+    raw.events.push(Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: pos2(100.0, 100.0), force: Some(0.2) });
+    raw.events.push(Event::PointerButton { pos: pos2(100.0, 100.0), button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    let _ = ctx.run_ui(raw, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let p = texturecraft_ui_egui::viewport::pen_pressure(ui);
+            assert!((p - 0.2).abs() < 1e-4, "initial touch records 0.2: {p}");
+        });
+    });
+
+    let mut raw2 = egui::RawInput::default();
+    raw2.events.push(Event::PointerButton { pos: pos2(110.0, 100.0), button: PointerButton::Secondary, pressed: true, modifiers: Modifiers::NONE });
+    let _ = ctx.run_ui(raw2, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let p = texturecraft_ui_egui::viewport::pen_pressure(ui);
+            assert!((p - 0.2).abs() < 1e-4, "secondary pressed must not clear the cached pressure to 1.0: {p}");
+        });
+    });
+}
