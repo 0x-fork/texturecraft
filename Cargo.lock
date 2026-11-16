@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "craft-usd"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=556d02941ad3b97b1d109e9c08d4477d647deb1f#556d02941ad3b97b1d109e9c08d4477d647deb1f"
+source = "git+https://github.com/storytold/craft-libs?rev=456abf7b7a2e6919b5a16e35fa2bf4e796f88674#456abf7b7a2e6919b5a16e35fa2bf4e796f88674"
 dependencies = [
  "lz4_flex",
  "thiserror 2.0.21",
