@@ -60,7 +60,18 @@ pub(crate) fn read(bytes: &[u8]) -> Result<RawMesh> {
     let (mut normals, mut uvs, mut colors) = (Vec::new(), Vec::new(), Vec::new());
     // Elements may appear in any order, so take the vertex count from the header.
     let nverts: usize = elements.iter().filter(|e| e.name == "vertex").map(|e| e.count).fold(0, usize::saturating_add);
+    // The shared ASCII reader counts the delimiter after a value as read; the previous reader
+    // left it in the remaining bytes. Only an element without properties can notice the difference.
+    let ascii_slack = usize::from(enc == Encoding::Ascii);
     for el in &elements {
+        // An element without properties reads nothing, so its rows are skipped. Its count stays
+        // bounded by the bytes left, as the previous reader counted them.
+        if el.props.is_empty() {
+            if el.count > body.remaining().saturating_add(ascii_slack) {
+                return Err(malformed(KIND, format!("element \"{}\" claims {} items but the file is too short", el.name, el.count)));
+            }
+            continue;
+        }
         // Every item takes at least one byte, so the count can never exceed what is left.
         if el.count > body.remaining() {
             return Err(malformed(KIND, format!("element \"{}\" claims {} items but the file is too short", el.name, el.count)));
@@ -202,6 +213,14 @@ fn header(bytes: &[u8]) -> Result<(Vec<Element>, Encoding, usize)> {
 #[allow(clippy::unwrap_used)]
 mod shared_rows_tests {
     use super::*;
+
+    #[test]
+    fn trailing_propertyless_element_after_a_newline_still_opens() {
+        let bytes = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nelement edge 1\nend_header\n0 0 0\n";
+        assert_eq!(read(bytes).unwrap().positions, vec![Vec3::new(0.0, 0.0, 0.0)]);
+        let huge = b"ply\nformat ascii 1.0\nelement vertex 1\nproperty float x\nproperty float y\nproperty float z\nelement edge 3\nend_header\n0 0 0\n";
+        assert!(read(huge).is_err());
+    }
 
     #[test]
     fn binary_scalar_endianness_matches_ascii() {
