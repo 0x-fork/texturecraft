@@ -265,9 +265,36 @@ fn crate_body_bevel(resolution: u32) -> f32 {
 #[test]
 fn the_sample_crate_bevels_read_the_same_at_512_1024_and_2048() {
     let (coarse, reference, fine) = (crate_body_bevel(512), crate_body_bevel(1024), crate_body_bevel(2048));
-    // The 1024 bake is unchanged (the smooth-shading ring is sized in texels of a 1024 map); a texel-sized ring read 0.531 at 512 and 0.508 at 2048
-    assert!((0.5135..0.5175).contains(&reference), "1024: {reference}");
+    // The smooth-shading ring is sized on the mesh (0.521 at 1024); a texel-sized ring read 0.531 at 512, 0.516 at 1024 and 0.508 at 2048
+    assert!((0.5196..0.5234).contains(&reference), "1024: {reference}");
     assert!((coarse - reference).abs() < 0.002 && (fine - reference).abs() < 0.002, "512: {coarse}, 1024: {reference}, 2048: {fine}");
+}
+
+/// Median curvature of the sphere texels whose height `|y|` lies in `band`
+fn sphere_band(curvature: &[(Vec3, f32)], band: std::ops::Range<f32>) -> f32 {
+    median(curvature.iter().filter(|(p, _)| band.contains(&p.y.abs())).map(|(_, value)| *value).collect())
+}
+
+#[test]
+fn a_sphere_reads_the_same_wherever_its_uv_texels_are_larger_or_smaller() {
+    let full = primitives::sphere(1.0, 64, 32);
+    let mut half = full.clone();
+    half.uvs.iter_mut().for_each(|uv| *uv *= 0.5);
+    let mut parameters = settings(128, &[BakedMap::Curvature]);
+    // A narrow manual range, so the sphere's gentle curvature reads well above mid-grey
+    parameters.maps.curvature.parameters.mesh.value_min = -0.05;
+    parameters.maps.curvature.parameters.mesh.value_max = 0.05;
+    let bake = |m: &Mesh| covered_values(m, &run(m, &parameters).unwrap(), BakedMap::Curvature);
+    let (full, half) = (bake(&full), bake(&half));
+    let (equator, pole) = (sphere_band(&full, 0.0..0.3), sphere_band(&full, 0.8..0.95));
+    let (half_equator, half_pole) = (sphere_band(&half, 0.0..0.3), sphere_band(&half, 0.8..0.95));
+    assert!(equator > 0.55, "equator {equator}");
+    // A ring sized in texels read the poles, where the texels are a third smaller, darker, and the half-size island brighter
+    assert!((pole - equator).abs() < 0.01, "equator {equator}, near the poles {pole}");
+    assert!(
+        (half_equator - equator).abs() < 0.01 && (half_pole - pole).abs() < 0.01,
+        "full-size island {equator} and {pole}, half-size island {half_equator} and {half_pole}"
+    );
 }
 
 fn median(mut values: Vec<f32>) -> f32 {
