@@ -124,6 +124,19 @@ fn a_bent_normal_declared_without_pixels_in_an_older_project_is_dropped_and_repo
 }
 
 #[test]
+fn a_bent_normal_with_pixels_but_no_declaration_in_an_older_project_is_dropped_and_reported() {
+    let mut sample = sample();
+    let bent = Arc::new([0.5, 1.0, 0.5].repeat(16 * 16));
+    sample.pf.baked.get_mut(&0).unwrap().maps.insert(BakedMap::BentNormal, bent);
+    assert!(!sample.pf.project.texture_sets[0].baked.contains(&BakedMap::BentNormal));
+    sample.pf.project.format_version = TANGENT_BENT_NORMAL_VERSION - 1;
+    let older = load_project_bytes(&save_project_bytes(&sample.pf).unwrap()).unwrap();
+    assert!(!older.baked[&0].maps.contains_key(&BakedMap::BentNormal));
+    assert_eq!(older.warnings.len(), 1, "{:?}", older.warnings);
+    assert!(older.warnings[0].contains("\"A\""), "{}", older.warnings[0]);
+}
+
+#[test]
 fn world_space_bent_normals_of_older_projects_are_dropped_for_a_rebake() {
     let mut sample = sample();
     let bent = Arc::new([0.5, 1.0, 0.5].repeat(16 * 16));
