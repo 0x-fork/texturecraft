@@ -104,28 +104,7 @@ pub(crate) fn numeric(t: u8) -> Option<(Scalar, usize)> {
 
 /// Decompress Crate's LZ4 framing into at most `max_out` bytes.
 pub(crate) fn decompress(input: &[u8], max_out: usize) -> Result<Vec<u8>> {
-    let bad = |e: lz4_flex::block::DecompressError| malformed(KIND, format!("LZ4 data: {e}"));
-    let (&chunks, mut rest) = input.split_first().ok_or_else(|| malformed(KIND, "empty compressed block"))?;
-    // LZ4 expands at most ~255×: never allocate more than the input can produce.
-    let mut out = vec![0u8; max_out.min(input.len().saturating_mul(256).saturating_add(64))];
-    let written = if chunks == 0 {
-        lz4_flex::block::decompress_into(rest, &mut out).map_err(bad)?
-    } else {
-        if chunks > 127 {
-            return Err(malformed(KIND, "bad LZ4 chunk count"));
-        }
-        let mut total = 0usize;
-        for _ in 0..chunks {
-            let size = rest.get(..4).and_then(|b| b.try_into().ok()).map(i32::from_le_bytes).ok_or_else(|| malformed(KIND, "truncated LZ4 chunk"))?;
-            let size = usize::try_from(size).map_err(|_| malformed(KIND, "negative LZ4 chunk size"))?;
-            let chunk = rest.get(4..4usize.saturating_add(size)).ok_or_else(|| malformed(KIND, "truncated LZ4 chunk"))?;
-            rest = rest.get(4 + size..).unwrap_or_default();
-            total += lz4_flex::block::decompress_into(chunk, out.get_mut(total..).unwrap_or_default()).map_err(bad)?;
-        }
-        total
-    };
-    out.truncate(written);
-    Ok(out)
+    craft_usd::decompress(input, max_out).map_err(|e| malformed(KIND, e.to_string()))
 }
 
 /// Crate's LZ4 framing for one chunk (inputs are far below LZ4's ~2 GB chunk limit).

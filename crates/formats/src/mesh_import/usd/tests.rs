@@ -421,6 +421,21 @@ fn integer_coding_round_trips() {
 }
 
 #[test]
+fn shared_crate_lz4_retains_chunk_and_budget_policy() {
+    let mut frame = vec![2];
+    for raw in [b"abc".as_slice(), b"def".as_slice()] {
+        let block = lz4_flex::block::compress(raw);
+        frame.extend((block.len() as i32).to_le_bytes());
+        frame.extend(block);
+    }
+    frame.extend(b"old reader ignores this tail");
+    assert_eq!(codec::decompress(&frame, 6).unwrap(), b"abcdef");
+    assert!(codec::decompress(&frame, 5).is_err());
+    assert!(codec::decompress(&[1, 255, 255, 255, 255], 64).is_err());
+    assert!(codec::decompress(&[128], 64).is_err());
+}
+
+#[test]
 fn malformed_usd_never_panics() {
     // A small two-material mesh keeps the byte loops fast.
     let src = r#"#usda 1.0

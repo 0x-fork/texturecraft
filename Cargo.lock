@@ -924,6 +924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-usd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=556d02941ad3b97b1d109e9c08d4477d647deb1f#556d02941ad3b97b1d109e9c08d4477d647deb1f"
+dependencies = [
+ "lz4_flex",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-window"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=390fe98b0dd3fb84db7c3af7cbd958db4e8cc585#390fe98b0dd3fb84db7c3af7cbd958db4e8cc585"
@@ -4449,6 +4458,7 @@ dependencies = [
  "craft-mcmat",
  "craft-mesh",
  "craft-tcraft",
+ "craft-usd",
  "craft-zip",
  "exr",
  "flate2",
