@@ -483,6 +483,7 @@ fn cage_and_skew_controls_require_a_high_poly_and_grey_out_with_a_reason() {
     let mut harness = harness(None);
     harness.state_mut().ui.dock.focus(Panel::CommonSettings);
     harness.run_steps(3);
+
     // Without a high poly everything that needs one shows greyed, as in the reference
     for needs_high in ["Match", "Max Frontal Distance", "Edge Protection"] {
         assert!(harness.get_by_label(needs_high).accesskit_node().is_disabled(), "{needs_high} is greyed");
@@ -576,8 +577,10 @@ fn texture_set_names_show_in_full_beside_their_resolution() {
     harness.state_mut().session.doc.project.texture_sets[0].name = "LowerTorso".into();
     harness.state_mut().ui.dock.focus(Panel::TextureSetList);
     harness.run_steps(3);
+
     // "LowerTorso" is about 75 points wide; cut short it collapses to an ellipsis of about 20
     const FULL_NAME_MIN_WIDTH: f32 = 60.0;
+
     // The breadcrumb names the set too; the list row is the top-most
     let row = harness.get_all_by_label("LowerTorso").min_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap();
     let width = row.rect().width();
@@ -612,6 +615,7 @@ fn the_eye_greys_the_baking_meshes_and_holds_the_project_mesh() {
         assert!(harness.get_by_label(greyed).accesskit_node().is_disabled(), "{greyed} is greyed");
     }
     assert!(harness.state().ui.bake_visualization.project_mesh.shown);
+
     // The header, not its "Reset Project Mesh (LP)" button further right
     let header = harness.get_all_by_label_contains("Project Mesh (LP)").min_by(|a, b| a.rect().left().total_cmp(&b.rect().left())).unwrap();
     header.click();
@@ -625,9 +629,11 @@ fn picking_material_while_painting_keeps_bake_modes_neutral_material() {
     let mut harness = harness(None);
     harness.state_mut().ui.mode = Mode::Painting;
     harness.run_steps(3);
+
     // Painting mode shows the 3D and 2D views, each with a view menu; the 3D view's comes first
     harness.get_all_by_value("Material").next().unwrap().click();
     harness.run_steps(3);
+
     // The menu entry, not the dropdown that shows the same word
     let entry = harness.get_all_by_label("Material").find(|node| node.accesskit_node().role() != Role::ComboBox).unwrap();
     entry.click();

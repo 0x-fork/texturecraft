@@ -265,7 +265,7 @@ fn bake_neutral_material_shades_the_low_poly_in_its_settings() {
 
 #[test]
 fn bake_neutral_material_looks_the_same_moving_as_still() {
-    // A moving view only ever shows its first frame; with the whole quality in it, it stays close to the settled image (one sample a frame was 6.6 levels off)
+    // Full quality keeps the first frame near settled; one sample missed by 6.6 levels
     const MAX_MEAN_LEVELS: f32 = 4.0;
     let Some((mut h, frame)) = setup() else { return };
 
@@ -280,6 +280,7 @@ fn bake_neutral_material_looks_the_same_moving_as_still() {
         render(&mut h, &still, "bake_neutral_settling");
     }
     let settled = render(&mut h, &still, "bake_neutral_settled");
+
     // Compared on the ball in the middle of the view, where the reflections are
     let (width, height) = (frame.size[0], frame.size[1]);
     let ball = (width * 3 / 8..width * 5 / 8).flat_map(|x| (height / 4..height / 2).map(move |y| (x, y)));
@@ -424,6 +425,7 @@ fn oversized_bake_high_poly_leaves_the_view_renderable() {
     let high = primitives::sphere(0.5, 16, 8);
     headless.renderer.set_bake_high(&headless.device, &headless.queue, Some(&high), 1).unwrap();
     let limit = headless.device.limits().max_buffer_size;
+
     // The viewport vertex contains position, normal, tangent and UV: twelve f32 values
     let vertex_count = limit as usize / (12 * std::mem::size_of::<f32>()) + 1;
     let oversized = texturecraft_geom::Mesh { positions: vec![Vec3::ZERO; vertex_count], ..Default::default() };

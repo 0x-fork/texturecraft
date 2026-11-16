@@ -65,7 +65,7 @@ impl BakeSceneLink {
             }
             self.reach.sync(session, self.high_id, visualization.only_set, out);
         } else if self.high_sent {
-            // A hidden high poly leaves the GPU; showing it again sends it and its colours under the same id, so its reach is not worked out again
+            // Drop the hidden GPU mesh but keep its id so its reach can be reused
             out.bake_high = Some((None, self.high_id));
             self.high_sent = false;
             self.reach.resend();
@@ -90,6 +90,7 @@ impl BakeSceneLink {
         }
         self.cages.truncate(set_count);
         self.cages.resize_with(set_count, || None);
+        let mut shared_edges = None;
 
         for (texture_set, link) in self.cages.iter_mut().enumerate() {
             let (Some(key), Some(set)) = (CageShellKey::of(session, texture_set), session.doc.project.texture_sets.get(texture_set)) else { continue };
@@ -100,11 +101,26 @@ impl BakeSceneLink {
                     if link.max_frontal == max_frontal {
                         continue;
                     }
+
                     link.max_frontal = max_frontal;
                 }
                 _ => {
                     self.next_topology += 1;
-                    let shell = session.bake_cage_inputs(texture_set).ok().flatten().and_then(|inputs| inputs.cage_shell().ok()).map(Arc::new);
+                    let shell = session
+                        .bake_cage_inputs(texture_set)
+                        .ok()
+                        .flatten()
+                        .and_then(|inputs| {
+                            let result = if inputs.uses_mesh(&session.mesh) {
+                                let (wire_edges, missing_seam_edges) =
+                                    shared_edges.get_or_insert_with(|| (session.mesh.wire_edges(), session.mesh.missing_seam_edges()));
+                                inputs.cage_shell_with_edges(wire_edges, missing_seam_edges)
+                            } else {
+                                inputs.cage_shell()
+                            };
+                            result.ok()
+                        })
+                        .map(Arc::new);
                     *link = Some(CageLink { key, shell, topology: self.next_topology, max_frontal });
                 }
             }
@@ -199,6 +215,7 @@ mod tests {
         texturecraft_engine::execute(&mut session, "bake.settings", &json!({"ts": "all", "averageNormals": false})).unwrap();
         let rebuilt = sync(&mut link, &session, everything());
         assert_ne!(rebuilt.bake_cages.first().unwrap().2, *topology, "new settings rebuild the cage");
+
         // The rebuilt cage starts a new reach: let it finish so the last check sees only what the resend starts
         red_share(&mut link, &session, everything());
 

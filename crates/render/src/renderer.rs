@@ -884,8 +884,10 @@ impl Renderer {
                 fragment_entry(4, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison)),
             ],
         );
+
         // The display textures, the aux texture, the sampler
         let textures = DisplayKind::ALL.len() as u32 + 1;
+
         // Displacement reads the height (and the sampler) in the vertex shader
         let height = DisplayKind::ALL.iter().position(|kind| *kind == DisplayKind::Height).unwrap_or(0) as u32;
         let set_entries: Vec<_> = (0..textures)
@@ -922,7 +924,7 @@ impl Renderer {
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4, 3 => Float32x2],
         })];
 
-        // shortcut: the RGBA8 fallback clips highlights above 1 and bands in the darks; encode (e.g. RGBM) if WebGL2 without float color buffers turns out to matter
+        // RGBA8 fallback clips bright highlights and dark gradients
         let hdr_format = if hdr_renderable(device) { HDR_FORMAT } else { COLOR_FORMAT };
         let hdr_target = |fragment_entry_point, blend| Some((fragment_entry_point, hdr_format, blend));
         let always = || Some(depth_state(false, wgpu::CompareFunction::Always));
@@ -1259,6 +1261,7 @@ impl Renderer {
         if self.mesh.as_ref().is_some_and(|m| m.id == id) {
             return;
         }
+
         let verts = subdivide::vertices(mesh);
         let mk = |label: &str, data: &[u8], usage: wgpu::BufferUsages| upload_buffer(device, queue, label, data, usage);
         let mut idx_bytes = bytemuck::cast_slice::<u32, u8>(&mesh.indices).to_vec();
@@ -1266,7 +1269,8 @@ impl Renderer {
         let vb = mk("tc_vb", bytemuck::cast_slice(&verts), wgpu::BufferUsages::VERTEX);
         let ib = mk("tc_ib", &idx_bytes, wgpu::BufferUsages::INDEX);
         let draws: Vec<(u32, u32, usize)> = mesh.submeshes.iter().map(|s| (s.start, s.count, s.material)).collect();
-        // Mesh edges per material (polygons, not their triangles), for the wireframes.
+
+        // Use polygon edges for each material's wireframe
         let mut line_idx: Vec<u32> = Vec::new();
         let mut line_draws = Vec::new();
         for (m, edges) in mesh.wire_edges().into_iter().enumerate() {
@@ -1896,10 +1900,11 @@ impl Renderer {
         if sample >= TAA_SAMPLES {
             return;
         }
+
         let aspect = frame.size[0].max(1) as f32 / frame.size[1].max(1) as f32;
         let mut vp = frame.camera.view_proj(aspect);
         if sample > 0 {
-            // Sub-pixel jitter in clip space: a box filter over the pixel once averaged.
+            // Sub-pixel jitter averages into a box filter
             let (jx, jy) = (halton(sample, 2) - 0.5, halton(sample, 3) - 0.5);
             vp = Mat4::from_translation(Vec3::new(2.0 * jx / frame.size[0].max(1) as f32, 2.0 * jy / frame.size[1].max(1) as f32, 0.0)) * vp;
         }
@@ -1911,13 +1916,13 @@ impl Renderer {
                 (1.0, [sx, sy, pan[0], pan[1]])
             }
         };
-        // Data views (channels, mesh maps, UV checker, the 2D view) show values as they are: no
-        // exposure, tone mapping, effects or shadows.
+
+        // Data views bypass exposure, tone mapping, effects and shadows
         let data = uv_view > 0.5 || s.view_mode != 0;
         let fx = |v: f32| if s.post_effects && !data { v.clamp(0.0, 1.0) } else { 0.0 };
         let bloom = fx(s.bloom) > 0.0;
-        // The key light lives in the environment: turn it with it (the inverse of env_rotate in
-        // mesh.wgsl maps environment directions to world directions).
+
+        // Turn the key light with the environment
         let (sin, cos) = s.env_rotation_deg.to_radians().sin_cos();
         let [lx, ly, lz, lw] = s.light;
         let light = Vec3::new(cos * lx + sin * lz, ly, cos * lz - sin * lx);
@@ -1926,19 +1931,19 @@ impl Renderer {
             self.ensure_dense(device, queue);
         }
         let disp = match self.mesh.as_ref().filter(|_| displace) {
-            // Height-to-normal's slope: strength 1 tilts 45° for a height change of 1 over 1/16 of
-            // the UV square; the vertex shader samples the mip whose texels match the vertex spacing.
+            // A unit height across 1/16 of UV space tilts 45°; use the mip nearest vertex spacing
             Some(m) => [1.0, m.world_per_uv / 16.0, 1.0 / (m.dense.as_ref().unwrap_or(&m.geo).triangles.max(1) as f32 * 0.5).sqrt(), 0.0],
             None => [0.0; 4],
         };
         let shadow_disp = [disp[0], disp[1] * s.height_strength, disp[2], 0.0];
         let shadow_vp = if !data && s.shadows && lw > 0.0 { self.update_shadow(device, queue, encoder, light, shadow_disp, &frame.visible) } else { None };
         let radius = self.mesh.as_ref().map_or(1.0, |m| m.radius);
-        // Background rays come from a perspective camera even in orthographic views (an ortho
-        // ray grid would show a single flat environment color).
+
+        // Perspective background rays prevent flat color in orthographic views
         let bg_vp = OrbitCamera { ortho: false, ..frame.camera }.view_proj(aspect);
         let e = frame.camera.eye();
-        // Scene effects (3D material view; they need float targets for depths and signed light).
+
+        // Scene effects need float targets for depths and signed light
         let scene_fx = !data && frame.kind == ViewKind::Scene && self.hdr_format == HDR_FORMAT && self.mesh.is_some();
         let dof = s.dof.filter(|_| scene_fx);
         let sss = s.sss_blur.filter(|m| scene_fx && m.iter().any(|v| *v > 0.0));
@@ -1947,7 +1952,8 @@ impl Renderer {
         let cam = &frame.camera;
         let half_h = (cam.fov.clamp(5.0, 150.0).to_radians() * 0.5).tan();
         let height = frame.size[1].max(1) as f32;
-        // Pixels per world unit at view depth z: k / z in perspective, k in orthographic views.
+
+        // Perspective pixels per world unit vary with depth
         let k = if cam.ortho { height / (2.0 * cam.distance.max(1e-6) * half_h) } else { height / (2.0 * half_h) };
         let ppw = |z: f32| if cam.ortho { k } else { k / z.max(1e-6) };
         let dof_c = dof.map_or([0.0; 4], |[focus, aperture]| {
@@ -1967,7 +1973,7 @@ impl Renderer {
             uv_xform,
             light: [light.x, light.y, light.z, lw],
             light_vp: shadow_vp.unwrap_or(Mat4::IDENTITY).to_cols_array_2d(),
-            // Normal offset: 1.5 shadow texels of the light frustum (2 × radius wide).
+            // Offset by 1.5 shadow texels to avoid self-shadowing
             shadow: [if shadow_vp.is_some() { 1.0 } else { 0.0 }, 1.0 / SHADOW_SIZE as f32, radius * 3.0 / SHADOW_SIZE as f32, 0.0],
             material: [if s.spec_gloss { 1.0 } else { 0.0 }, if s.parallax { 1.0 } else { 0.0 }, sample as f32, s.ior],
             scatter: [s.scatter[0], s.scatter[1], s.scatter[2], if sss.is_some() { 1.0 } else { 0.0 }],
@@ -2000,9 +2006,7 @@ impl Renderer {
         }
         let weight = 1.0 / f64::from(sample + 1);
         match v.fx.as_ref().filter(|_| fx_on) {
-            // The effects run on every frame before it joins the average, so idle accumulation
-            // also smooths the depth of field's sampling pattern (turned each frame). Their
-            // G-buffer (unjittered) stays valid while the view accumulates.
+            // Effects run before averaging; the unjittered G-buffer remains valid
             Some(f) => {
                 self.scene_pass(encoder, v, &v.hdr, globals_bg, frame);
                 if sample == 0 {
@@ -2138,7 +2142,8 @@ impl Renderer {
             None => (&self.mesh_pipeline, frame.shade.wireframe_3d.then_some(&self.wire3d_pipeline)),
             Some(_) => (&self.uv_pipeline, frame.shade.wireframe.then_some(&self.wire_pipeline)),
         };
-        // Transmissive surfaces refract what the behind pass rendered this frame.
+
+        // Transmissive surfaces refract the current behind pass
         let refr = v.behind.as_ref().filter(|_| frame.shade.refraction).map_or(&self.refr_black, |b| &b.bg);
         let highlight = frame.shade.highlight.filter(|_| uv_ts.is_none()).map(|highlight| (&self.highlight_pipeline, highlight.set));
         self.draw_scene(encoder, v, resolve, globals_bg, frame, pipe, wire, highlight, refr);
@@ -2260,6 +2265,7 @@ impl Renderer {
 
         let shown = |texture_set: usize| bake.only_set.is_none_or(|only| only == texture_set) && frame.visible.get(texture_set).copied().unwrap_or(true);
         let cages = || self.cages.iter().enumerate().filter(move |(texture_set, _)| shown(*texture_set)).filter_map(|(_, cage)| cage.as_ref());
+
         // The translucent faces first, then the wireframe over them
         if bake.cage_surface.shown {
             pass.set_pipeline(&self.cage_pipeline);

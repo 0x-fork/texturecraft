@@ -83,6 +83,7 @@ fn triangles_by_block(mesh: &Mesh, material: usize, grid: (u32, u32), baked_bloc
 
         // Every block the triangle's UV bounds touch, so a triangle across a border counts in both
         let (uv_min, uv_max) = uvs.iter().fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(uv_min, uv_max), uv| (uv_min.min(*uv), uv_max.max(*uv)));
+
         // Capped at the grid: a stray huge UV must not walk billions of blocks
         let columns = uv_min.x.floor().max(0.0) as u32..=((uv_max.x.ceil() as u32).saturating_sub(1)).min(grid.0 - 1);
         let rows = uv_min.y.floor().max(0.0) as u32..=((uv_max.y.ceil() as u32).saturating_sub(1)).min(grid.1 - 1);

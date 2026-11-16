@@ -28,6 +28,7 @@ fn the_bake_panel_has_the_bake_paint_brush_and_dragging_paints_the_map() {
     let mut h = harness();
     h.get_by_label("Skew Correction");
     assert!(h.state().session.doc.bake_paint.is_empty() && !h.state().ui.bake_paint_brush.on);
+
     // Off: a drag in the view paints nothing
     h.drag_at(STROKE_START);
     h.hover_at(STROKE_END);

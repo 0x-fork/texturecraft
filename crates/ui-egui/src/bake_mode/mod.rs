@@ -50,6 +50,7 @@ pub fn texture_sets(app: &mut TextureCraftApp, ui: &mut Ui) {
                     if ui.checkbox(&mut is_enabled, "").on_hover_text(tr("Include in Bake")).changed() {
                         app.run("bake.settings", json!({ "ts": set_index, "enabled": is_enabled }));
                     }
+
                     // The name takes the room the resolution leaves, so it only shortens when the row is too narrow
                     let resolution_text = format!("{resolution}x{resolution}");
                     let name_width = (ui.available_width() - resolution_menu_width(ui, &resolution_text) - ui.spacing().item_spacing.x).max(0.0);

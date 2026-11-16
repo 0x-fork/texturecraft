@@ -82,7 +82,7 @@ impl UvGBuffer {
             .zip(bary.par_chunks_mut(band_texels))
             .enumerate()
             .map(|(band_index, (band_tri, band_bary))| {
-                // Per texel: how many triangles cover it, and whether any has its center strictly inside, so the count doesn't depend on triangle order
+                // Keep cover counts and strict interiors independent of triangle order
                 let mut covers = vec![0u32; band_tri.len()];
                 let mut strict_cover = vec![false; band_tri.len()];
                 let first_row = band_index as u32 * BAND;
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn half_triangle_covers_texels_with_centers_inside() {
-        // One triangle covering the lower-left half of UV space (v down: y = v·H).
+        // UV v increases down, so this triangle covers the lower-left half
         let m =
             Mesh::from_parts(vec![Vec3::ZERO, Vec3::X, Vec3::Y], None, vec![Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0), Vec2::new(1.0, 1.0)], vec![0, 1, 2], "m")
                 .unwrap();
@@ -206,6 +206,7 @@ mod tests {
         // The texel center (0.5, 0.5) lies inside the first triangle and on the diagonal the other two share
         let uv = vec![Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.2), Vec2::new(0.2, 1.0), Vec2::new(1.0, 1.0), Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];
         let positions = vec![Vec3::ZERO; uv.len()];
+
         // In either order: the inside cover first, or the two edge covers first
         for indices in [vec![0, 1, 2, 0, 3, 4, 0, 5, 3], vec![0, 3, 4, 0, 5, 3, 0, 1, 2]] {
             let m = Mesh::from_parts(positions.clone(), None, uv.clone(), indices.clone(), "m").unwrap();

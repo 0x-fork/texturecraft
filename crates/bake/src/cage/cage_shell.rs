@@ -26,6 +26,30 @@ impl CageShell {
     /// The cage of `request`'s texture set, from the same ray starts the bake uses
     pub fn new(request: &BakeRequest) -> Result<CageShell, BakeError> {
         let ray_frame = RayFrame::new(request, MeshExtent::of(request.mesh)?)?;
+        Self::build(request, ray_frame, || {
+            // Each scan drops other materials' edges before the next scan starts
+            let wire_edges = request.mesh.wire_edges().into_iter().nth(request.material).unwrap_or_default().into_iter().collect();
+            let missing_seam_edges = request.mesh.missing_seam_edges().into_iter().nth(request.material).unwrap_or_default().into_iter().collect();
+            (wire_edges, missing_seam_edges)
+        })
+    }
+
+    /// Build a cage using edges already scanned for every material of the low mesh
+    pub fn new_with_edges(request: &BakeRequest, wire_edges: &[Vec<(u32, u32)>], missing_seam_edges: &[Vec<(u32, u32)>]) -> Result<CageShell, BakeError> {
+        let ray_frame = RayFrame::new(request, MeshExtent::of(request.mesh)?)?;
+        Self::build(request, ray_frame, || {
+            (
+                wire_edges.get(request.material).into_iter().flatten().copied().collect(),
+                missing_seam_edges.get(request.material).into_iter().flatten().copied().collect(),
+            )
+        })
+    }
+
+    fn build(
+        request: &BakeRequest,
+        ray_frame: RayFrame,
+        edge_sets: impl FnOnce() -> (HashSet<(u32, u32)>, HashSet<(u32, u32)>),
+    ) -> Result<CageShell, BakeError> {
         let (frame, mesh) = (&ray_frame, request.mesh);
         let triangles: Vec<usize> = mesh.triangles_of(request.material).collect();
         let (positions, starts): (Vec<Vec3>, Vec<RayStart>) = triangles
@@ -38,8 +62,7 @@ impl CageShell {
             })
             .unzip();
 
-        let wire_edges: HashSet<(u32, u32)> = mesh.wire_edges().into_iter().nth(request.material).unwrap_or_default().into_iter().collect();
-        let missing_seam_edges: HashSet<(u32, u32)> = mesh.missing_seam_edges().into_iter().nth(request.material).unwrap_or_default().into_iter().collect();
+        let (wire_edges, missing_seam_edges) = edge_sets();
         let (mut edge_corners, mut seam_corners) = (HashMap::new(), HashMap::new());
         for (triangle_index, &triangle) in triangles.iter().enumerate() {
             let Some(vertices) = mesh.tri(triangle) else { continue };

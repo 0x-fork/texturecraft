@@ -45,6 +45,7 @@ fn overlap_is_measured_at_the_same_detail_in_every_uv_tile() {
     // Tiles 1001 and 1010 make a grid ten tiles wide; 512 texels across all ten would give each tile about 51
     const TEXELS_PER_TILE: f32 = 512.0;
     const SLIVER_TEXELS: f32 = 4.0;
+
     // Inside tile 1010 (column 9), clear of the wide raster's texel centres
     const SLIVER_LEFT_U: f32 = 9.1;
     let (left, right) = (SLIVER_LEFT_U, SLIVER_LEFT_U + SLIVER_TEXELS / TEXELS_PER_TILE);

@@ -48,6 +48,7 @@ pub(crate) fn bake_warnings(app: &TextureCraftApp, ctx: &egui::Context, viewport
 pub(crate) fn cached_warnings(ctx: &egui::Context, session: &Session) -> Arc<Vec<String>> {
     let id = egui::Id::unique("bake_check_warnings");
     let key = inputs_key(session);
+
     // A handle, not an address: a rebuilt high poly could reuse a dropped one's address
     let high = session.bake_meshes.merged_high().map_or_else(Weak::new, |high| Arc::downgrade(&high.mesh));
     if let Some((cached_key, cached_high, cached)) = ctx.data(|data| data.get_temp::<(String, Weak<Mesh>, Arc<Vec<String>>)>(id))

@@ -136,7 +136,13 @@ fn the_cage_lists_its_hard_edges_without_a_uv_seam() {
             cage_paint: None,
             tiles: (1, 1),
         };
-        CageShell::new(&request).unwrap()
+        let shell = CageShell::new(&request).unwrap();
+        let shared = CageShell::new_with_edges(&request, &low.wire_edges(), &low.missing_seam_edges()).unwrap();
+        assert_eq!(shared.positions, shell.positions);
+        assert_eq!(shared.corners(0.1), shell.corners(0.1));
+        assert_eq!(shared.edges, shell.edges);
+        assert_eq!(shared.missing_seams, shell.missing_seams);
+        shell
     };
 
     let smooth = quad_with_diagonal_normal(Vec3::Z);
@@ -150,5 +156,37 @@ fn the_cage_lists_its_hard_edges_without_a_uv_seam() {
         let mut ends = [shell.positions[*from as usize], shell.positions[*to as usize]];
         ends.sort_by(|a, b| a.x.total_cmp(&b.x));
         assert_eq!(ends, diagonal, "the line runs along the hard diagonal");
+    }
+}
+
+#[test]
+fn shared_edges_select_the_requested_material() {
+    let mut mesh = primitives::cube(1.0);
+    mesh.append(&primitives::cube(1.0));
+    let bvh = Bvh::new(&mesh);
+    let bake_settings = settings(16, &[BakedMap::Normal]);
+    let wire_edges = mesh.wire_edges();
+    let missing_seam_edges = mesh.missing_seam_edges();
+
+    for material in 0..mesh.materials.len() {
+        let request = BakeRequest {
+            low_base_color: &[],
+            mesh: &mesh,
+            bvh: &bvh,
+            material,
+            settings: &bake_settings,
+            high: None,
+            cage: None,
+            skew: None,
+            cage_paint: None,
+            tiles: (1, 1),
+        };
+        let direct = CageShell::new(&request).unwrap();
+        let shared = CageShell::new_with_edges(&request, &wire_edges, &missing_seam_edges).unwrap();
+
+        assert_eq!(shared.positions, direct.positions);
+        assert_eq!(shared.starts, direct.starts);
+        assert_eq!(shared.edges, direct.edges);
+        assert_eq!(shared.missing_seams, direct.missing_seams);
     }
 }

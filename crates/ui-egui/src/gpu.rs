@@ -388,6 +388,7 @@ impl CallbackTrait for ViewCallback {
                     reports.memory.push(texture_set);
                 }
             }
+
             // This frame's report drain already ran: the next frame shows the toast
             gpu.ctx.request_repaint();
         }

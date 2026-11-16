@@ -551,7 +551,7 @@ fn spawn_worker<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 's
         let _ = tx.send(f());
     });
     if let Err(e) = spawned {
-        // The receiver reports a stopped worker.
+        // The receiver reports a stopped worker
         log::warn!("could not start {name}: {e}");
     }
     rx
@@ -559,7 +559,7 @@ fn spawn_worker<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 's
 
 #[cfg(target_arch = "wasm32")]
 fn spawn_worker<T: Send + 'static>(_name: &str, f: impl FnOnce() -> T + Send + 'static) -> std::sync::mpsc::Receiver<T> {
-    // shortcut: no threads on the web; the work runs on the UI thread (the window pauses).
+    // Web builds run the work synchronously because threads are unavailable
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = tx.send(f());
     rx

@@ -124,7 +124,7 @@ fn fs_wire_cage_missing_seam(surface: BakeViewOut) -> @location(0) vec4<f32> {
     return g.bake_missing_seam;
 }
 
-// The neutral material at the texture set's normal `n` (over the mesh normal `n_geo`) seen from direction `v`, darkened by its occlusion `ao_channel`, lit along the packed bent normal `packed_bent` when it is on
+// Shade the neutral material using the texture set's normal, occlusion and optional bent normal
 fn neutral_color(n: vec3<f32>, n_geo: vec3<f32>, v: vec3<f32>, world_position: vec3<f32>, ao_channel: f32, packed_bent: vec3<f32>) -> vec4<f32> {
     let albedo = g.bake_neutral_color.rgb;
     let rough = clamp(g.bake_neutral.x, MIN_NEUTRAL_ROUGHNESS, 1.0);
@@ -140,6 +140,7 @@ fn neutral_color(n: vec3<f32>, n_geo: vec3<f32>, v: vec3<f32>, world_position: v
     let diffuse = sh_irradiance(normalize(mix(n, bent, g.bake_bent_normal.x)), vec3<f32>(0.0)) * diffuse_col * ao;
     let r = reflect(-v, n);
     let horizon = clamp(1.0 + HORIZON_FADE * dot(r, n_geo), 0.0, 1.0);
+
     // Reflections pointing away from the open direction are occluded
     let bent_occlusion = mix(1.0, smoothstep(BENT_OCCLUSION_START, BENT_OCCLUSION_END, dot(bent, r)), g.bake_bent_normal.y);
     let spec = sampled_reflection(n, v, rough, f0, nov) * ao * bent_occlusion * horizon * horizon;
@@ -159,7 +160,7 @@ fn neutral_color(n: vec3<f32>, n_geo: vec3<f32>, v: vec3<f32>, world_position: v
     return vec4<f32>(select(color, vec3<f32>(0.0), any(color != color)), 1.0);
 }
 
-// The environment's GGX reflection at normal `n`, importance sampled with this frame's share of the neutral material's quality; each accumulated frame takes other samples
+// Importance sample the environment's GGX reflection with a new sequence each frame
 fn sampled_reflection(n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3<f32>, nov: f32) -> vec3<f32> {
     let count = max(u32(g.bake_neutral_color.w), 1u);
     let a = rough * rough;
@@ -170,6 +171,7 @@ fn sampled_reflection(n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3<f32>, nov
     let tangent = normalize(cross(side, n));
     let bitangent = cross(n, tangent);
     let frame_offset = u32(g.material.z) * count;
+
     // Schlick-GGX geometry term at k = a / 2
     let k = a * 0.5;
     let view_visibility = nov / (nov * (1.0 - k) + k);
@@ -178,7 +180,8 @@ fn sampled_reflection(n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3<f32>, nov
     for (var index = 0u; index < count; index++) {
         let xi = vec2<f32>(fract((f32(index) + 0.5) / f32(count) + f32(g.material.z) * GOLDEN_RATIO_FRACTION), radical_inverse(index + frame_offset));
         let phi = 2.0 * PI * xi.x;
-        // Clamped: near roughness 0 the ratio rounds a hair past 1, and the sine's square root would be NaN (a black pixel once frames accumulate)
+
+        // Clamp cosine before computing its sine to avoid NaN near zero roughness
         let cos_theta = clamp(sqrt((1.0 - xi.y) / (1.0 + (a2 - 1.0) * xi.y)), 0.0, 1.0);
         let sin_theta = sqrt(1.0 - cos_theta * cos_theta);
         let h = normalize(tangent * (cos(phi) * sin_theta) + bitangent * (sin(phi) * sin_theta) + n * cos_theta);
@@ -193,13 +196,15 @@ fn sampled_reflection(n: vec3<f32>, v: vec3<f32>, rough: f32, f0: vec3<f32>, nov
         let voh = clamp(dot(v, h), MIN_COSINE, 1.0);
         let denominator = max(noh * noh * (a2 - 1.0) + 1.0, MIN_GGX_DENOMINATOR);
         let pdf = a2 / (PI * denominator * denominator) * noh / (4.0 * voh);
+
         // Filtered importance sampling: each sample reads the mip that covers its share of the lobe
         let lod = clamp(0.5 * log2(1.0 / (f32(count) * pdf * texel_solid_angle)) + FILTERED_SAMPLING_LOD_BIAS, 0.0, g.env.y);
         let light = textureSampleLevel(env_tex, env_samp, env_uv(l), lod).rgb;
         let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - voh, 5.0);
         let visibility = view_visibility * nol / (nol * (1.0 - k) + k);
         let contribution = light * fresnel * (visibility * voh / (noh * nov));
-        // A sample that still came out NaN (x != x) is dropped: the frame average would carry it, and post effects spread it over the image
+
+        // Drop NaN samples before they contaminate the frame average
         sum += select(contribution, vec3<f32>(0.0), any(contribution != contribution));
     }
     return sum / f32(count);

@@ -45,6 +45,7 @@ pub(crate) fn bake_visualization_panel(app: &mut TextureCraftApp, ui: &Ui, view:
             // Its own backing, so the panel reads in every theme over whatever the 3D view shows
             egui::Frame::popup(ui.style()).fill(tokens.panel.gamma_multiply(PANEL_OPACITY)).show(ui, |ui| {
                 ui.set_width(PANEL_WIDTH);
+
                 // Ids renamed with the reference defaults, so open/closed states saved by earlier builds don't carry over
                 let mut collapsing_state = CollapsingState::load_with_default_open(ui.ctx(), ui.make_persistent_id("baking_visualization_open"), true);
                 if header(ui, toggles, collapsing_state.is_open()).clicked() {
@@ -132,6 +133,7 @@ fn collapsible(ui: &mut Ui, id: &str, title: &str, opening: SectionOpening, rese
             ui.set_min_height(EYE_BUTTON_SIZE);
             let text = egui::RichText::new(format!("{}  {title}", section_chevron(ui, collapsing_state.is_open()).text())).strong().color(tokens.text_strong);
             let header = ui.add(egui::Label::new(text).selectable(false).sense(egui::Sense::click()));
+
             // Dimmed while the section is closed, as the reference draws it
             let reset = resettable.then(|| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
