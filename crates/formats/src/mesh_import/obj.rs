@@ -21,7 +21,7 @@ fn read_inner(bytes: &[u8]) -> Result<RawMesh> {
         max_data_bytes: super::MAX_MESH_FILE_BYTES as usize,
         ..Default::default()
     };
-    let options = craft_mesh::obj::ReadOptions { strict: true, preserve_runs: true, ignore_material_libraries: true };
+    let options = craft_mesh::obj::ReadOptions { strict: true, preserve_runs: true, ignore_material_libraries: true, groups_as_objects: true };
     let scene = craft_mesh::obj::read_with_options(bytes, &limits, &mut craft_mesh::no_external, &options).map_err(|e| match e {
         craft_mesh::Error::TooLarge(s) => FormatError::TooLarge(s),
         e => FormatError::Invalid(e.to_string()),
