@@ -175,7 +175,7 @@ impl Writer {
 
     /// Compressed integers: their compressed size, then the LZ4-framed coding.
     fn ints(&mut self, v: &[i64]) -> Result<()> {
-        let comp = codec::compress(&codec::encode_ints(v, 4))?;
+        let comp = codec::compress(&codec::encode_ints(v, 4)?)?;
         self.out.extend_from_slice(&(comp.len() as u64).to_le_bytes());
         self.out.extend_from_slice(&comp);
         Ok(())
