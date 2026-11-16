@@ -57,7 +57,8 @@ fn a_floor_under_a_sphere_tilts_its_bent_normals_up_the_texture() {
     .unwrap();
     mesh.append(&floor);
     let mut parameters = settings(128, &[BakedMap::BentNormal]);
-    parameters.maps.bent_normal.parameters.rays = RaySettings { rays: 128, max_distance: 4.0, relative_to_bounding_box: false, ..parameters.maps.bent_normal.parameters.rays };
+    parameters.maps.bent_normal.parameters.rays =
+        RaySettings { rays: 128, max_distance: 4.0, relative_to_bounding_box: false, ..parameters.maps.bent_normal.parameters.rays };
 
     let out = run(&mesh, &parameters).unwrap();
 

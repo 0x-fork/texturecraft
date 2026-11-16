@@ -114,7 +114,7 @@ fn legacy_bakes_load_as_is_without_layout_conversion() {
 #[test]
 fn world_space_bent_normals_of_older_projects_are_dropped_for_a_rebake() {
     let mut sample = sample();
-    let bent = Arc::new(vec![0.5, 1.0, 0.5].repeat(16 * 16));
+    let bent = Arc::new([0.5, 1.0, 0.5].repeat(16 * 16));
     sample.pf.baked.get_mut(&0).unwrap().maps.insert(BakedMap::BentNormal, bent);
     sample.pf.project.texture_sets[0].baked.insert(BakedMap::BentNormal);
 
