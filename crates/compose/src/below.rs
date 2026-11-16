@@ -157,6 +157,7 @@ impl StackKey {
                     match &effect.kind {
                         EffectKind::Fill { source, .. } => record_image_reference(source),
                         EffectKind::Material(fill) => fill.sources.values().for_each(&mut record_image_reference),
+                        EffectKind::Generator(generator) => generator.inputs.values().for_each(&mut record_image_reference),
                         _ => {}
                     }
                 }
@@ -279,7 +280,7 @@ impl BelowCache {
         self.clock += 1;
         *stamp = self.clock;
         self.order.push_back((t, self.clock));
-        // Drop superseded uses once they outnumber the tiles.
+        // Drop superseded uses once they outnumber the tiles
         if self.order.len() > 2 * self.tiles.len() + 64 {
             let tiles = &self.tiles;
             self.order.retain(|(t, s)| tiles.get(t).is_some_and(|(stamp, _)| stamp == s));
