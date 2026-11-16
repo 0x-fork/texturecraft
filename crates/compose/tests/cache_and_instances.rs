@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use texturecraft_compose::{BelowCache, Composite, Inputs, PaintTarget, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached};
 use texturecraft_core::{
-    BlendMode, Channel, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, Procedural,
-    ProceduralKind, Project, Projection, Source, TextureSet,
+    BakedMap, BlendMode, Channel, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground,
+    Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
 };
 use texturecraft_geom::{Mesh, UvGBuffer, primitives};
 use texturecraft_texel::{TILE, TileImage, to_u16};
@@ -798,4 +798,37 @@ fn cached_stack_tracks_referenced_images_only() {
         composite_tiles(&input, &mut expected, &tiles);
         assert!(output == expected, "{stage}");
     }
+}
+
+#[test]
+fn generator_input_image_changes_invalidate_stack_key() {
+    use std::sync::Arc;
+    use texturecraft_compose::{ImageRes, ImageStore, StackKey};
+
+    let mut fixture = fixture();
+    heavy_stack(&mut fixture);
+    let generated_layer = fixture.project.texture_sets[0].stack[1];
+    let mask = fixture.project.layer_mut(generated_layer).unwrap().mask.as_mut().unwrap();
+    let EffectKind::Generator(generator) = &mut mask.effects[0].kind else { panic!("expected generator") };
+    *generator = Generator::new(GeneratorKind::Dirt);
+    generator.inputs.insert(BakedMap::AmbientOcclusion, Source::image("used"));
+
+    let image = |value| Arc::new(ImageRes { width: RES, height: RES, rgba: vec![[value; 4]; (RES * RES) as usize], srgb: false });
+    let mut images = ImageStore::default();
+    images.insert("used".into(), image(0.1));
+    let baked = Default::default();
+    let roots = &fixture.project.texture_sets[0].stack;
+    let key = |images: &ImageStore| StackKey::new(&fixture.project, &fixture.pixels, &baked, images, 0, roots).unwrap();
+    let original = key(&images);
+
+    images.insert("unrelated".into(), image(0.5));
+    assert_eq!(key(&images), original, "an unrelated image leaves the key unchanged");
+
+    let old_image = Arc::downgrade(&images["used"]);
+    images.insert("used".into(), image(0.9));
+    assert!(old_image.upgrade().is_none(), "the cache must not retain the old image pixels");
+    assert!(key(&images) != original, "replacing a generator input must invalidate the cache");
+
+    images.remove("used");
+    assert!(key(&images) != original, "removing a generator input must invalidate the cache");
 }
