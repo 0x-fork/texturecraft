@@ -496,7 +496,7 @@ fn drop_world_space_bent_normals(pf: &mut ProjectFile) {
     pf.baked.retain(|_, maps| !maps.maps.is_empty());
     if !names.is_empty() {
         pf.warnings.push(format!(
-            "Warning: This project was saved with bent normal maps in world space. TextureCraft now bakes them in tangent space and removed the old ones from texture set {}. Bake the Bent Normals map again.",
+            "Warning: This project was saved with bent normal maps in world space. TextureCraft now bakes them in tangent space and removed the old ones from texture set {}. Bake the Bent Normals map again, or set its image again if it came from a file.",
             names.join(", ")
         ));
     }

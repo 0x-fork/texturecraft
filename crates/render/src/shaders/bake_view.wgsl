@@ -136,7 +136,8 @@ fn neutral_color(n: vec3<f32>, n_geo: vec3<f32>, t: vec3<f32>, b: vec3<f32>, v: 
     let nov = clamp(abs(dot(n, v)), MIN_COSINE, 1.0);
 
     // An unbaked bent normal reads as the neutral gray (length 0): the surface normal stands in
-    let bent_tangent = packed_bent * 2.0 - 1.0;
+    // Decoded like the normal map (texel 128 is exactly 0)
+    let bent_tangent = snorm8(packed_bent);
     let bent_world = t * bent_tangent.x + b * bent_tangent.y + n_geo * bent_tangent.z;
     let bent = select(n, normalize(bent_world), dot(bent_tangent, bent_tangent) > BENT_NORMAL_MIN_LENGTH * BENT_NORMAL_MIN_LENGTH);
     let diffuse = sh_irradiance(normalize(mix(n, bent, g.bake_bent_normal.x)), vec3<f32>(0.0)) * diffuse_col * ao;
