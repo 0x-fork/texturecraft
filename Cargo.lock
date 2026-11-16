@@ -756,6 +756,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-cms"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=272a095b61257917693da3d09f2f8ecccd7f0295#272a095b61257917693da3d09f2f8ecccd7f0295"
+dependencies = [
+ "md-5",
+ "rayon",
+]
+
+[[package]]
 name = "craft-dialogs"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=390fe98b0dd3fb84db7c3af7cbd958db4e8cc585#390fe98b0dd3fb84db7c3af7cbd958db4e8cc585"
@@ -818,7 +827,7 @@ dependencies = [
 [[package]]
 name = "craft-mcmat"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=828b07f3c9f3f6a2e935087b859016a5e46b1c31#828b07f3c9f3f6a2e935087b859016a5e46b1c31"
+source = "git+https://github.com/storytold/craft-libs?rev=c376774f15ae7cd3b06a7ac664f01a8645af4b83#c376774f15ae7cd3b06a7ac664f01a8645af4b83"
 dependencies = [
  "craft-zip",
  "serde",
@@ -853,6 +862,17 @@ dependencies = [
  "egui",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+]
+
+[[package]]
+name = "craft-tcraft"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=c376774f15ae7cd3b06a7ac664f01a8645af4b83#c376774f15ae7cd3b06a7ac664f01a8645af4b83"
+dependencies = [
+ "craft-zip",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -904,6 +924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-usd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=f7655fb3ea59d6b21681700c0ff880823f5bb709#f7655fb3ea59d6b21681700c0ff880823f5bb709"
+dependencies = [
+ "lz4_flex",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-window"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=390fe98b0dd3fb84db7c3af7cbd958db4e8cc585#390fe98b0dd3fb84db7c3af7cbd958db4e8cc585"
@@ -927,7 +956,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=828b07f3c9f3f6a2e935087b859016a5e46b1c31#828b07f3c9f3f6a2e935087b859016a5e46b1c31"
+source = "git+https://github.com/storytold/craft-libs?rev=c376774f15ae7cd3b06a7ac664f01a8645af4b83#c376774f15ae7cd3b06a7ac664f01a8645af4b83"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -2498,6 +2527,16 @@ name = "maybe-owned"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4facc753ae494aeb6e3c22f839b158aebd4f9270f55cd3c79906c45476c47ab4"
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
 
 [[package]]
 name = "memchr"
@@ -4414,9 +4453,12 @@ name = "texturecraft-formats"
 version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
+ "craft-cms",
  "craft-materialx",
  "craft-mcmat",
  "craft-mesh",
+ "craft-tcraft",
+ "craft-usd",
  "craft-zip",
  "exr",
  "flate2",
@@ -4473,6 +4515,7 @@ dependencies = [
  "log",
  "pollster 0.4.0",
  "rayon",
+ "serde",
  "texturecraft-bake",
  "texturecraft-compose",
  "texturecraft-core",
