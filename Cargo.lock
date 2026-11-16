@@ -851,9 +851,9 @@ dependencies = [
 [[package]]
 name = "craft-mesh"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=4f9c718985182ae8e26fc1bdf3adce81161b99f9#4f9c718985182ae8e26fc1bdf3adce81161b99f9"
+source = "git+https://github.com/storytold/craft-libs?rev=b952ca0231867c8ad6749ac44cab5fc903c3ad52#b952ca0231867c8ad6749ac44cab5fc903c3ad52"
 dependencies = [
- "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=4f9c718985182ae8e26fc1bdf3adce81161b99f9)",
+ "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=b952ca0231867c8ad6749ac44cab5fc903c3ad52)",
  "miniz_oxide 0.9.1",
 ]
 
@@ -960,7 +960,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=4f9c718985182ae8e26fc1bdf3adce81161b99f9#4f9c718985182ae8e26fc1bdf3adce81161b99f9"
+source = "git+https://github.com/storytold/craft-libs?rev=b952ca0231867c8ad6749ac44cab5fc903c3ad52#b952ca0231867c8ad6749ac44cab5fc903c3ad52"
 dependencies = [
  "flate2",
  "thiserror 2.0.21",
@@ -4490,7 +4490,6 @@ dependencies = [
  "texturecraft-geom",
  "texturecraft-texel",
  "thiserror 2.0.21",
- "tobj",
  "zip",
 ]
 
@@ -4687,12 +4686,6 @@ dependencies = [
  "serde_core",
  "zerovec",
 ]
-
-[[package]]
-name = "tobj"
-version = "4.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6eb8e04167c1c0c76b5de63226fd733485ad63ef71e40de31e16272f47b099e2"
 
 [[package]]
 name = "tokio"
