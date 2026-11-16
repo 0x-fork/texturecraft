@@ -111,6 +111,25 @@ fn the_menu_opens_the_window() {
 }
 
 #[test]
+fn every_setting_has_an_info_icon_and_the_window_ends_with_a_note() {
+    let dir = temp_dir("info");
+    let mut h = app_on_a_quad(&dir);
+    open_window(&mut h);
+    assert!(h.query_by_label("Choosing or reimporting a mesh recomputes all channels.").is_some(), "the note above the buttons");
+    let icons: Vec<_> = h.get_all_by_label(egui_phosphor::regular::INFO).collect();
+    assert_eq!(icons.len(), 6, "mesh path, Select, Reimport mesh, Preserve strokes, Normal map format, UV tiles");
+    let tip = "Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it.";
+    assert!(h.query_by_label(tip).is_none(), "no tooltip before hovering");
+    // The icons sit in the order of the window's rows: the format one is the fifth from the top.
+    let mut centers: Vec<_> = icons.iter().map(|n| n.rect().center()).collect();
+    centers.sort_by(|a, b| a.y.total_cmp(&b.y));
+    let format_center = centers[4];
+    h.hover_at(format_center);
+    h.run_steps(30);
+    assert!(h.query_by_label(tip).is_some(), "hovering the normal map format icon explains it");
+}
+
+#[test]
 fn another_file_shows_its_path_and_ticks_reimport() {
     let dir = temp_dir("select");
     let mut h = app_on_a_quad(&dir);

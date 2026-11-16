@@ -6,14 +6,17 @@ use serde_json::{Value, json};
 use texturecraft_engine::core::NormalFormat;
 
 use crate::TextureCraftApp;
+use crate::dock::info_icon;
 use crate::file_dialogs::{Bound, FileDialog};
 use crate::i18n::{tr, trf};
 use crate::state::ProjectConfig;
 use crate::theme::caption;
-use crate::widgets::{combo, primary_button};
+use crate::widgets::primary_button;
 
-/// Room for the Select... button beside the path.
-const SELECT_BUTTON_WIDTH: f32 = 90.0;
+/// Room for the Select... button and its info icon beside the path.
+const SELECT_BUTTON_WIDTH: f32 = 150.0;
+/// Room for an info icon at the end of a row.
+const INFO_WIDTH: f32 = 28.0;
 
 /// Opens the window on the current project, with nothing chosen yet.
 pub(crate) fn open(app: &mut TextureCraftApp) {
@@ -109,6 +112,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(tr("3D mesh"));
+            info_icon(ui, tr("The mesh file the project is built on. Hover the path to see it in full."));
             let shown = changed.clone().unwrap_or_else(|| named.clone());
             let font = egui::TextStyle::Body.resolve(ui.style());
             let max = (ui.available_width() - SELECT_BUTTON_WIDTH).max(60.0);
@@ -119,6 +123,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 ui.label(elide_start(&shown, measure)).on_hover_text(&shown);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                info_icon(ui, tr("Choose another mesh file for the project. It is read when you press OK."));
                 select = ui.button(tr("Select...")).clicked();
             });
         });
@@ -130,10 +135,15 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         // Without a file on disk there is nothing to read again.
         let mut reimport = config.reimport || changed.is_some();
         let free = changed.is_none() && readable;
-        let tick = ui.add_enabled(free, egui::Checkbox::new(&mut reimport, tr("Reimport mesh")));
+        let tick = ui
+            .horizontal(|ui| {
+                let tick = ui.add_enabled(free, egui::Checkbox::new(&mut reimport, tr("Reimport mesh")));
+                info_icon(ui, tr("Read the mesh file again, keeping the layers and painted strokes"));
+                tick
+            })
+            .inner;
         if free {
             config.reimport = reimport;
-            tick.on_hover_text(tr("Read the mesh file again, keeping the layers and painted strokes"));
         } else if changed.is_none() {
             tick.on_disabled_hover_text(tr("There is no mesh file to read again. Select one."));
         }
@@ -141,26 +151,40 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         ui.label(caption(tr("Import settings")));
         // Only a mesh that is going to be read has settings to apply.
         let importing = changed.is_some() || (config.reimport && readable);
-        ui.add_enabled(importing, egui::Checkbox::new(&mut config.preserve, tr("Preserve stroke positions on mesh")))
-            .on_hover_text(tr("Painted strokes follow the surface when the new mesh's UVs differ"));
+        ui.horizontal(|ui| {
+            ui.add_enabled(importing, egui::Checkbox::new(&mut config.preserve, tr("Preserve stroke positions on mesh")));
+            info_icon(ui, tr("Painted strokes follow the surface when the new mesh's UVs differ"));
+        });
 
         ui.add_space(12.0);
         ui.label(caption(tr("PROJECT SETTINGS")));
         ui.add_space(4.0);
         let shown_format = config.normal_format.unwrap_or(normal_format);
-        combo(ui, tr("Normal map format"), format_name(shown_format), |ui| {
-            for format in [NormalFormat::OpenGl, NormalFormat::DirectX] {
-                if ui.selectable_label(format == shown_format, format_name(format)).clicked() {
-                    config.normal_format = (format != normal_format).then_some(format);
-                }
-            }
-        })
-        .on_hover_text(tr(
-            "For the whole project: how normal map images set as mesh maps are read (set them again after a change), and the default for export",
-        ));
+        ui.horizontal(|ui| {
+            ui.label(tr("Normal map format"));
+            egui::ComboBox::from_id_salt(tr("Normal map format"))
+                .width((ui.available_width() - INFO_WIDTH).max(60.0))
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .selected_text(format_name(shown_format))
+                .show_ui(ui, |ui| {
+                    for format in [NormalFormat::OpenGl, NormalFormat::DirectX] {
+                        if ui.selectable_label(format == shown_format, format_name(format)).clicked() {
+                            config.normal_format = (format != normal_format).then_some(format);
+                        }
+                    }
+                })
+                .response
+                .on_hover_text(tr(
+                    "For the whole project: how normal map images set as mesh maps are read (set them again after a change), and the default for export",
+                ));
+            info_icon(ui, tr("Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it."));
+        });
         ui.add_space(4.0);
         // Read only here; the Texture Set Settings panel changes them.
-        ui.label(tr("UV Tile settings (UDIMs)"));
+        ui.horizontal(|ui| {
+            ui.label(tr("UV Tile settings (UDIMs)"));
+            info_icon(ui, tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings."));
+        });
         if tiles.iter().all(|(_, t)| t.is_none()) {
             ui.label(egui::RichText::new(tr("No UV tiles")).weak());
         }
@@ -171,6 +195,8 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         ui.label(egui::RichText::new(tr("Change them in Texture Set Settings")).small().weak());
 
         ui.add_space(12.0);
+        ui.label(egui::RichText::new(tr("Choosing or reimporting a mesh recomputes all channels.")).small().weak());
+        ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ok |= ui.add(primary_button(ui, tr("OK"))).clicked();
