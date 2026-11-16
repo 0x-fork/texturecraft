@@ -483,13 +483,13 @@ fn load_with_budget<R: Read + Seek>(reader: R, mut budget: LoadBudget) -> Result
 /// Older files hold bent normal maps in world space, which every reader now takes as tangent
 /// space: drop them (the bake settings stay) and ask for a re-bake.
 fn drop_world_space_bent_normals(pf: &mut ProjectFile) {
+    for maps in pf.baked.values_mut() {
+        maps.maps.remove(&BakedMap::BentNormal);
+    }
+    // The declaration goes for every set, with or without pixels, so a set that only declared it is told too
     let mut names = Vec::new();
-    for (ts, maps) in &mut pf.baked {
-        if maps.maps.remove(&BakedMap::BentNormal).is_none() {
-            continue;
-        }
-        if let Some(set) = pf.project.texture_sets.get_mut(*ts) {
-            set.baked.remove(&BakedMap::BentNormal);
+    for set in &mut pf.project.texture_sets {
+        if set.baked.remove(&BakedMap::BentNormal) {
             names.push(format!("\"{}\"", set.name));
         }
     }
