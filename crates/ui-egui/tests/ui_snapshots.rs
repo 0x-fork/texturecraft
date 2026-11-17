@@ -282,16 +282,16 @@ fn bake_uv_tiles_snapshot() {
     harness.state_mut().ui.mode = Mode::Baking;
     save(&mut harness, &output_dir, "bake-uv-tiles");
 
-    harness.get_by_value("128 × 128*").click();
+    harness.get_by_value("128x128*").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-menu");
     harness.get_by_label("Remove resolution override").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-inherited");
-    assert!(harness.query_by_value("128 × 128*").is_none());
+    assert!(harness.query_by_value("128x128*").is_none());
     assert!(harness.state().session.doc.project.texture_sets[0].tile_resolutions.is_empty());
     let inherited_resolution = harness.get_by_label("UV tile 1002 resolution").rect().center();
     harness.hover_at(inherited_resolution);
     save(&mut harness, &output_dir, "bake-tile-resolution-hover");
-    assert_eq!(harness.get_all_by_value("256 × 256").count(), 2);
+    assert_eq!(harness.get_all_by_value("256x256").count(), 2);
     harness.hover_at(egui::pos2(900.0, 500.0));
     harness.state_mut().session.undo().unwrap();
     harness.run_steps(3);
@@ -438,6 +438,37 @@ fn nested_layers_snapshot() {
         }
     }
     save(&mut harness, &output_dir, "panel-layers-narrow-nested");
+}
+
+/// The mask anchor and generator micro controls in the integrated properties panel
+#[test]
+#[ignore]
+fn mask_anchor_micro_detail_snapshot() {
+    use serde_json::{Value, json};
+    use texturecraft_engine::execute;
+
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
+    let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+    execute(&mut session, "mask.add.black", &json!({"layer": lower})).unwrap();
+    execute(&mut session, "effect.add.fill", &json!({"layer": lower, "value": 0.4})).unwrap();
+    let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower, "target": "mask", "name": "Wear"})).unwrap()["effect"].as_u64().unwrap();
+    let upper = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+    let generator = execute(&mut session, "effect.add.generator", &json!({"layer": upper, "generator": "dirt", "microAnchor": anchor})).unwrap()["effect"]
+        .as_u64()
+        .unwrap();
+    execute(&mut session, "layer.select", &json!({"layer": upper, "target": generator})).unwrap();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.dock.focus(Panel::Properties);
+    harness.run_steps(6);
+    harness.get_by_label("Micro detail").scroll_to_me();
+    save(&mut harness, &output_dir, "mask-anchor-micro-detail");
 }
 
 #[test]
