@@ -109,11 +109,11 @@ fn grazing_allowance(depth: &EyeDepth, point: Vec3, facing: f32, pixels_per_unit
 /// 0.001 % of the radius)
 const RAY_START_PER_BIAS: f32 = 0.0025;
 
-/// Whether a ray from `point` (on a surface facing `facing` toward the eye along `to_eye`) reaches
+/// Whether a ray from `point` toward the eye along `to_eye` reaches
 /// the eye without hitting the mesh. The coarse depth buffer is checked first; this ray resolves
 /// uncertain texels and those made apparently visible only by the grazing allowance. Orthographic
 /// rays travel parallel to the view direction up to the eye plane.
-fn ray_reaches_eye(context: &RasterCtx, depth: &EyeDepth, point: Vec3, normal: Vec3, facing: f32, to_eye: Vec3) -> bool {
+fn ray_reaches_eye(context: &RasterCtx, depth: &EyeDepth, point: Vec3, geometric_normal: Vec3, to_eye: Vec3) -> bool {
     let direction = depth.orthographic_to_eye.unwrap_or(to_eye);
     let eye_distance = (context.eye - point).dot(direction);
     let lift = depth.bias * RAY_START_PER_BIAS;
@@ -122,21 +122,23 @@ fn ray_reaches_eye(context: &RasterCtx, depth: &EyeDepth, point: Vec3, normal: V
     }
 
     // Lift off the surface on the eye's side to avoid self-hits without skipping nearby occluders
-    let side = if facing < 0.0 { -normal } else { normal };
+    let side = if geometric_normal.dot(direction) < 0.0 { -geometric_normal } else { geometric_normal };
     let origin = point + side * lift + direction * lift;
     !context.bvh.occluded(origin, direction, eye_distance - lift)
 }
 
 /// Resolve coarse depth uncertainty without letting a grazing allowance hide nearby geometry
-fn surface_visible(context: &RasterCtx, depth: &EyeDepth, point: Vec3, normal: Vec3, facing: f32, to_eye: Vec3, skip: f32) -> bool {
-    let tested = point + to_eye * skip;
+fn surface_visible(context: &RasterCtx, depth: &EyeDepth, point: Vec3, geometric_normal: Vec3, to_eye: Vec3, grazing_offset: f32, off_surface: f32) -> bool {
+    // Mirror displacement may cross the source surface; grazing displacement may cross an occluder
+    let allowed_point = point + to_eye * off_surface;
+    let tested = allowed_point + to_eye * grazing_offset;
     let (visible, uncertain) = depth.visibility(tested);
     if visible {
-        // A shifted query can pass a sheet inside the allowance, so confirm at the surface
-        return (skip <= 0.0 || depth.visible(point)) || ray_reaches_eye(context, depth, point, normal, facing, to_eye);
+        // Confirm past mirror displacement so a grazing offset cannot skip a foreground sheet
+        return (grazing_offset <= 0.0 || depth.visible(allowed_point)) || ray_reaches_eye(context, depth, allowed_point, geometric_normal, to_eye);
     }
 
-    uncertain && ray_reaches_eye(context, depth, point, normal, facing, to_eye)
+    uncertain && ray_reaches_eye(context, depth, allowed_point, geometric_normal, to_eye)
 }
 
 /// What the rasterizer reads.
@@ -231,6 +233,10 @@ fn scan_triangle(
     let (uv_a, uv_b, uv_c) = (context.mesh.uvs.get(first)?, context.mesh.uvs.get(second)?, context.mesh.uvs.get(third)?);
     let (position_a, position_b, position_c) = (context.mesh.positions.get(first)?, context.mesh.positions.get(second)?, context.mesh.positions.get(third)?);
     let (normal_a, normal_b, normal_c) = (context.mesh.normals.get(first)?, context.mesh.normals.get(second)?, context.mesh.normals.get(third)?);
+    let seen_geometric_normal = (*position_b - *position_a)
+        .cross(*position_c - *position_a)
+        .try_normalize()
+        .map(|normal| stamp.source.map_or(normal, |source| source.direction(normal)));
     let x0 = (uv_a.x.min(uv_b.x).min(uv_c.x) * width as f32).floor().max(0.0) as u32;
     let x1 = ((uv_a.x.max(uv_b.x).max(uv_c.x) * width as f32).ceil().max(0.0) as u32).min(width);
     let y0 = (uv_a.y.min(uv_b.y).min(uv_c.y) * height as f32).floor().max(0.0) as u32;
@@ -286,8 +292,8 @@ fn scan_triangle(
             }
 
             if let Some(depth) = context.depth {
-                let skip = grazing_allowance(depth, seen, facing, pixels_per_unit) + off_surface;
-                if !surface_visible(context, depth, seen, seen_normal, facing, to_eye, skip) {
+                let grazing_offset = grazing_allowance(depth, seen, facing, pixels_per_unit);
+                if !surface_visible(context, depth, seen, seen_geometric_normal.unwrap_or(seen_normal), to_eye, grazing_offset, off_surface) {
                     continue;
                 }
             }
@@ -332,6 +338,71 @@ mod tests {
     use texturecraft_geom::primitives;
 
     #[test]
+    fn tilted_normals_do_not_hide_a_visible_grazing_plane() {
+        let mut plane = primitives::plane(2.0, 8);
+        plane.normals.fill(Vec3::new(0.0, 0.866_025_4, -0.5));
+        let camera = looking_down(3.0);
+        let all = painted(&plane, &camera, Vec3::ZERO, 0.3, false, false);
+        let visible = painted(&plane, &camera, Vec3::ZERO, 0.3, false, true);
+
+        let to_eye = camera.eye().normalize();
+        assert!(plane.normals.first().is_some_and(|normal| normal.dot(to_eye) < 0.0));
+        assert!(Vec3::Y.dot(to_eye) > 0.0, "the geometric plane faces the eye");
+        assert!(all > 1000, "the stamp reaches the plane");
+        assert_eq!(visible, all, "tilted shading normals must not move the ray below the plane");
+    }
+
+    #[test]
+    fn mirrored_stamp_accepts_a_source_behind_its_surface() {
+        use texturecraft_geom::glam::{Mat3, Vec2};
+
+        let corners = [Vec3::new(-1.0, 0.03, -1.0), Vec3::new(1.0, 0.03, -1.0), Vec3::new(1.0, 0.03, 1.0), Vec3::new(-1.0, 0.03, 1.0)];
+        let source_corners = corners.map(|point| Vec3::new(point.x, -0.02, point.z));
+        let uvs = [Vec2::ZERO, Vec2::X, Vec2::ONE, Vec2::Y].into_iter().chain([Vec2::ZERO; 4]).collect();
+        let indices = [0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6].to_vec();
+        let mesh = Mesh::from_parts(corners.into_iter().chain(source_corners).collect(), None, uvs, indices, "asymmetric mirror").unwrap();
+        let camera = looking_down(45.0);
+        let bvh = Bvh::new(&mesh);
+        let gbuf = UvGBuffer::new(&mesh, 0, 128, 128);
+        let depth = EyeDepth::render(&mesh, &camera, 480, 270);
+        let context = RasterCtx {
+            mesh: &mesh,
+            bvh: &bvh,
+            gbuf: &gbuf,
+            material: 0,
+            depth: Some(&depth),
+            eye: camera.eye(),
+            backface_culling: false,
+            angle_fade: (89.0, 90.0),
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+        };
+        let stamp = Stamp {
+            center: Vec3::new(0.0, 0.03, 0.0),
+            normal: Vec3::Y,
+            tangent: Vec3::X,
+            bitangent: Vec3::Z,
+            radius: 0.3,
+            flow: 1.0,
+            hardness: 0.9,
+            depth: 1.0,
+            seed: 0,
+            source: Some(crate::StampSource { origin: Vec3::ZERO, to_source: Mat3::from_diagonal(Vec3::new(1.0, -1.0, 1.0)) }),
+        };
+        let mut canvas = StrokeCanvas::new(128, 128);
+        let mapped = Vec3::new(0.0, -0.03, 0.0);
+        let to_eye = (camera.eye() - mapped).normalize();
+
+        assert_eq!(stamp.source.map(|source| source.point(stamp.center)), Some(mapped));
+        assert!(stamp.radius * stamp.depth > 0.01, "the mapped point is inside the off-surface allowance");
+        assert!(bvh.closest(mapped, to_eye, stamp.radius * stamp.depth).is_some(), "the old exact ray hits the source surface");
+        assert!(!depth.visible(mapped), "the unshifted depth query rejects the mapped point");
+        assert!(depth.visible(mapped + to_eye * stamp.radius * stamp.depth), "the off-surface query accepts it");
+        rasterize(&mut canvas, &context, &[stamp]);
+
+        assert!(from_u16(canvas.alpha.get(64, 64)[0]) > 0.9, "the mirrored stamp paints the visible copy texel");
+    }
+
+    #[test]
     fn grazing_ray_detects_a_sheet_inside_the_depth_allowance() {
         let positions = vec![Vec3::new(-0.2, -0.2, 0.005), Vec3::new(0.2, -0.2, 0.005), Vec3::new(0.0, 0.2, 0.005)];
         let mesh = Mesh::from_parts(positions, None, vec![texturecraft_geom::glam::Vec2::ZERO; 3], vec![0, 1, 2], "thin sheet").unwrap();
@@ -359,7 +430,7 @@ mod tests {
         assert!(skip > 0.005 / to_eye.z, "the sheet lies inside the allowance band");
         assert_eq!(depth.visibility(point), (false, true));
         assert!(depth.visible(point + to_eye * skip), "the allowance alone marks the hidden point visible");
-        assert!(!surface_visible(&context, &depth, point, Vec3::Y, facing, to_eye, skip));
+        assert!(!surface_visible(&context, &depth, point, Vec3::Y, to_eye, skip, 0.0));
     }
 
     #[test]
@@ -384,7 +455,7 @@ mod tests {
         let point = Vec3::new(1.0, 0.0, 0.0);
         let to_eye = (camera.eye() - point).normalize();
 
-        assert!(!ray_reaches_eye(&context, &depth, point, Vec3::Z, 1.0, to_eye));
+        assert!(!ray_reaches_eye(&context, &depth, point, Vec3::Z, to_eye));
     }
 
     #[test]
