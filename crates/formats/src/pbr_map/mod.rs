@@ -163,20 +163,27 @@ pub fn classify(name: &str) -> std::result::Result<Detected, &'static str> {
     }
 
     let resolution = name_tokens.iter().filter_map(|t| resolution_of(t)).max().unwrap_or(0);
-    let normal = name_tokens.iter().find_map(|t| normal_format_of(t));
+    let normal = name_tokens.iter().enumerate().find_map(|(i, t)| {
+        normal_format_of(t).or_else(|| match (t.as_str(), name_tokens.get(i + 1).map(String::as_str), name_tokens.get(i + 2).map(String::as_str)) {
+            ("direct", Some("x"), _) | ("d", Some("3"), Some("d")) => Some(NormalFormat::DirectX),
+            ("open", Some("gl"), _) => Some(NormalFormat::OpenGl),
+            _ => None,
+        })
+    });
 
     // (token index, kind, strength) of every known word
     let words: Vec<(usize, MapKind, u8)> = name_tokens.iter().enumerate().filter_map(|(i, t)| word(t).map(|(k, s)| (i, k, s))).collect();
 
     let done = |kind: MapKind, strength: u8| Ok(Detected { kind, normal: if kind == MapKind::Normal { normal } else { None }, resolution, strength });
 
-    // `ao rough metal` written as three words
+    // `ao rough metal` written as three words competes with later map names
+    let mut packed_end = None;
     for w in words.windows(3) {
         if let [(a, MapKind::AmbientOcclusion, _), (b, MapKind::Roughness, _), (c, MapKind::Metallic, _)] = w
             && *b == a + 1
             && *c == b + 1
         {
-            return done(MapKind::PackedOrm, 4);
+            packed_end = Some(*c);
         }
     }
 
@@ -203,6 +210,9 @@ pub fn classify(name: &str) -> std::result::Result<Detected, &'static str> {
             || (*kind == MapKind::Normal
                 && name_tokens.iter().skip(i + 1).all(|t| resolution_of(t).is_some() || normal_format_of(t).is_some() || t.ends_with("bit")))
     });
+    if packed_end.is_some_and(|end| pair.is_none_or(|(index, _)| end >= index) && single.is_none_or(|(index, _, _)| end >= *index)) {
+        return done(MapKind::PackedOrm, 4);
+    }
     match (pair, single) {
         (Some((pair_index, kind)), Some((single_index, _, _))) if pair_index >= *single_index => done(kind, 3),
         (Some((_, kind)), None) => done(kind, 3),
@@ -375,10 +385,18 @@ mod tests {
         assert_eq!(n("a_normal_dx.png"), Some(NormalFormat::DirectX));
         assert_eq!(n("a_NormalDX.png"), Some(NormalFormat::DirectX));
         assert_eq!(n("a_nor_directx_2k.png"), Some(NormalFormat::DirectX));
+        assert_eq!(n("brick_normal_DirectX.png"), Some(NormalFormat::DirectX));
+        assert_eq!(n("brick_normal_d3d.png"), Some(NormalFormat::DirectX));
         assert_eq!(n("a_normal.png"), None);
 
         // `dx` on a map that is not a normal map says nothing
         assert_eq!(n("a_roughness_dx.png"), None);
+    }
+
+    #[test]
+    fn packed_sequence_yields_to_a_later_map_word() {
+        assert_eq!(kind("brick_ao_rough_metal_basecolor.png"), Some(BaseColor));
+        assert_eq!(kind("brick_basecolor_ao_rough_metal.png"), Some(PackedOrm));
     }
 
     #[test]

@@ -73,6 +73,7 @@ pub(super) fn find(cmd: &str, p: &Value) -> Result<Found> {
     let path = strp(p, "path").filter(|s| !s.trim().is_empty()).ok_or_else(|| bad(cmd, "`path` (a folder or .zip) or `files` is required"))?;
     let metadata = std::fs::symlink_metadata(path).map_err(|e| bad(cmd, format!("cannot read {path}: {e}")))?;
     let stem = |s: &str| Path::new(s).file_stem().map(|n| n.to_string_lossy().replace(['_', '-'], " "));
+    let dir_name = |s: &str| Path::new(s).file_name().map(|n| n.to_string_lossy().replace(['_', '-'], " "));
     if metadata.is_dir() {
         let root = Path::new(path).canonicalize().map_err(|e| bad(cmd, format!("cannot read {path}: {e}")))?;
         let mut files = FileList::new();
@@ -80,7 +81,7 @@ pub(super) fn find(cmd: &str, p: &Value) -> Result<Found> {
         walk(&root, &root, 0, &mut visited_entries, &mut files).map_err(|error| bad(cmd, format!("cannot scan {path}: {error}")))?;
         let group = pick_group(cmd, &files)?;
         let files: FileList = files.into_iter().filter(|(n, _)| n.strip_prefix(group.as_str()).is_some_and(|rest| !rest.contains('/'))).collect();
-        let name = if group.is_empty() { stem(path) } else { stem(group.trim_end_matches('/')) }
+        let name = if group.is_empty() { dir_name(path) } else { dir_name(group.trim_end_matches('/')) }
             .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()));
         let root = if group.is_empty() { root } else { root.join(group.trim_end_matches('/')) };
         let files = files.into_iter().map(|(n, s)| (n.rsplit('/').next().unwrap_or(&n).to_string(), s)).collect();
@@ -97,7 +98,7 @@ pub(super) fn find(cmd: &str, p: &Value) -> Result<Found> {
         let files = zip.list(MAX_FILES);
         let group = pick_group(cmd, &files)?;
         let files: FileList = files.into_iter().filter(|(n, _)| n.strip_prefix(group.as_str()).is_some_and(|rest| !rest.contains('/'))).collect();
-        let name = if group.is_empty() { stem(path) } else { stem(group.trim_end_matches('/')) };
+        let name = if group.is_empty() { stem(path) } else { dir_name(group.trim_end_matches('/')) };
         return Ok(Found { source: Origin::Zip(RefCell::new(zip)), files, name });
     }
 

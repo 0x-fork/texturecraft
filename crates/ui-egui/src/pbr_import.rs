@@ -75,7 +75,8 @@ pub fn dropped(app: &mut TextureCraftApp, paths: &[std::path::PathBuf]) -> bool 
     }
 
     let names: Vec<String> = paths.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
-    if names.len() >= 2 && pbr_maps::detect(names.iter().map(|n| (n.as_str(), 0))).chosen.len() >= 2 {
+    let recognized = pbr_maps::detect(names.iter().map(|n| (n.as_str(), 0))).candidates.values().map(Vec::len).sum::<usize>();
+    if recognized >= 2 {
         begin(app, json!({ "files": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>() }));
         return true;
     }

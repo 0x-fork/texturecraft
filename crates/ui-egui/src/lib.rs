@@ -297,6 +297,10 @@ impl TextureCraftApp {
         let glide_from = (id.starts_with("camera.select") || id.starts_with("camera.bookmark")).then_some(self.session.camera);
         match texturecraft_engine::execute(&mut self.session, id, &params) {
             Ok(v) => {
+                // A pending dialog must not import its old source into the replacement project
+                if matches!(id, "file.open" | "file.close" | "project.new" | "project.sample") {
+                    self.pbr_import = None;
+                }
                 if let Some(from) = glide_from.filter(|f| *f != self.session.camera) {
                     self.camera_glide = Some(CameraGlide { from, to: self.session.camera, start: self.last_time });
                     self.session.camera = from;

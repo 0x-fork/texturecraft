@@ -2,12 +2,16 @@
 //! one fill layer.
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Value, json};
 use texturecraft_engine::core::{Channel, Fill, LayerId, LayerKind, NormalFormat, Projection, Source};
 use texturecraft_engine::geom::primitives;
 use texturecraft_engine::{Session, execute};
+
+mod test_folder;
+
+use test_folder::TestFolder;
 
 fn new_session() -> Session {
     Session::new_project("t", primitives::builtin("plane").unwrap(), "builtin:plane", None, 128).unwrap()
@@ -20,11 +24,25 @@ fn session_with_ao() -> Session {
     session
 }
 
-fn folder(tag: &str) -> PathBuf {
-    let directory = std::env::temp_dir().join(format!("tc_pbr_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir_all(&directory).unwrap();
-    directory
+fn folder(tag: &str) -> TestFolder {
+    TestFolder::new(tag)
+}
+
+#[test]
+fn fixture_directory_is_removed_during_unwind() {
+    let path = std::cell::RefCell::new(None);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let directory = folder("unwind");
+        *path.borrow_mut() = Some(directory.as_path().to_path_buf());
+        std::fs::write(directory.join("fixture"), b"fixture").unwrap();
+        panic!("exercise fixture cleanup");
+    }));
+
+    assert!(result.is_err());
+    let path = path.into_inner().unwrap();
+    let remained = path.exists();
+    let _ = std::fs::remove_dir_all(&path);
+    assert!(!remained, "fixture directory remained after unwind: {}", path.display());
 }
 
 fn png(path: &Path, rgb: [u8; 3]) {
@@ -88,7 +106,7 @@ fn a_folder_becomes_one_fill_layer_in_one_undo_step() {
     assert!(matches!(fill.projection, Projection::Uv { scale, .. } if scale == [1.0, 1.0]));
     let layer_name = session.doc.project.layer(LayerId(layer)).unwrap().name.clone();
     assert!(layer_name.starts_with("tc pbr ok"), "named after the folder: {layer_name}");
-    assert_eq!(reply["name"], format!("tc pbr ok {} 1", std::process::id()));
+    assert_eq!(reply["name"], layer_name);
 
     // Every decoded image is ready for the viewport
     for n in session.doc.resources.keys() {
@@ -97,7 +115,6 @@ fn a_folder_becomes_one_fill_layer_in_one_undo_step() {
     execute(&mut session, "edit.undo", &Value::Null).unwrap();
     assert_eq!(session.doc.resources.len(), res);
     assert!(session.doc.project.layer(LayerId(layer)).is_err());
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -112,7 +129,6 @@ fn a_directx_normal_map_is_flipped_to_opengl_where_it_is_sampled() {
         import(&mut session, &directory, extra).unwrap();
         session.update();
         let v = session.caches[0].composite.value(Channel::Normal, 64, 64);
-        let _ = std::fs::remove_dir_all(&directory);
         v[1]
     };
     let (dx, gl) = (green(&["wall_normal_dx.png"], json!({})), green(&["wall_normal_gl.png"], json!({})));
@@ -166,7 +182,6 @@ fn a_packed_orm_image_is_split_into_three_maps() {
     assert!((session.caches[0].composite.value(Channel::Roughness, 64, 64)[0] - 1.0).abs() < 0.01);
     assert!((session.caches[0].composite.value(Channel::Metallic, 64, 64)[0] - 0.9).abs() < 0.01, "still from the ORM image");
     assert!(reply["maps"]["roughness"] == "floor_Roughness.png");
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -179,7 +194,6 @@ fn glossiness_becomes_roughness() {
     assert!(reply["channels"].as_array().unwrap().contains(&json!("roughness")), "{reply}");
     session.update();
     assert!((session.caches[0].composite.value(Channel::Roughness, 64, 64)[0] - 0.2).abs() < 0.01);
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -199,8 +213,6 @@ fn missing_maps_stay_at_their_defaults() {
     let (layers, res) = (session.doc.project.texture_sets[0].stack.len(), session.doc.resources.len());
     assert!(import(&mut session, &empty, json!({})).is_err());
     assert_eq!((session.doc.project.texture_sets[0].stack.len(), session.doc.resources.len()), (layers, res));
-    let _ = std::fs::remove_dir_all(&directory);
-    let _ = std::fs::remove_dir_all(&empty);
 }
 
 #[test]
@@ -222,7 +234,6 @@ fn several_candidates_use_the_best_and_can_be_chosen() {
     assert!(import(&mut session, &directory, json!({"choose": {"baseColor": "nope.png"}})).is_err());
     assert!(import(&mut session, &directory, json!({"choose": {"roughness": "m_albedo_1k.png"}})).is_err());
     assert!(import(&mut session, &directory, json!({"choose": {"bogus": "x"}})).is_err());
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -241,7 +252,23 @@ fn projection_name_and_selected_files() {
     let reply =
         execute(&mut session, "file.importPbrFolder", &json!({"files": [directory.join("moss_col.png").display().to_string()], "name": "Mossy"})).unwrap();
     assert!(session.doc.project.layer(LayerId(reply["layer"].as_u64().unwrap())).unwrap().name.starts_with("Mossy"));
-    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn folder_and_archive_group_names_keep_dots() {
+    let directory = folder("wood_floor_1.5k");
+    png(&directory.join("wood_albedo.png"), [1, 2, 3]);
+    let mut session = new_session();
+    let reply = import(&mut session, &directory, json!({})).unwrap();
+    assert!(reply["name"].as_str().unwrap().contains("1.5k"), "{reply}");
+
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    archive.start_file("wood_1.5k/wood_albedo.png", zip::write::SimpleFileOptions::default()).unwrap();
+    archive.write_all(&std::fs::read(directory.join("wood_albedo.png")).unwrap()).unwrap();
+    let zip_path = directory.join("wood.zip");
+    std::fs::write(&zip_path, archive.finish().unwrap().into_inner()).unwrap();
+    let reply = import(&mut session, &zip_path, json!({})).unwrap();
+    assert_eq!(reply["name"], "wood 1.5k 1");
 }
 
 #[test]
@@ -283,8 +310,6 @@ fn a_zip_and_a_pack_of_folders() {
     // Garbage zip
     std::fs::write(directory.join("bad.zip"), b"PK\x03\x04garbage").unwrap();
     assert!(execute(&mut session, "file.importPbrFolder", &json!({"path": directory.join("bad.zip").display().to_string()})).is_err());
-    let _ = std::fs::remove_dir_all(&directory);
-    let _ = std::fs::remove_dir_all(&pack);
 }
 
 #[test]
@@ -309,11 +334,13 @@ fn hostile_images_are_skipped_without_a_panic() {
     // A folder named like an image, and a link out of the folder
     std::fs::create_dir_all(directory.join("w_opacity.png")).unwrap();
     #[cfg(unix)]
-    {
-        let outside = directory.parent().unwrap().join(format!("tc_pbr_outside_{}.png", std::process::id()));
+    let outside_target = {
+        let outside_dir = folder("outside");
+        let outside = outside_dir.join("w_ao.png");
         png(&outside, [9, 9, 9]);
         std::os::unix::fs::symlink(&outside, directory.join("w_ao.png")).unwrap();
-    }
+        outside_dir
+    };
     let mut session = new_session();
     execute(&mut session, "textureSet.channel.add", &json!({"channel":"emissive"})).unwrap();
     let reply = import(&mut session, &directory, json!({})).unwrap();
@@ -326,7 +353,7 @@ fn hostile_images_are_skipped_without_a_panic() {
     #[cfg(unix)]
     {
         assert!(!reply["maps"].as_object().unwrap().contains_key("ambientOcclusion"), "a link is not followed: {reply}");
-        let _ = std::fs::remove_file(directory.parent().unwrap().join(format!("tc_pbr_outside_{}.png", std::process::id())));
+        assert!(outside_target.join("w_ao.png").exists());
     }
 
     // Every map hostile: an error, and the project is as it was
@@ -335,8 +362,6 @@ fn hostile_images_are_skipped_without_a_panic() {
     let before = (session.doc.project.texture_sets[0].stack.len(), session.doc.resources.len());
     assert!(import(&mut session, &only_bad, json!({})).is_err());
     assert_eq!((session.doc.project.texture_sets[0].stack.len(), session.doc.resources.len()), before);
-    let _ = std::fs::remove_dir_all(&directory);
-    let _ = std::fs::remove_dir_all(&only_bad);
 }
 
 #[test]
@@ -353,7 +378,6 @@ fn bad_params_are_errors() {
     assert!(import(&mut session, &directory, json!({"normalFormat": "sideways"})).is_err());
     assert!(import(&mut session, &directory, json!({"projection": "nope"})).is_err());
     assert!(import(&mut session, &directory.join("a_albedo.png"), json!({})).is_err(), "a single image is not a folder or zip");
-    let _ = std::fs::remove_dir_all(&directory);
 }
 
 #[test]
@@ -407,7 +431,6 @@ fn repeated_import_reports_the_created_layer_name() {
     let layer = session.doc.project.layer(LayerId(reply["layer"].as_u64().unwrap())).unwrap();
     assert_ne!(layer.name, "Moss");
     assert_eq!(reply["name"], layer.name);
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -421,7 +444,6 @@ fn scans_reject_excessive_entries_instead_of_silently_truncating() {
     let selected = execute(&mut session, "file.scanPbrFolder", &json!({"files": files}));
 
     assert!(selected.unwrap_err().to_string().contains("limit"));
-    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -433,8 +455,7 @@ fn scans_count_empty_directories_toward_the_limit() {
         std::fs::create_dir(directory.join(index.to_string())).unwrap();
     }
 
-    let scanned = execute(&mut session, "file.scanPbrFolder", &json!({"path": directory}));
+    let scanned = execute(&mut session, "file.scanPbrFolder", &json!({"path": directory.display().to_string()}));
 
     assert!(scanned.unwrap_err().to_string().contains("limit"));
-    std::fs::remove_dir_all(directory).unwrap();
 }
