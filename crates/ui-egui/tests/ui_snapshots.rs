@@ -31,6 +31,35 @@ fn save(h: &mut Harness<'_, TextureCraftApp>, dir: &Path, name: &str) {
     eprintln!("wrote {}", path.display());
 }
 
+/// Check the saved-brush controls without a GPU adapter
+#[test]
+#[ignore]
+fn brush_presets_popover_snapshot() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let session = texturecraft_engine::sample_session(128, 32).unwrap();
+    let mut harness =
+        Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_pixels_per_point(1.0).build_eframe(|context| TextureCraftApp::new(context, session));
+    let brush = harness.state().session.tool.brush.clone();
+    harness.state_mut().session.brush_presets.list.clear();
+    harness.state_mut().ui.prefs.language = "en".into();
+    harness.state_mut().session.brush_presets.list.push(texturecraft_engine::brush_preset_cmds::UserBrush {
+        name: "Snapshot brush".into(),
+        brush,
+        channels: None,
+        file: None,
+    });
+    assert_eq!(harness.state().session.brush_presets.list.len(), 1);
+    harness.run_steps(6);
+    harness.get_by_label_contains("Brush presets").click();
+    save(&mut harness, &output_dir, "brush-presets-popover-with-user");
+
+    harness.get_by_label("Save current brush").scroll_to_me();
+    save(&mut harness, &output_dir, "brush-presets-controls-with-user");
+    assert!(harness.query_by_label_contains("Snapshot brush").is_some());
+}
+
 #[test]
 #[ignore]
 fn pbr_import_dialog_keeps_choices_after_error() {
