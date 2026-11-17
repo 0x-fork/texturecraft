@@ -23,6 +23,8 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     new_project(app, ctx);
     about(app, ctx);
     settings(app, ctx);
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::project_config::show(app, ctx);
     crate::keymap::window(app, ctx);
     crate::windows::export(app, ctx);
     #[cfg(target_arch = "wasm32")]
