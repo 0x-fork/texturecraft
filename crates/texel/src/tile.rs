@@ -29,6 +29,7 @@ impl TileImage {
         let (width, height) = (width.max(1), height.max(1));
         let tiles_x = width.div_ceil(TILE);
         let tiles_y = height.div_ceil(TILE);
+
         TileImage { width, height, comps: comps.clamp(1, 4), tiles_x, tiles_y, tiles: Arc::new(vec![None; (tiles_x * tiles_y) as usize]) }
     }
 
@@ -65,9 +66,14 @@ impl TileImage {
     pub fn set_tile(&mut self, tx: u32, ty: u32, data: Option<TileData>) {
         let len = TILE_AREA * self.comps;
         let data = data.filter(|d| d.len() == len);
-        if let Some(i) = self.tile_index(tx, ty)
-            && let Some(slot) = Arc::make_mut(&mut self.tiles).get_mut(i)
-        {
+        let Some(i) = self.tile_index(tx, ty) else { return };
+
+        // Keep the shared table when freeing an already empty tile
+        if data.is_none() && self.tiles.get(i).is_some_and(Option::is_none) {
+            return;
+        }
+
+        if let Some(slot) = Arc::make_mut(&mut self.tiles).get_mut(i) {
             *slot = data;
         }
     }
@@ -77,18 +83,21 @@ impl TileImage {
     pub fn tile_mut(&mut self, tx: u32, ty: u32, fill: &[u16]) -> Option<&mut [u16]> {
         let comps = self.comps;
         let i = self.tile_index(tx, ty)?;
+
         let slot = Arc::make_mut(&mut self.tiles).get_mut(i)?;
         let tile = slot.get_or_insert_with(|| {
-            let mut v = vec![0u16; TILE_AREA * comps];
-            if fill.iter().any(|f| *f != 0) {
-                for px in v.chunks_exact_mut(comps) {
-                    for (d, s) in px.iter_mut().zip(fill) {
-                        *d = *s;
+            let mut data = vec![0u16; TILE_AREA * comps];
+            if fill.iter().any(|value| *value != 0) {
+                for texel in data.chunks_exact_mut(comps) {
+                    for (component, value) in texel.iter_mut().zip(fill) {
+                        *component = *value;
                     }
                 }
             }
-            Arc::new(v)
+
+            Arc::new(data)
         });
+
         Some(Arc::make_mut(tile).as_mut_slice())
     }
 
@@ -141,21 +150,22 @@ impl TileImage {
         self.allocated_count() * TILE_AREA * self.comps * 2
     }
 
-    /// Whether `self` and `other` share their tile table: no tile of either changed since one
-    /// was cloned from the other.
+    /// Whether both images currently share the same tile table. Mutable access can unshare it
+    /// even if the caller leaves the texels unchanged.
     pub fn same_tiles(&self, other: &TileImage) -> bool {
         Arc::ptr_eq(&self.tiles, &other.tiles)
     }
 
     /// Drop tiles whose every texel is zero.
     pub fn prune_empty(&mut self) {
-        let is_empty = |t: &Option<TileData>| t.as_ref().is_some_and(|d| d.iter().all(|v| *v == 0));
-        if !self.tiles.iter().any(is_empty) {
+        let is_zero_tile = |tile: &Option<TileData>| tile.as_ref().is_some_and(|data| data.iter().all(|value| *value == 0));
+        if !self.tiles.iter().any(is_zero_tile) {
             return;
         }
-        for t in Arc::make_mut(&mut self.tiles) {
-            if t.as_ref().is_some_and(|d| d.iter().all(|v| *v == 0)) {
-                *t = None;
+
+        for tile in Arc::make_mut(&mut self.tiles) {
+            if is_zero_tile(tile) {
+                *tile = None;
             }
         }
     }
@@ -192,72 +202,137 @@ mod tests {
     #[test]
     fn unallocated_tiles_read_zero_and_writes_allocate() {
         let mut img = TileImage::new(200, 130, 2);
+
         assert_eq!(img.tiles_x(), 4);
         assert_eq!(img.tiles_y(), 3);
         assert_eq!(img.get(10, 10), [0; 4]);
+
         img.set(199, 129, &[7, 9]);
+
         assert_eq!(img.get(199, 129), [7, 9, 0, 0]);
         assert_eq!(img.allocated_count(), 1);
         assert_eq!(img.allocated().collect::<Vec<_>>(), vec![(3, 2)]);
-        // Out of range is ignored, not a panic.
+
+        // An out-of-range write must leave the image intact
         img.set(500, 500, &[1, 1]);
+
         assert_eq!(img.get(500, 500), [0; 4]);
     }
 
     #[test]
     fn clones_share_tiles_until_written() {
-        let mut a = TileImage::new(64, 64, 1);
-        a.set(0, 0, &[5]);
-        let b = a.clone();
-        assert!(Arc::ptr_eq(a.tile_handle(0, 0).unwrap(), b.tile_handle(0, 0).unwrap()));
-        a.set(1, 0, &[6]);
-        assert!(!Arc::ptr_eq(a.tile_handle(0, 0).unwrap(), b.tile_handle(0, 0).unwrap()));
-        assert_eq!(b.get(1, 0)[0], 0);
-        assert_eq!(a.get(1, 0)[0], 6);
+        let mut original = TileImage::new(64, 64, 1);
+        original.set(0, 0, &[5]);
+        let snapshot = original.clone();
+
+        assert!(Arc::ptr_eq(original.tile_handle(0, 0).unwrap(), snapshot.tile_handle(0, 0).unwrap()));
+
+        original.set(1, 0, &[6]);
+
+        assert!(!Arc::ptr_eq(original.tile_handle(0, 0).unwrap(), snapshot.tile_handle(0, 0).unwrap()));
+        assert_eq!(snapshot.get(1, 0)[0], 0);
+        assert_eq!(original.get(1, 0)[0], 6);
     }
 
     #[test]
     fn clone_shares_the_table_until_written() {
-        let mut a = TileImage::new(512, 512, 2);
-        a.set(0, 0, &[1, 2]);
-        let mut b = a.clone();
-        assert!(a.same_tiles(&b));
-        b.set(70, 0, &[3, 4]);
-        assert!(!a.same_tiles(&b));
-        assert_eq!(a.get(70, 0)[..2], [0, 0]);
-        assert_eq!(b.get(70, 0)[..2], [3, 4]);
-        assert_eq!(a.get(0, 0)[..2], [1, 2]);
-        assert_eq!(b.get(0, 0)[..2], [1, 2]);
+        let mut original = TileImage::new(512, 512, 2);
+        original.set(0, 0, &[1, 2]);
+        let mut copy = original.clone();
+
+        assert!(original.same_tiles(&copy));
+
+        copy.set(70, 0, &[3, 4]);
+
+        assert!(!original.same_tiles(&copy));
+        assert_eq!(original.get(70, 0)[..2], [0, 0]);
+        assert_eq!(copy.get(70, 0)[..2], [3, 4]);
+        assert_eq!(original.get(0, 0)[..2], [1, 2]);
+        assert_eq!(copy.get(0, 0)[..2], [1, 2]);
+    }
+
+    #[test]
+    fn cloning_an_image_does_not_clone_its_tile_handles() {
+        let mut original = TileImage::new(512, 512, 2);
+        original.set(0, 0, &[1, 2]);
+
+        let copy = original.clone();
+
+        assert_eq!(Arc::strong_count(original.tile_handle(0, 0).unwrap()), 1);
+        assert_eq!(copy.get(0, 0)[..2], [1, 2]);
+    }
+
+    // Writes must detach the shared tile as well as its table
+    #[test]
+    fn writing_a_shared_tile_leaves_the_clone_alone() {
+        let mut original = TileImage::new(512, 512, 2);
+        original.set(0, 0, &[1, 2]);
+        let mut copy = original.clone();
+
+        copy.set(0, 0, &[3, 4]);
+        copy.tile_mut(0, 0, &[]).unwrap()[2..4].copy_from_slice(&[5, 6]);
+
+        assert_eq!(original.get(0, 0)[..2], [1, 2]);
+        assert_eq!(original.get(1, 0)[..2], [0, 0]);
+        assert_eq!(copy.get(0, 0)[..2], [3, 4]);
+        assert_eq!(copy.get(1, 0)[..2], [5, 6]);
     }
 
     #[test]
     fn out_of_range_writes_do_not_unshare() {
-        let mut a = TileImage::new(512, 512, 2);
-        a.set(0, 0, &[1, 2]);
-        let mut b = a.clone();
-        b.set_tile(999, 999, None);
-        assert!(b.tile_mut(999, 999, &[0, 0]).is_none());
-        assert!(a.same_tiles(&b));
+        let mut original = TileImage::new(512, 512, 2);
+        original.set(0, 0, &[1, 2]);
+        let mut copy = original.clone();
+
+        copy.set_tile(999, 999, None);
+
+        assert!(copy.tile_mut(999, 999, &[0, 0]).is_none());
+        assert!(original.same_tiles(&copy));
+    }
+
+    // An already empty tile must leave the shared table intact for undo restores
+    #[test]
+    fn freeing_a_free_tile_does_not_unshare() {
+        let mut original = TileImage::new(512, 512, 2);
+        original.set(0, 0, &[1, 2]);
+        let mut copy = original.clone();
+
+        copy.set_tile(1, 0, None);
+
+        assert!(original.same_tiles(&copy));
+
+        copy.set_tile(0, 0, None);
+
+        assert!(!original.same_tiles(&copy), "freeing a used tile still un-shares");
+        assert_eq!(copy.get(0, 0)[..2], [0, 0]);
     }
 
     #[test]
     fn noop_prune_does_not_unshare() {
-        let mut a = TileImage::new(512, 512, 2);
-        a.set(0, 0, &[1, 2]);
-        let mut b = a.clone();
-        b.prune_empty();
-        assert!(a.same_tiles(&b));
+        let mut original = TileImage::new(512, 512, 2);
+        original.set(0, 0, &[1, 2]);
+        let mut copy = original.clone();
+
+        copy.prune_empty();
+
+        assert!(original.same_tiles(&copy));
     }
 
     #[test]
     fn tile_mut_fills_new_tiles() {
         let mut img = TileImage::new(64, 64, 2);
-        let t = img.tile_mut(0, 0, &[100, 200]).unwrap();
-        assert_eq!(&t[..4], &[100, 200, 100, 200]);
+
+        let texels = img.tile_mut(0, 0, &[100, 200]).unwrap();
+
+        assert_eq!(&texels[..4], &[100, 200, 100, 200]);
+
         img.prune_empty();
+
         assert_eq!(img.allocated_count(), 1);
+
         img.set_tile(0, 0, Some(Arc::new(vec![0; TILE_AREA * 2])));
         img.prune_empty();
+
         assert_eq!(img.allocated_count(), 0);
     }
 
