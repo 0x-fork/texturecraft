@@ -89,7 +89,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
 }
 
 /// Commands that run in the empty state (no project open): they open or create a project, or
-/// only read the libraries and the user's presets.
+/// only read the libraries and the user's presets, or only move the camera (`viewport.frame`, enabled on the reference app's blank screen).
 fn works_without_project(id: &str) -> bool {
     matches!(
         id,

@@ -487,38 +487,40 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
     };
     let channels = app.session.doc.project.texture_set(app.session.ts()).map(|texture_set| texture_set.channel_list()).unwrap_or_default();
     // The picker is greyed with no project: it has nothing to show a project's maps of
-    child.add_enabled_ui(project_open, |child| egui::ComboBox::from_id_salt(format!("{id}_mode")).width(VIEW_PICKER_WIDTH).selected_text(tr(&label)).show_ui(child, |ui| {
-        if baking && ui.selectable_label(neutral, tr("Neutral Material")).clicked() {
-            app.ui.bake_visualization.neutral_shown = true;
-            app.run("viewport.view", json!({"mode": "material"}));
-        }
-        if ui.selectable_label(app.session.view == ViewMode::Material && !neutral, tr("Material")).clicked() && project_open {
-            // Only bake mode's pick turns the neutral material off; painting mode's Material leaves bake mode's choice alone
-            app.ui.bake_visualization.neutral_shown &= !baking;
-            app.run("viewport.view", json!({"mode": "material"}));
-        }
-        // Nothing else to show without a project
-        if !project_open {
-            return;
-        }
-        ui.separator();
-        if baking {
-            mesh_map_entries(app, ui);
-            return;
-        }
-
-        for channel in channels {
-            if ui.selectable_label(app.session.view == ViewMode::Channel(channel), tr(channel.label())).clicked() {
-                app.run("viewport.view", json!({"mode": channel.id()}));
+    child.add_enabled_ui(project_open, |child| {
+        egui::ComboBox::from_id_salt(format!("{id}_mode")).width(VIEW_PICKER_WIDTH).selected_text(tr(&label)).show_ui(child, |ui| {
+            if baking && ui.selectable_label(neutral, tr("Neutral Material")).clicked() {
+                app.ui.bake_visualization.neutral_shown = true;
+                app.run("viewport.view", json!({"mode": "material"}));
             }
-        }
-        ui.separator();
-        mesh_map_entries(app, ui);
-        ui.separator();
-        if ui.selectable_label(app.session.view == ViewMode::UvChecker, tr("UV checker")).clicked() {
-            app.run("viewport.view", json!({"mode": "uvChecker"}));
-        }
-    }));
+            if ui.selectable_label(app.session.view == ViewMode::Material && !neutral, tr("Material")).clicked() && project_open {
+                // Only bake mode's pick turns the neutral material off; painting mode's Material leaves bake mode's choice alone
+                app.ui.bake_visualization.neutral_shown &= !baking;
+                app.run("viewport.view", json!({"mode": "material"}));
+            }
+            // Nothing else to show without a project
+            if !project_open {
+                return;
+            }
+            ui.separator();
+            if baking {
+                mesh_map_entries(app, ui);
+                return;
+            }
+
+            for channel in channels {
+                if ui.selectable_label(app.session.view == ViewMode::Channel(channel), tr(channel.label())).clicked() {
+                    app.run("viewport.view", json!({"mode": channel.id()}));
+                }
+            }
+            ui.separator();
+            mesh_map_entries(app, ui);
+            ui.separator();
+            if ui.selectable_label(app.session.view == ViewMode::UvChecker, tr("UV checker")).clicked() {
+                app.run("viewport.view", json!({"mode": "uvChecker"}));
+            }
+        })
+    });
 }
 
 /// The view picker's entries that show one baked mesh map

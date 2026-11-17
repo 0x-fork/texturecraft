@@ -3,7 +3,7 @@
 
 use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use texturecraft_engine::Session;
 use texturecraft_ui_egui::{TextureCraftApp, menus};
 
@@ -84,8 +84,8 @@ fn the_right_bar_keeps_the_reference_order() {
 fn the_blank_screen_enables_what_the_reference_enables() {
     let h = harness(Session::closed().unwrap());
     let shelf = buttons_in(&h, 0.0..60.0);
-    for name in ["Paint", "Eraser", "Path", "Projection", "Polygon fill", "Smudge", "Clone", "Geometry mask"] {
-        assert!(named(&shelf, name).unwrap().2, "{name} is disabled with no project");
+    for name in ["Paint", "Eraser", "Path", "Projection", "Polygon fill", "Smudge", "Clone", "Material picker", "Geometry mask"] {
+        assert!(named(&shelf, name).unwrap().2, "{name} should be disabled with no project");
     }
     let bar = buttons_in(&h, 1562.0..1600.0);
     for name in ["Export textures", "Log", "Display Settings", "Shader Settings", "History"] {
@@ -106,17 +106,56 @@ fn the_blank_screen_menus_match_the_measured_enabled_states() {
     let h = harness(Session::closed().unwrap());
     let app = h.state();
     let disabled = [
-        "file.close", "file.save", "file.saveAs", "file.saveCopy", "file.removeUnused", "ui.export", "file.exportMesh", "edit.undo", "edit.redo", "ui.projectConfig",
-        "file.reimportMesh", "ui.mode.bake", "ui.mode.paint", "ui.mode.render", "viewport.displayMaterial", "viewport.nextChannel", "viewport.previousChannel",
-        "viewport.nextMeshMap", "viewport.previousMeshMap", "viewport.quickMask", "viewport.quickMask.edit", "viewport.quickMask.invert",
+        "file.close",
+        "file.save",
+        "file.saveAs",
+        "file.saveCopy",
+        "file.removeUnused",
+        "ui.export",
+        "file.exportMesh",
+        "edit.undo",
+        "edit.redo",
+        "ui.projectConfig",
+        "file.reimportMesh",
+        "ui.mode.bake",
+        "ui.mode.paint",
+        "ui.mode.render",
+        "viewport.displayMaterial",
+        "viewport.nextChannel",
+        "viewport.previousChannel",
+        "viewport.nextMeshMap",
+        "viewport.previousMeshMap",
+        "viewport.quickMask",
+        "viewport.quickMask.edit",
+        "viewport.quickMask.invert",
     ];
     for id in disabled {
         assert!(!menus::enabled(app, id), "{id} is disabled on the blank screen");
     }
     let enabled = [
-        "ui.newProject", "file.open", "project.sample", "ui.quit", "ui.settings", "ui.view.assets", "ui.view.layers", "ui.view.properties", "ui.view.textureSetList",
-        "ui.view.textureSetSettings", "ui.view.display", "ui.view.history", "ui.view.log", "ui.view.shader", "ui.hideUi", "ui.resetUi", "ui.layout.save",
-        "ui.layout.load", "viewport.frame", "ui.help.docs", "ui.help.shortcuts", "ui.help.bug", "ui.about",
+        "ui.newProject",
+        "file.open",
+        "project.sample",
+        "ui.quit",
+        "ui.settings",
+        "ui.view.assets",
+        "ui.view.layers",
+        "ui.view.properties",
+        "ui.view.textureSetList",
+        "ui.view.textureSetSettings",
+        "ui.view.display",
+        "ui.view.history",
+        "ui.view.log",
+        "ui.view.shader",
+        "ui.hideUi",
+        "ui.resetUi",
+        "ui.layout.save",
+        "ui.layout.load",
+        "viewport.frame",
+        "ui.help.docs",
+        "ui.help.shortcuts",
+        "ui.help.bug",
+        "ui.about",
     ];
     for id in enabled {
         assert!(menus::enabled(app, id), "{id} is enabled on the blank screen");
@@ -130,7 +169,20 @@ fn the_blank_screen_menus_match_the_measured_enabled_states() {
 fn opening_a_project_enables_the_same_items() {
     let h = harness(texturecraft_engine::sample_session(256, 64).unwrap());
     let app = h.state();
-    for id in ["file.close", "file.save", "file.saveAs", "file.saveCopy", "ui.export", "file.exportMesh", "ui.projectConfig", "ui.mode.bake", "ui.mode.paint", "ui.mode.render", "viewport.displayMaterial", "viewport.quickMask"] {
+    for id in [
+        "file.close",
+        "file.save",
+        "file.saveAs",
+        "file.saveCopy",
+        "ui.export",
+        "file.exportMesh",
+        "ui.projectConfig",
+        "ui.mode.bake",
+        "ui.mode.paint",
+        "ui.mode.render",
+        "viewport.displayMaterial",
+        "viewport.quickMask",
+    ] {
         assert!(menus::enabled(app, id), "{id} is enabled with a project");
     }
 }
