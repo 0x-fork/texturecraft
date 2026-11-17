@@ -185,6 +185,7 @@ pub fn texture_set(session: &Session, index: usize) -> Value {
 pub fn session(s: &Session) -> Value {
     let ts = s.ts();
     json!({
+        "projectOpen": s.project_open,
         "project": s.doc.project.name,
         "mesh": { "source": s.doc.project.mesh, "triangles": s.mesh.triangle_count(), "vertices": s.mesh.vertex_count(), "materials": s.mesh.materials },
         "path": s.path,

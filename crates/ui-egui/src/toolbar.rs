@@ -82,6 +82,12 @@ fn view_buttons_width(button_size: f32, spacing: f32) -> f32 {
 
 /// View buttons in a right-to-left layout, with the screenshot button at the end
 fn view_buttons(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
+    // Screenshot, projection and UV checker act on the project: greyed while none is open
+    let project_open = app.session.project_open;
+    ui.add_enabled_ui(project_open, |ui| view_buttons_enabled(app, ui));
+}
+
+fn view_buttons_enabled(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let button_size = ui.spacing().interact_size.y;
     if icon_button(ui, ic::CAMERA, tr("Screenshot of the viewport"), false, button_size).clicked() {
         app.toast(tr("Use the control channel or `texturecraft-cli render` for screenshots"), false);

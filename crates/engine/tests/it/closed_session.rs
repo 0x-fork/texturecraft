@@ -10,7 +10,7 @@ fn open_project() -> Session {
 
 #[test]
 fn a_closed_session_refuses_commands_that_need_a_project() {
-    let mut s = Session::closed();
+    let mut s = Session::closed().unwrap();
     assert!(!s.project_open);
     for id in ["layer.add.paint", "file.save", "file.close", "edit.undo", "tool.paint", "bake.run", "file.exportTextures", "viewport.view", "camera.add"] {
         let error = execute(&mut s, id, &json!({})).unwrap_err();
@@ -22,7 +22,7 @@ fn a_closed_session_refuses_commands_that_need_a_project() {
 
 #[test]
 fn a_closed_session_lists_only_the_opening_commands_as_enabled() {
-    let s = Session::closed();
+    let s = Session::closed().unwrap();
     for id in ["file.open", "file.new", "project.new", "project.sample"] {
         assert!(check_enabled(find(id).unwrap(), &s).is_ok(), "{id} runs with no project");
     }
@@ -32,7 +32,7 @@ fn a_closed_session_lists_only_the_opening_commands_as_enabled() {
 
 #[test]
 fn creating_a_project_from_the_closed_state_opens_it() {
-    let mut s = Session::closed();
+    let mut s = Session::closed().unwrap();
     execute(&mut s, "project.new", &json!({"mesh": "cube", "resolution": 128})).unwrap();
     assert!(s.project_open);
     execute(&mut s, "layer.add.paint", &json!({})).unwrap();
@@ -47,4 +47,23 @@ fn close_returns_to_the_empty_state_and_keeps_the_user_presets() {
     assert!(execute(&mut s, "file.close", &json!({})).is_err(), "closing again has nothing to close");
     execute(&mut s, "project.new", &json!({"mesh": "cube", "resolution": 128})).unwrap();
     assert!(s.project_open, "a project can be created again");
+}
+
+#[test]
+fn the_libraries_and_presets_still_answer_without_a_project() {
+    let mut s = Session::closed().unwrap();
+    for id in [
+        "export.presets",
+        "brush.preset.list",
+        "alpha.list",
+        "filter.list",
+        "material.list",
+        "mask.smart.list",
+        "text.fonts",
+        "project.templates",
+        "project.inspect",
+    ] {
+        execute(&mut s, id, &json!({})).unwrap_or_else(|e| panic!("{id}: {e}"));
+    }
+    assert_eq!(texturecraft_engine::inspect::session(&s)["projectOpen"], json!(false));
 }

@@ -13,11 +13,27 @@ fn harness(session: Session) -> Harness<'static, TextureCraftApp> {
 }
 
 fn empty() -> Harness<'static, TextureCraftApp> {
-    harness(Session::closed())
+    harness(Session::closed().unwrap())
 }
 
 fn open_project() -> Harness<'static, TextureCraftApp> {
     harness(texturecraft_engine::sample_session(256, 64).unwrap())
+}
+
+/// Texts painted this frame as (text, left edge)
+fn painted(h: &Harness<'static, TextureCraftApp>) -> Vec<(String, f32)> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some((text.galley.text().to_string(), text.pos.x)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn has_camera_picker(h: &Harness<'static, TextureCraftApp>) -> bool {
+    painted(h).iter().any(|(text, _)| text == "Default camera")
 }
 
 fn invoke(h: &mut Harness<'static, TextureCraftApp>, id: &str) {
@@ -41,9 +57,30 @@ fn project_items_are_disabled_without_a_project() {
     let h = empty();
     let app = h.state();
     for id in [
-        "file.save", "file.saveAs", "file.saveCopy", "file.close", "ui.export", "file.exportMesh", "ui.projectConfig", "edit.undo", "edit.redo", "file.reimportMesh",
-        "ui.mode.bake", "ui.mode.render", "ui.uvChecker", "viewport.frame", "viewport.displayMaterial", "tool.paint", "tool.eraser", "viewport.quickMask",
-        "layer.add.paint", "layer.add.fill", "layer.remove", "bake.run", "resource.import", "material.load",
+        "file.save",
+        "file.saveAs",
+        "file.saveCopy",
+        "file.close",
+        "ui.export",
+        "file.exportMesh",
+        "ui.projectConfig",
+        "edit.undo",
+        "edit.redo",
+        "file.reimportMesh",
+        "ui.mode.bake",
+        "ui.mode.render",
+        "ui.uvChecker",
+        "viewport.frame",
+        "viewport.displayMaterial",
+        "tool.paint",
+        "tool.eraser",
+        "viewport.quickMask",
+        "layer.add.paint",
+        "layer.add.fill",
+        "layer.remove",
+        "bake.run",
+        "resource.import",
+        "material.load",
     ] {
         assert!(!menus::enabled(app, id), "{id} needs a project");
     }
@@ -59,10 +96,12 @@ fn project_items_are_disabled_without_a_project() {
 #[test]
 fn the_empty_views_keep_the_view_picker_and_drop_the_camera_picker() {
     let empty = empty();
-    assert!(empty.query_by_label("Default camera").is_none(), "no camera picker");
-    assert!(empty.query_all_by_label("Material").count() >= 1, "the view picker stays");
+    assert!(!has_camera_picker(&empty), "no camera picker");
+    // The picker shows "Material" right of the tool shelf and the Assets panel: one per view in the split layout
+    let pickers = painted(&empty).iter().filter(|(text, x)| text == "Material" && *x > 400.0).count();
+    assert_eq!(pickers, 2, "each of the two views keeps its view picker");
     let open = open_project();
-    assert!(open.query_by_label("Default camera").is_some(), "with a project the camera picker is there");
+    assert!(has_camera_picker(&open), "with a project the camera picker is there");
 }
 
 #[test]
@@ -82,7 +121,7 @@ fn close_unloads_the_project_back_to_the_empty_state() {
     assert!(!h.state().session.project_open, "Close leaves no project open");
     assert!(h.state().session.path.is_none() && !h.state().session.modified);
     assert!(h.query_by_label("No properties found").is_some());
-    assert!(h.query_by_label("Default camera").is_none());
+    assert!(!has_camera_picker(&h));
     assert!(!menus::enabled(h.state(), "file.save"));
 }
 
@@ -92,7 +131,7 @@ fn creating_or_opening_a_project_from_the_empty_state_works() {
     assert!(h.state_mut().run("project.new", json!({"mesh": "cube", "resolution": 128})).is_some());
     h.run_steps(3);
     assert!(h.state().session.project_open);
-    assert!(menus::enabled(h.state(), "file.save") && h.query_by_label("Default camera").is_some());
+    assert!(menus::enabled(h.state(), "file.save") && has_camera_picker(&h));
 
     invoke(&mut h, "file.close");
     invoke(&mut h, "ui.newProject");
@@ -105,7 +144,10 @@ fn creating_or_opening_a_project_from_the_empty_state_works() {
 #[test]
 fn using_every_panel_and_menu_item_in_the_empty_state_does_not_panic() {
     let mut h = empty();
-    for item in menus::CATALOG.iter().filter(|item| item.label != "-" && !matches!(item.id, "ui.quit" | "file.open" | "project.sample" | "ui.layout.load" | "ui.help.checkForUpdates")) {
+    for item in menus::CATALOG
+        .iter()
+        .filter(|item| item.label != "-" && !matches!(item.id, "ui.quit" | "file.open" | "project.sample" | "ui.layout.load" | "ui.help.checkForUpdates"))
+    {
         invoke(&mut h, item.id);
     }
     for mode in ["ui.mode.bake", "ui.mode.render", "ui.mode.paint"] {

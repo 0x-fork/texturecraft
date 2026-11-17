@@ -438,10 +438,10 @@ impl Session {
 
     /// The empty state: no project is open. Holds a tiny placeholder document that the UI never
     /// shows; every command except opening or creating a project is refused.
-    pub fn closed() -> Session {
-        let mut session = Session::new_project("", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, 128).expect("the placeholder project is valid");
+    pub fn closed() -> Result<Session> {
+        let mut session = Session::new_project("", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, 128)?;
         session.project_open = false;
-        session
+        Ok(session)
     }
 
     /// Replace this session with `next` (another project), keeping the viewport size and the

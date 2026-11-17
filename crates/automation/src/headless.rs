@@ -85,6 +85,11 @@ impl Headless {
         matches!(self.fs, Filesystem::TrustedLocal)
     }
 
+    /// Commands that act on the project refuse after `file.close`, as in the app
+    fn require_project(&self) -> Result<(), AutomationError> {
+        if self.session.project_open { Ok(()) } else { Err(bad("no project is open")) }
+    }
+
     fn read(&self, path: &str) -> Result<Vec<u8>, AutomationError> {
         match &self.fs {
             Filesystem::Denied => Err(bad("file access is not granted: start the server with --read-root <dir>")),
@@ -196,6 +201,7 @@ impl Headless {
 
     /// Reimport the mesh from `path`, or from the project's own copy, keeping the project.
     pub fn reimport_mesh(&mut self, path: Option<&str>, preserve_strokes: bool) -> Result<Value, AutomationError> {
+        self.require_project()?;
         let file = path.map(|p| self.read_mesh(p)).transpose()?;
         Ok(self.session.reimport_mesh(file, preserve_strokes)?)
     }
@@ -203,6 +209,7 @@ impl Headless {
     /// Export the working mesh to `path` (obj, glb, usda, usdc or usdz, from `format` or the
     /// extension); obj writes its .mtl and textures, usda and usdc their textures, next to it.
     pub fn export_mesh(&mut self, path: &str, format: Option<&str>) -> Result<Value, AutomationError> {
+        self.require_project()?;
         let out = self.session.mesh_export(path, format)?;
         let dir = Path::new(&out.path).parent().and_then(|d| d.to_str()).filter(|d| !d.is_empty()).unwrap_or(".");
         self.create_dir_all(dir)?;
@@ -218,12 +225,14 @@ impl Headless {
 
     /// Import an image file as a project resource (for `layer.add.image`, `tool.stencil`).
     pub fn import_resource(&mut self, path: &str) -> Result<Value, AutomationError> {
+        self.require_project()?;
         let bytes = self.read(path)?;
         Ok(json!({ "name": self.session.import_resource_bytes(path, bytes)? }))
     }
 
     /// Save a layer (default: the selected one) as a smart material file (`.tcmat`).
     pub fn material_save(&mut self, p: &Value) -> Result<Value, AutomationError> {
+        self.require_project()?;
         let path = p.get("path").and_then(Value::as_str).ok_or_else(|| bad("`path` is required"))?;
         let s = &self.session;
         let id = match p.get("layer").and_then(Value::as_u64) {
@@ -243,12 +252,14 @@ impl Headless {
 
     /// Add a smart material from a `.tcmat` file above the selection.
     pub fn material_load(&mut self, path: &str) -> Result<Value, AutomationError> {
+        self.require_project()?;
         let bytes = self.read(path)?;
         Ok(json!({ "layer": self.session.add_smart_material_bytes(&bytes)?.0 }))
     }
 
     /// Save as `.tcraft` to `path`, or to the project's own file.
     pub fn save(&mut self, path: Option<&str>) -> Result<Value, AutomationError> {
+        self.require_project()?;
         let target = match path.or(self.session.path.as_deref()) {
             Some(p) if ext_of(p) == PROJECT_EXT => p.to_string(),
             Some(p) => format!("{p}.{PROJECT_EXT}"),
@@ -262,6 +273,7 @@ impl Headless {
 
     /// Export textures to `dir` (`file.exportTextures` params: preset, ts, format, padding, size…).
     pub fn export(&mut self, p: &Value) -> Result<Value, AutomationError> {
+        self.require_project()?;
         let dir = p.get("dir").and_then(Value::as_str).filter(|d| !d.is_empty()).ok_or_else(|| bad("`dir` is required"))?;
         let opts = file_cmds::export_options(&self.session, p, "textures.export")?;
         let n = self.session.set_count();

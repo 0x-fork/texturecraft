@@ -462,18 +462,18 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
     let shown = current.and_then(|index| names.get(index)).map_or(tr(DEFAULT_CAMERA), String::as_str);
     if project_open {
         egui::ComboBox::from_id_salt(format!("{id}_cam")).width(VIEW_PICKER_WIDTH).selected_text(shown).show_ui(&mut child, |ui| {
-        if ui.selectable_label(current.is_none(), tr(DEFAULT_CAMERA)).clicked() {
-            app.run("camera.select", json!({}));
-        }
-        for (index, name) in names.iter().enumerate() {
-            if ui.selectable_label(current == Some(index), name).clicked() {
-                app.run("camera.select", json!({"index": index}));
+            if ui.selectable_label(current.is_none(), tr(DEFAULT_CAMERA)).clicked() {
+                app.run("camera.select", json!({}));
             }
-        }
-        ui.separator();
-        if ui.selectable_label(false, tr("Save view as camera")).clicked() {
-            app.run("camera.add", json!({}));
-        }
+            for (index, name) in names.iter().enumerate() {
+                if ui.selectable_label(current == Some(index), name).clicked() {
+                    app.run("camera.select", json!({"index": index}));
+                }
+            }
+            ui.separator();
+            if ui.selectable_label(false, tr("Save view as camera")).clicked() {
+                app.run("camera.add", json!({}));
+            }
         });
     }
 

@@ -1,6 +1,6 @@
 //! TextureCraft desktop app.
 //!
-//! Usage: `texturecraft [project.tcraft | mesh.glb] [--control <port>] [--version]`
+//! Usage: `texturecraft [project.tcraft | mesh.glb] [--control <port>] [--empty] [--version]`
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
@@ -38,6 +38,8 @@ fn version() -> String {
 struct Args {
     file: Option<String>,
     control: Option<u16>,
+    /// With `--control`: start with an empty material ball instead of the sample project
+    empty: bool,
     gpu: Option<String>,
     power_pref: Option<eframe::wgpu::PowerPreference>,
 }
@@ -47,7 +49,7 @@ fn parse_args() -> Result<Option<Args>, String> {
 }
 
 fn parse_args_from<I: IntoIterator<Item = String>>(it: I) -> Result<Option<Args>, String> {
-    let mut args = Args { file: None, control: None, gpu: None, power_pref: None };
+    let mut args = Args { file: None, control: None, empty: false, gpu: None, power_pref: None };
     let mut it = it.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -74,8 +76,7 @@ fn parse_args_from<I: IntoIterator<Item = String>>(it: I) -> Result<Option<Args>
                 let p = it.next().ok_or("--power-pref needs high, low, or none")?;
                 args.power_pref = Some(gpu::parse_power_preference(&p)?);
             }
-            // Kept so old command lines still work: the app starts without a project anyway
-            "--empty" => {}
+            "--empty" => args.empty = true,
             f if !f.starts_with('-') => args.file = Some(f.to_string()),
             other => return Err(format!("unknown option `{other}`")),
         }
@@ -90,8 +91,29 @@ fn initial_session(args: &Args) -> Session {
             Err(e) => eprintln!("texturecraft: could not open {f}: {e}"),
         }
     }
-    // No file given (or it did not open): start with no project, like File > Close
-    Session::closed()
+    // A script-driven run (--control) starts with the sample project (or, with --empty, an empty
+    // material ball), as before; an interactive start has no project open, like File > Close
+    if args.control.is_some() {
+        if !args.empty
+            && let Ok(s) = texturecraft_engine::sample_session(2048, 512)
+        {
+            return s;
+        }
+        return match Session::new_project("Untitled", texturecraft_engine::geom::primitives::material_ball(), "builtin:material_ball", None, 2048) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("texturecraft: {e}");
+                std::process::exit(1);
+            }
+        };
+    }
+    match Session::closed() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("texturecraft: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn icon() -> Option<egui::IconData> {

@@ -119,6 +119,10 @@ fn use_environment(app: &mut TextureCraftApp, name: &str) {
 pub fn load(app: &mut TextureCraftApp, name: &str, bytes: Vec<u8>) {
     let path = std::path::Path::new(name);
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if (IMAGE_EXTS.contains(&ext.as_str()) || MATERIAL_EXTS.contains(&ext.as_str())) && !app.session.project_open {
+        app.toast(tr("No project is open"), true);
+        return;
+    }
     if IMAGE_EXTS.contains(&ext.as_str()) {
         match app.session.import_resource_bytes(name, bytes) {
             Ok(res) => {

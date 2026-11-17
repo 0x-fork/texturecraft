@@ -43,7 +43,7 @@ async fn run(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
     // The WebAssembly has downloaded and compiled when this runs.
     step(0.5, "Preparing the app…").await;
     // The app starts with no project, like File > Close
-    let session = Session::closed();
+    let session = Session::closed().map_err(|e| e.to_string())?;
     step(0.8, "Starting the renderer…").await;
     let mut options = eframe::WebOptions::default();
     if query().contains("webgl")

@@ -443,7 +443,7 @@ fn new_project(app: &mut TextureCraftApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut app.ui.new_project.template_name).hint_text(tr("Template name")).desired_width(120.0));
                 let name = app.ui.new_project.template_name.trim().to_string();
-                if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Save current project as template"))).clicked()
+                if ui.add_enabled(!name.is_empty() && app.session.project_open, egui::Button::new(tr("Save current project as template"))).clicked()
                     && app.run("project.template.save", json!({"name": name})).is_some()
                 {
                     app.ui.new_project.template = name;

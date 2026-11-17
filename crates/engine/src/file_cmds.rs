@@ -660,7 +660,7 @@ use unsupported as export_textures;
 use unsupported as export_mesh;
 
 fn close(s: &mut Session, _: &Value) -> Result<Value> {
-    s.switch_to(Session::closed());
+    s.switch_to(Session::closed()?);
     Ok(Value::Null)
 }
 

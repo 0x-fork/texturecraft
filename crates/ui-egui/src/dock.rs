@@ -148,39 +148,41 @@ pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
 
     // Wrap in a narrow column so rows stay within the panel
     let project_open = app.session.project_open;
-    ui.add_enabled_ui(project_open, |ui| ui.horizontal_wrapped(|ui| {
-        // Keep menu buttons as compact as the adjacent icon buttons
-        ui.spacing_mut().button_padding.x = 4.0;
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let chans = app.session.doc.project.texture_set(app.session.ts()).map(|t| t.channel_list()).unwrap_or_default();
-        egui::ComboBox::from_id_salt("layer_channel").width(86.0).selected_text(tr(app.ui.layer_channel.label())).show_ui(ui, |ui| {
-            for c in chans {
-                ui.selectable_value(&mut app.ui.layer_channel, c, tr(c.label()));
+    ui.add_enabled_ui(project_open, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            // Keep menu buttons as compact as the adjacent icon buttons
+            ui.spacing_mut().button_padding.x = 4.0;
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let chans = app.session.doc.project.texture_set(app.session.ts()).map(|t| t.channel_list()).unwrap_or_default();
+            egui::ComboBox::from_id_salt("layer_channel").width(86.0).selected_text(tr(app.ui.layer_channel.label())).show_ui(ui, |ui| {
+                for c in chans {
+                    ui.selectable_value(&mut app.ui.layer_channel, c, tr(c.label()));
+                }
+            });
+            let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id)).cloned();
+            ui.menu_button(RichText::new(ic::MAGIC_WAND).size(14.0), |ui| match &selected {
+                Some(l) => effect_menu(app, ui, l),
+                None => {
+                    ui.label(RichText::new(tr("Select a layer")).color(tk.text_dim));
+                }
+            })
+            .response
+            .on_hover_text(tr("Add effect"));
+            ui.menu_button(RichText::new(ic::SELECTION_BACKGROUND).size(14.0), |ui| add_mask_menu(app, ui, None)).response.on_hover_text(tr("Add mask"));
+            if icon_button(ui, ic::PAINT_BRUSH, tr("Add paint layer"), false, 22.0).clicked() {
+                app.run("layer.add.paint", Value::Null);
             }
-        });
-        let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id)).cloned();
-        ui.menu_button(RichText::new(ic::MAGIC_WAND).size(14.0), |ui| match &selected {
-            Some(l) => effect_menu(app, ui, l),
-            None => {
-                ui.label(RichText::new(tr("Select a layer")).color(tk.text_dim));
+            if icon_button(ui, ic::PAINT_BUCKET, tr("Add fill layer"), false, 22.0).clicked() {
+                app.run("layer.add.fill", Value::Null);
+            }
+            if icon_button(ui, ic::FOLDER_SIMPLE, tr("Add folder"), false, 22.0).clicked() {
+                app.run("layer.add.group", Value::Null);
+            }
+            if icon_button(ui, ic::TRASH, &crate::keymap::tip(&app.ui.keymap, tr("Remove layer"), "layer.remove"), false, 22.0).clicked() {
+                app.run("layer.remove", Value::Null);
             }
         })
-        .response
-        .on_hover_text(tr("Add effect"));
-        ui.menu_button(RichText::new(ic::SELECTION_BACKGROUND).size(14.0), |ui| add_mask_menu(app, ui, None)).response.on_hover_text(tr("Add mask"));
-        if icon_button(ui, ic::PAINT_BRUSH, tr("Add paint layer"), false, 22.0).clicked() {
-            app.run("layer.add.paint", Value::Null);
-        }
-        if icon_button(ui, ic::PAINT_BUCKET, tr("Add fill layer"), false, 22.0).clicked() {
-            app.run("layer.add.fill", Value::Null);
-        }
-        if icon_button(ui, ic::FOLDER_SIMPLE, tr("Add folder"), false, 22.0).clicked() {
-            app.run("layer.add.group", Value::Null);
-        }
-        if icon_button(ui, ic::TRASH, &crate::keymap::tip(&app.ui.keymap, tr("Remove layer"), "layer.remove"), false, 22.0).clicked() {
-            app.run("layer.remove", Value::Null);
-        }
-    }));
+    });
     // The empty state has no layers: the toolbar stays, greyed
     if !project_open {
         return;
