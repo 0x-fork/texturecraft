@@ -72,7 +72,7 @@ impl Gpu {
             // The aux texture behind the mesh-map and mask views (rebuilt every render).
             let res = texturecraft_render::aux_size(cache.size);
             let aux = match s.view {
-                ViewMode::MeshMap(m) => Some(texturecraft_render::mesh_maps::mesh_map_rgba(s.doc.baked.get(&ts), m, res)),
+                ViewMode::MeshMap(m) => Some(texturecraft_render::mesh_maps::mesh_map_rgba(s.doc.baked.get(&ts), m, res, cache.size, &comp.block_scales)),
                 ViewMode::Mask(id) if s.doc.project.locate(id).is_some_and(|(t, _, _)| t == ts) => s.mask_view_rgba(id, res),
                 _ => None,
             };
@@ -85,7 +85,15 @@ impl Gpu {
     /// Render `s` with `kind` at `size` through `camera`; RGBA8 (sRGB) pixels.
     pub fn render(&mut self, s: &mut Session, kind: ViewKind, size: [u32; 2], camera: texturecraft_engine::geom::OrbitCamera) -> Option<(u32, u32, Vec<u8>)> {
         self.sync(s);
-        let frame = Frame { view_id: 1, size, kind, camera, shade: shade(s), visible: s.doc.project.texture_sets.iter().map(|t| t.visible).collect() };
+        let frame = Frame {
+            view_id: 1,
+            size,
+            kind,
+            camera,
+            shade: shade(s),
+            visible: s.doc.project.texture_sets.iter().map(|t| t.visible).collect(),
+            overlay: Vec::new(),
+        };
         self.h.render(&frame)
     }
 

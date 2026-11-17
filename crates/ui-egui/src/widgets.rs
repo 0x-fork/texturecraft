@@ -4,6 +4,7 @@
 use craft_ui::buttons::{ButtonVisuals, IconButton, IconButtonStyle};
 use egui::{Color32, CornerRadius, Response, RichText, Sense, Stroke, Ui, vec2};
 
+use crate::i18n::tr;
 use crate::theme::Tokens;
 
 /// The drag-and-drop payload of type `T` released on `resp` this frame. Unlike
@@ -29,35 +30,46 @@ pub fn slider_edit(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::R
 }
 
 fn slider_inner(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, decimals: usize) -> (Response, Option<bool>) {
-    let tk = Tokens::get(ui.ctx());
-    let (lo, hi) = (*range.start(), *range.end());
-    let w = ui.available_width();
+    let tokens = Tokens::get(ui.ctx());
+    let (minimum, maximum) = (*range.start(), *range.end());
+    let width = ui.available_width();
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let value_width = [minimum, maximum]
+        .into_iter()
+        .map(|bound| ui.painter().layout_no_wrap(format!("{bound:.decimals$}"), font.clone(), tokens.text).size().x)
+        .fold(44.0, f32::max);
     let mut edit = None;
     let field = ui
         .horizontal(|ui| {
-            ui.label(RichText::new(label).color(tk.text));
+            ui.label(RichText::new(label).color(tokens.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let id = ui.next_auto_id();
-                let shown = format!("{:.*}", decimals, value);
-                // What is typed lives here while the field has focus (`value` is re-read every frame).
-                let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| shown.clone());
-                let r = ui.add(egui::TextEdit::singleline(&mut text).id(id).desired_width(44.0).align(egui::Align2::RIGHT_CENTER).frame(egui::Frame::NONE));
-                if r.has_focus() {
-                    ui.data_mut(|d| d.insert_temp(id, text.clone()));
+                let shown = format!("{value:.decimals$}");
+                // Keep unfinished input while the document value is re-read each frame
+                let mut text = ui.data(|data| data.get_temp::<String>(id)).unwrap_or_else(|| shown.clone());
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut text)
+                        .id(id)
+                        .font(font)
+                        .desired_width(value_width)
+                        .align(egui::Align2::RIGHT_CENTER)
+                        .frame(egui::Frame::NONE),
+                );
+                if response.has_focus() {
+                    ui.data_mut(|data| data.insert_temp(id, text.clone()));
                 } else {
-                    ui.data_mut(|d| d.remove_temp::<String>(id));
-                    // Escape unfocuses the field before the app's shortcuts may consume the key, so
-                    // look at the raw input.
-                    let escape = ui.input(|i| i.raw.events.iter().any(|e| matches!(e, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })));
-                    // Leaving the field unchanged (or with Escape) keeps the value as it is.
-                    if r.lost_focus()
+                    ui.data_mut(|data| data.remove_temp::<String>(id));
+                    // Escape can lose focus before the app consumes the key
+                    let escape =
+                        ui.input(|input| input.raw.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })));
+                    if response.lost_focus()
                         && !escape
                         && text != shown
-                        && let Ok(v) = text.trim().parse::<f32>()
-                        && v.is_finite()
-                        && v.clamp(lo, hi) != *value
+                        && let Ok(parsed) = text.trim().parse::<f32>()
+                        && parsed.is_finite()
+                        && parsed.clamp(minimum, maximum) != *value
                     {
-                        *value = v.clamp(lo, hi);
+                        *value = parsed.clamp(minimum, maximum);
                         edit = Some(false);
                     }
                 }
@@ -66,34 +78,33 @@ fn slider_inner(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::Rang
             .inner
         })
         .inner;
-    let (rect, mut resp) = ui.allocate_exact_size(vec2(w, 14.0), Sense::click_and_drag());
-    if resp.is_pointer_button_down_on() {
-        // Using the track drops what was typed in the field (a drag does not take its focus).
-        ui.data_mut(|d| d.remove_temp::<String>(field));
-        ui.memory_mut(|m| m.surrender_focus(field));
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, 14.0), Sense::click_and_drag());
+    if response.is_pointer_button_down_on() {
+        ui.data_mut(|data| data.remove_temp::<String>(field));
+        ui.memory_mut(|memory| memory.surrender_focus(field));
     }
     if edit.is_some() {
-        // A typed value is a change for `slider`'s callers too.
-        resp.mark_changed();
+        response.mark_changed();
     }
-    if (resp.dragged() || resp.clicked())
-        && let Some(p) = resp.interact_pointer_pos()
+    if (response.dragged() || response.clicked())
+        && let Some(pointer) = response.interact_pointer_pos()
     {
-        let t = ((p.x - rect.left() - 5.0) / (rect.width() - 10.0).max(1.0)).clamp(0.0, 1.0);
-        let v = lo + (hi - lo) * t;
-        if (v - *value).abs() > f32::EPSILON {
-            *value = v;
-            resp.mark_changed();
-            // Whether this drag already applied a value (cleared when it ends).
-            edit = Some(ui.data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(resp.id), true)));
+        let fraction = ((pointer.x - rect.left() - 5.0) / (rect.width() - 10.0).max(1.0)).clamp(0.0, 1.0);
+        let next = minimum + (maximum - minimum) * fraction;
+        if (next - *value).abs() > f32::EPSILON {
+            *value = next;
+            response.mark_changed();
+            // Later frames of one drag share its undo step
+            edit = Some(ui.data_mut(|data| std::mem::replace(data.get_temp_mut_or_default::<bool>(response.id), true)));
         }
     }
-    if resp.drag_stopped() || resp.clicked() {
-        ui.data_mut(|d| d.remove_temp::<bool>(resp.id));
+    if response.drag_stopped() || response.clicked() {
+        ui.data_mut(|data| data.remove_temp::<bool>(response.id));
     }
-    let t = if hi > lo { ((*value - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
-    track(ui, &resp, rect.left() + 5.0..=rect.right() - 5.0, rect.center().y, t, 2.0, 4.5);
-    (resp, edit)
+
+    let fraction = if maximum > minimum { ((*value - minimum) / (maximum - minimum)).clamp(0.0, 1.0) } else { 0.0 };
+    track(ui, &response, rect.left() + 5.0..=rect.right() - 5.0, rect.center().y, fraction, 2.0, 4.5);
+    (response, edit)
 }
 
 /// A small inline slider for the top tool bar: "Label value" above a short track.
@@ -132,31 +143,6 @@ fn track(ui: &Ui, resp: &Response, x: std::ops::RangeInclusive<f32>, y: f32, t: 
     p.circle(egui::pos2(xk, y), knob, tk.panel, Stroke::new(1.5, ring));
 }
 
-/// A histogram of `counts` (buckets over 0..1, scaled to the fullest) in a field-colored well
-/// the width of the panel, the part of 0..1 outside `range` dimmed.
-pub fn histogram(ui: &mut Ui, counts: &[u32], range: (f32, f32)) -> Response {
-    let tk = Tokens::get(ui.ctx());
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::hover());
-    let p = ui.painter_at(rect);
-    p.rect(rect, CornerRadius::same(tk.radius), tk.field, Stroke::new(1.0, tk.field_border), egui::StrokeKind::Inside);
-    let inner = rect.shrink(3.0);
-    let max = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
-    let w = inner.width() / counts.len().max(1) as f32;
-    for (i, c) in counts.iter().enumerate() {
-        let h = inner.height() * *c as f32 / max;
-        let x = inner.left() + i as f32 * w;
-        p.rect_filled(egui::Rect::from_min_max(egui::pos2(x, inner.bottom() - h), egui::pos2(x + w, inner.bottom())), 0.0, tk.text_dim);
-    }
-    let x = |t: f32| inner.left() + inner.width() * t.clamp(0.0, 1.0);
-    let shade = tk.field.gamma_multiply(0.7);
-    p.rect_filled(egui::Rect::from_x_y_ranges(inner.left()..=x(range.0), inner.y_range()), 0.0, shade);
-    p.rect_filled(egui::Rect::from_x_y_ranges(x(range.1)..=inner.right(), inner.y_range()), 0.0, shade);
-    for t in [range.0, range.1] {
-        p.line_segment([egui::pos2(x(t), inner.top()), egui::pos2(x(t), inner.bottom())], Stroke::new(1.0, tk.accent));
-    }
-    resp
-}
-
 /// One line of `text` cut with "…" to fit `max_width`, for list rows that shrink with their panel.
 pub fn elided(painter: &egui::Painter, text: impl Into<String>, size: f32, color: Color32, max_width: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple_singleline(text.into(), egui::FontId::proportional(size), color);
@@ -164,25 +150,82 @@ pub fn elided(painter: &egui::Painter, text: impl Into<String>, size: f32, color
     painter.layout_job(job)
 }
 
-/// A square icon button (Phosphor glyph) in a rounded tool well: `selected` sits in the accent
-/// tinted well (the shared Craft icon button, `craft_ui::buttons`).
+/// A square Phosphor icon button with a tooltip and an accent well when selected
 pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str, selected: bool, size: f32) -> Response {
-    let tk = Tokens::get(ui.ctx());
+    icon_button_without_tooltip(ui, icon, tooltip, selected, size).on_hover_text(tooltip)
+}
+
+/// Icon glyph size as a fraction of the button height
+const ICON_SCALE: f32 = 0.62;
+
+/// Extra width an `icon_dropdown_button` gives its caret, as a fraction of the button height
+const CARET_STRIP_SCALE: f32 = 0.34;
+
+/// Caret glyph size, and how far its center sits from the right edge, as fractions of the button height
+const CARET_SCALE: f32 = 0.34;
+const CARET_INSET_SCALE: f32 = 0.25;
+
+/// An `icon_button` with no tooltip, whose `label` still names it for screen readers
+pub fn icon_button_without_tooltip(ui: &mut Ui, icon: &str, label: &str, selected: bool, size: f32) -> Response {
+    let style = icon_button_style(&Tokens::get(ui.ctx()));
+    IconButton::new(label, vec2(size, size), &style).selected(selected).show(ui, |ui, rect, color| {
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(size * ICON_SCALE), color);
+    })
+}
+
+/// Width of an `icon_dropdown_button` `size` high: the square icon and the caret strip after it
+pub fn icon_dropdown_button_width(size: f32) -> f32 {
+    size * (1.0 + CARET_STRIP_SCALE)
+}
+
+/// An `icon_button_without_tooltip` with a dropdown caret after the icon, drawn in the icon's color
+pub fn icon_dropdown_button(ui: &mut Ui, icon: &str, label: &str, selected: bool, size: f32) -> Response {
+    let style = icon_button_style(&Tokens::get(ui.ctx()));
+    IconButton::new(label, vec2(icon_dropdown_button_width(size), size), &style).selected(selected).show(ui, |ui, rect, color| {
+        let icon_center = rect.left_center() + vec2(size / 2.0, 0.0);
+        let caret_center = rect.right_center() - vec2(size * CARET_INSET_SCALE, 0.0);
+        ui.painter().text(icon_center, egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(size * ICON_SCALE), color);
+        ui.painter().text(caret_center, egui::Align2::CENTER_CENTER, egui_phosphor::regular::CARET_DOWN, egui::FontId::proportional(size * CARET_SCALE), color);
+    })
+}
+
+/// An `icon_dropdown_button` whose icon carries a small `badge` glyph at its lower right (e.g. a gear for a feature's settings)
+pub fn icon_badge_dropdown_button(ui: &mut Ui, icon: &str, badge: &str, label: &str, selected: bool, size: f32) -> Response {
+    // Badge glyph size and inset, as fractions of the height
+    const BADGE_SCALE: f32 = 0.5;
+    const BADGE_INSET_SCALE: f32 = 0.24;
+    // The icon shrinks a little and moves up and left, making room for the badge
+    const ICON_WITH_BADGE_SCALE: f32 = 0.78;
+    const ICON_SHIFT_SCALE: f32 = 0.09;
+
+    let style = icon_button_style(&Tokens::get(ui.ctx()));
+    IconButton::new(label, vec2(icon_dropdown_button_width(size), size), &style).selected(selected).show(ui, |ui, rect, color| {
+        let icon_center = rect.left_center() + vec2(size / 2.0, 0.0);
+        let badge_center = rect.left_top() + vec2(size - size * BADGE_INSET_SCALE, size - size * BADGE_INSET_SCALE);
+        let caret_center = rect.right_center() - vec2(size * CARET_INSET_SCALE, 0.0);
+        ui.painter().text(
+            icon_center - vec2(size, size) * ICON_SHIFT_SCALE,
+            egui::Align2::CENTER_CENTER,
+            icon,
+            egui::FontId::proportional(size * ICON_SCALE * ICON_WITH_BADGE_SCALE),
+            color,
+        );
+        ui.painter().text(badge_center, egui::Align2::CENTER_CENTER, badge, egui::FontId::proportional(size * BADGE_SCALE), color);
+        ui.painter().text(caret_center, egui::Align2::CENTER_CENTER, egui_phosphor::regular::CARET_DOWN, egui::FontId::proportional(size * CARET_SCALE), color);
+    })
+}
+
+/// Transparent at rest, a hover well, and the active-tool well when pressed or selected
+fn icon_button_style(tokens: &Tokens) -> IconButtonStyle {
     let well = |fill, icon| ButtonVisuals { fill, stroke: Stroke::NONE, icon };
-    let style = IconButtonStyle {
-        normal: well(Color32::TRANSPARENT, tk.text),
-        hovered: well(tk.row_hover, tk.text_strong),
-        pressed: Some(well(tk.tool_active, tk.text_strong)),
-        selected: well(tk.tool_active, tk.text_strong),
+    IconButtonStyle {
+        normal: well(Color32::TRANSPARENT, tokens.text),
+        hovered: well(tokens.row_hover, tokens.text_strong),
+        pressed: Some(well(tokens.tool_active, tokens.text_strong)),
+        selected: well(tokens.tool_active, tokens.text_strong),
         corner_radius: CornerRadius::same(6),
-        focus_stroke: Stroke::new(1.0, tk.accent),
-    };
-    IconButton::new(tooltip, vec2(size, size), &style)
-        .selected(selected)
-        .show(ui, |ui, rect, color| {
-            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(size * 0.62), color);
-        })
-        .on_hover_text(tooltip)
+        focus_stroke: Stroke::new(1.0, tokens.accent),
+    }
 }
 
 /// A flat button filled with the accent, white lettering (a dialog's main action).
@@ -207,26 +250,115 @@ pub fn combo(ui: &mut Ui, label: &str, selected: impl Into<egui::WidgetText>, me
     .inner
 }
 
-/// A collapsible section header with a chevron ("> Size").
+pub(crate) fn section_chevron(ui: &Ui, is_open: bool) -> RichText {
+    let chevron = if is_open {
+        egui_phosphor::regular::CARET_DOWN
+    } else if ui.style().right_to_left {
+        egui_phosphor::regular::CARET_LEFT
+    } else {
+        egui_phosphor::regular::CARET_RIGHT
+    };
+    RichText::new(chevron).size(10.0).color(Tokens::get(ui.ctx()).text_dim)
+}
+
+/// A collapsible section header with a chevron
 pub fn section(ui: &mut Ui, id: &str, title: &str, default_open: bool, body: impl FnOnce(&mut Ui)) {
-    let tk = Tokens::get(ui.ctx());
+    collapsible_section(ui, id, title, default_open, None, body);
+}
+
+/// A [`section`] whose header ends in a reset icon, inert while `at_default`; true when clicked
+pub fn section_with_reset(ui: &mut Ui, id: &str, title: &str, default_open: bool, at_default: bool, body: impl FnOnce(&mut Ui)) -> bool {
+    collapsible_section(ui, id, title, default_open, Some(at_default), body)
+}
+
+/// Glyph size of a section header's reset icon
+const SECTION_RESET_ICON_SIZE: f32 = 14.0;
+
+/// How much of `text_dim` the reset icon keeps while its section is at its defaults
+const SECTION_RESET_AT_DEFAULT_OPACITY: f32 = 0.4;
+
+/// Gap between the reset icon's glyph and its keyboard focus outline
+const SECTION_RESET_FOCUS_MARGIN: f32 = 2.0;
+
+/// Corner radius of the reset icon's keyboard focus outline
+const SECTION_RESET_FOCUS_CORNER_RADIUS: u8 = 3;
+
+/// The header row and body of [`section`]; `reset_at_default` adds the reset icon
+fn collapsible_section(ui: &mut Ui, id: &str, title: &str, default_open: bool, reset_at_default: Option<bool>, body: impl FnOnce(&mut Ui)) -> bool {
+    let tokens = Tokens::get(ui.ctx());
     let id = ui.make_persistent_id(id);
-    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
-    let open = state.is_open();
-    let resp = ui
-        .horizontal(|ui| {
-            let chev = if open { egui_phosphor::regular::CARET_DOWN } else { egui_phosphor::regular::CARET_RIGHT };
-            ui.label(RichText::new(chev).size(10.0).color(tk.text_dim));
-            ui.label(RichText::new(title).strong().color(tk.text_strong));
-        })
-        .response
-        .interact(Sense::click());
-    if resp.clicked() {
-        state.toggle(ui);
+    let mut collapsing_state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+
+    // Register focus from creation so the next frame does not clear the header's focus
+    let mut header_builder = egui::UiBuilder::new().id_salt(id.with("header")).sense(Sense::click());
+    if reset_at_default.is_some() {
+        // Earlier controls can widen the content beyond the UI's original visible bounds
+        let visible_bounds = ui.stack().max_rect.intersect(ui.clip_rect());
+        let mut header_bounds = ui.available_rect_before_wrap();
+        header_bounds.min.x = header_bounds.min.x.max(visible_bounds.min.x);
+        header_bounds.max.x = header_bounds.max.x.min(visible_bounds.max.x).max(header_bounds.min.x);
+        header_builder = header_builder.max_rect(header_bounds);
     }
-    state.show_body_unindented(ui, |ui| {
+
+    let mut reset_rect = None;
+    let header = ui.scope_builder(header_builder, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(egui::Label::new(section_chevron(ui, collapsing_state.is_open())).selectable(false));
+            let title = egui::Label::new(RichText::new(title).strong().color(tokens.text_strong)).selectable(false);
+            if reset_at_default.is_some() {
+                let icon_size = vec2(SECTION_RESET_ICON_SIZE, SECTION_RESET_ICON_SIZE);
+                let title_width = (ui.available_width() - icon_size.x - ui.spacing().item_spacing.x).max(0.0);
+
+                // Long titles must not extend into the reset target in narrow panels
+                ui.allocate_ui_with_layout(vec2(title_width, icon_size.y), *ui.layout(), |ui| {
+                    ui.set_width(title_width);
+                    ui.add(title.truncate());
+                });
+                reset_rect = Some(ui.allocate_exact_size(icon_size, Sense::hover()).0);
+            } else {
+                ui.add(title);
+            }
+        });
+    });
+    if header.response.clicked() {
+        collapsing_state.toggle(ui);
+    }
+
+    // Registered after the header so the icon, not the header, takes its clicks
+    let mut reset_clicked = false;
+    if let (Some(at_default), Some(rect)) = (reset_at_default, reset_rect) {
+        // At the defaults the icon is inert, so Tab skips it
+        let sense = if at_default { Sense::CLICK } else { Sense::click() };
+        let response = ui.interact(rect, id.with("reset"), sense).on_hover_text(tr("Reset to defaults"));
+
+        // A focused reset must identify its section without relying on nearby visual text
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, !at_default, format_args!("{title}: {}", tr("Reset to defaults"))));
+
+        let focused = response.has_focus();
+        let color = if at_default {
+            tokens.text_dim.gamma_multiply(SECTION_RESET_AT_DEFAULT_OPACITY)
+        } else if response.hovered() || focused {
+            tokens.text_strong
+        } else {
+            tokens.text_dim
+        };
+        let font = egui::FontId::proportional(SECTION_RESET_ICON_SIZE);
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, egui_phosphor::regular::CLOCK_COUNTER_CLOCKWISE, font, color);
+
+        // Enter or Space on the focused icon resets, so keyboard focus needs an outline
+        if focused {
+            let outline = rect.expand(SECTION_RESET_FOCUS_MARGIN);
+            ui.painter().rect_stroke(outline, CornerRadius::same(SECTION_RESET_FOCUS_CORNER_RADIUS), ui.visuals().selection.stroke, egui::StrokeKind::Outside);
+        }
+
+        reset_clicked = response.clicked() && !at_default;
+    }
+
+    collapsing_state.show_body_unindented(ui, |ui| {
         ui.indent(id.with("in"), body);
     });
+
+    reset_clicked
 }
 
 /// A channel chip ("color", "metal", "rough"…): toggled = the accent-tinted well.

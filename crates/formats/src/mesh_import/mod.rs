@@ -2,7 +2,7 @@
 //! world-space [`Mesh`] with one submesh per material and part (glTF node, OBJ object, FBX
 //! model, COLLADA node, USD Mesh prim, Alembic PolyMesh; unnamed parts take the file stem), materials contiguous,
 //! glTF UV convention (origin top-left, v down),
-//! normals (computed when missing), vertex colors (glTF, OBJ, PLY), UVs (auto-unwrapped when
+//! normals (computed when missing), vertex colors (glTF, FBX, OBJ, PLY), UVs (auto-unwrapped when
 //! missing) and MikkTSpace tangents. glTF, FBX, COLLADA and USD cameras come along as the
 //! project's camera list.
 
@@ -182,10 +182,11 @@ pub(crate) struct Corner {
     pub p: Vec3,
     pub n: Option<Vec3>,
     pub uv: Option<Vec2>,
+    pub color: Option<Vec4>,
 }
 
 /// Collects polygons into a [`RawMesh`]: fan triangulation, one vertex per unique corner, and
-/// normals / UVs kept only when every corner has them (else computed / unwrapped).
+/// normals / UVs / colors kept only when every corner has them (else computed / unwrapped / white).
 #[derive(Default)]
 pub(crate) struct PolygonSink {
     /// Part name of the polygons that follow.
@@ -193,10 +194,13 @@ pub(crate) struct PolygonSink {
     raw: RawMesh,
     normals: Vec<Vec3>,
     uvs: Vec<Vec2>,
+    /// Allocated by the first coloured corner, so a scene without colors pays nothing for them.
+    colors: Option<Vec<Vec4>>,
     missing_normals: bool,
     missing_uvs: bool,
     some_uvs: bool,
-    ids: HashMap<[u32; 8], u32>,
+    missing_colors: bool,
+    ids: HashMap<[u32; 12], u32>,
     polygon: Vec<u32>,
     triangles: usize,
 }
@@ -213,13 +217,24 @@ impl PolygonSink {
             self.missing_normals |= c.n.is_none();
             self.missing_uvs |= c.uv.is_none();
             self.some_uvs |= c.uv.is_some();
+            self.missing_colors |= c.color.is_none();
             let (n, uv) = (c.n.unwrap_or_default(), c.uv.unwrap_or_default());
+            // A corner without a color must not merge with one that has it.
+            let color_key = c.color.map_or([u32::MAX; 4], |v| v.to_array().map(f32::to_bits));
             let key = [c.p.x, c.p.y, c.p.z, n.x, n.y, n.z, uv.x, uv.y].map(f32::to_bits);
+            let key = [key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7], color_key[0], color_key[1], color_key[2], color_key[3]];
             let id = match self.ids.entry(key) {
                 Entry::Occupied(e) => *e.get(),
                 Entry::Vacant(e) => {
                     let id = self.raw.positions.len();
                     check_vertices(id + 1)?;
+                    // White stands in for the corners before the first coloured one.
+                    if c.color.is_some() && self.colors.is_none() {
+                        self.colors = Some(vec![Vec4::ONE; id]);
+                    }
+                    if let Some(colors) = self.colors.as_mut() {
+                        colors.push(c.color.unwrap_or(Vec4::ONE));
+                    }
                     self.raw.positions.push(c.p);
                     self.normals.push(n);
                     self.uvs.push(uv);
@@ -242,8 +257,12 @@ impl PolygonSink {
         if self.missing_uvs && self.some_uvs {
             self.warn("some polygons have no UVs; the whole mesh was unwrapped automatically".into());
         }
+        if self.missing_colors && self.colors.is_some() {
+            self.warn("some polygon corners have no color in the color layer; vertex colors were dropped".into());
+        }
         self.raw.normals = (!self.missing_normals).then_some(self.normals);
         self.raw.uvs = (!self.missing_uvs).then_some(self.uvs);
+        self.raw.colors = if self.missing_colors { None } else { self.colors.take() };
         self.raw
     }
 }
@@ -379,6 +398,7 @@ fn geometry(raw: RawMesh) -> Result<(Mesh, Vec<String>, Option<Vec<Vec2>>)> {
     let RawMesh { positions, normals, uvs, colors, groups, warnings, diagonals, .. } = raw;
     check_vertices(positions.len())?;
     check_triangles(0, groups.iter().map(|(_, _, g)| g.len() / 3).sum())?;
+
     let mut mesh = Mesh { positions, ..Mesh::default() };
     let mut groups: Vec<(usize, String, Vec<u32>)> = groups
         .into_iter()
@@ -398,22 +418,27 @@ fn geometry(raw: RawMesh) -> Result<(Mesh, Vec<String>, Option<Vec<Vec2>>)> {
         mesh.indices.extend_from_slice(tris.get(..count as usize).unwrap_or_default());
         mesh.submeshes.push(SubMesh { name, material, start, count });
     }
+
     if mesh.indices.is_empty() {
         return Err(FormatError::Invalid("the file contains no triangles".into()));
     }
+
     if !diagonals.is_empty() {
         let diagonal = |a: u32, b: u32| diagonals.contains(&(a.min(b), a.max(b)));
-        mesh.diagonals = mesh.indices.chunks_exact(3).map(|t| (0..3).map(|i| u8::from(diagonal(t[i], t[(i + 1) % 3])) << i).sum()).collect();
+        mesh.diagonals = mesh.indices.as_chunks::<3>().0.iter().map(|t| (0..3).map(|i| u8::from(diagonal(t[i], t[(i + 1) % 3])) << i).sum()).collect();
     }
     if let Some(bad) = mesh.indices.iter().find(|i| **i as usize >= mesh.positions.len()) {
         return Err(FormatError::Invalid(format!("vertex index {bad} out of range ({} vertices)", mesh.positions.len())));
     }
+
     if mesh.positions.iter().any(|p| !p.is_finite()) {
         return Err(FormatError::Invalid("the mesh has non-finite vertex positions".into()));
     }
+
     if all_triangles_degenerate(&mesh) {
         return Err(FormatError::Invalid("every triangle of the mesh is degenerate (zero area)".into()));
     }
+
     mesh.normals = match normals {
         Some(n) if n.len() == mesh.positions.len() => n.into_iter().map(|v| v.try_normalize().unwrap_or(Vec3::Y)).collect(),
         _ => smooth_normals(&mesh),
@@ -421,6 +446,7 @@ fn geometry(raw: RawMesh) -> Result<(Mesh, Vec<String>, Option<Vec<Vec2>>)> {
     if let Some(c) = colors.filter(|c| c.len() == mesh.positions.len()) {
         mesh.colors = c.into_iter().map(|v| if v.is_finite() { v.clamp(Vec4::ZERO, Vec4::ONE) } else { Vec4::ONE }).collect();
     }
+
     Ok((mesh, warnings, uvs))
 }
 
@@ -482,18 +508,19 @@ fn orbit_cameras(raw: &[RawCamera], mesh: &Mesh) -> Vec<texturecraft_core::Camer
 
 /// Area-weighted smooth normals over welded positions (UV seams do not split shading).
 fn smooth_normals(mesh: &Mesh) -> Vec<Vec3> {
-    let weld = weld_ids(&mesh.positions);
-    let mut acc = vec![Vec3::ZERO; mesh.positions.len()];
-    for t in mesh.indices.chunks_exact(3) {
+    let welded_vertices = weld_ids(&mesh.positions);
+    let mut normals = vec![Vec3::ZERO; mesh.positions.len()];
+    for triangle in mesh.indices.as_chunks::<3>().0 {
         let p = |i: u32| mesh.positions.get(i as usize).copied().unwrap_or_default();
-        let face = (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0]));
-        for v in t {
-            if let Some(a) = weld.get(*v as usize).and_then(|w| acc.get_mut(*w as usize)) {
+        let face = (p(triangle[1]) - p(triangle[0])).cross(p(triangle[2]) - p(triangle[0]));
+        for v in triangle {
+            if let Some(a) = welded_vertices.get(*v as usize).and_then(|w| normals.get_mut(*w as usize)) {
                 *a += face;
             }
         }
     }
-    weld.iter().map(|w| acc.get(*w as usize).and_then(|n| n.try_normalize()).unwrap_or(Vec3::Y)).collect()
+
+    welded_vertices.iter().map(|w| normals.get(*w as usize).and_then(|n| n.try_normalize()).unwrap_or(Vec3::Y)).collect()
 }
 
 /// Inspects `mesh` and generates its UV report (overlaps, out-of-range UVs, warnings).
