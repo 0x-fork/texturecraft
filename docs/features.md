@@ -67,6 +67,11 @@ Everything TextureCraft does today, by area. What's still missing is in [`ROADMA
   brick and stone, sun-faded paint…) and **24 smart masks**, all procedural, so they work at any
   resolution. Drag them from the tabbed, searchable shelf onto the layer stack or straight onto
   the model.
+- **Import resources:** *File › Import resources...* opens a window: *Add resources* (images and
+  materials), an optional name prefix and a usage per file (texture, environment and alpha also
+  light the scene or set the brush alpha), a filter by usage, *Remove selected resources*, then
+  *Import*. Not yet available: the colorlut and postfx usages and the "Your assets" target (shown
+  disabled). The browser imports images straight from its file picker.
 - **Your own library:** right-click a layer or folder, choose *Create smart material*, and it
   appears under *My smart materials*, pixels and images included.
 - **MaterialCraft materials:** *File › Import material*, a drop on the window, or MaterialCraft's

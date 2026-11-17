@@ -24,7 +24,10 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     about(app, ctx);
     settings(app, ctx);
     #[cfg(not(target_arch = "wasm32"))]
-    crate::project_config::show(app, ctx);
+    {
+        crate::project_config::show(app, ctx);
+        crate::import_resources::show(app, ctx);
+    }
     crate::keymap::window(app, ctx);
     crate::windows::export(app, ctx);
     #[cfg(target_arch = "wasm32")]
@@ -918,19 +921,7 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
             true
         }
         "file.importResources" | "resource.import" => {
-            app.ask_file(FileDialog::open_many().filter(tr("Images"), crate::web_files::IMAGE_EXTS), Bound::Project, |app, paths| {
-                if paths.is_empty() {
-                    return;
-                }
-
-                for p in paths {
-                    if let Some(r) = app.run("resource.import", json!({"path": p.display().to_string()})) {
-                        let name = r.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
-                        app.toast(trf("Imported {name}", &[("name", &name)]), false);
-                    }
-                }
-                app.ui.dock.focus(crate::docking::Panel::Assets);
-            });
+            crate::import_resources::open(app);
             true
         }
         "file.importMaterialX" => {

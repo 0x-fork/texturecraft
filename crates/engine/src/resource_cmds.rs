@@ -12,7 +12,15 @@ use crate::{EngineError, Result, Session, cmd};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("resource.import", "Import resources", ["File"], None, "{path} — an image file (png, jpg, tga, tif, bmp, webp, exr, hdr)", always, import),
+        cmd!(
+            "resource.import",
+            "Import resources",
+            ["File"],
+            None,
+            "{path — an image file (png, jpg, tga, tif, bmp, webp, exr, hdr), prefix?: put in front of the resource name (anything outside A-Z a-z 0-9 _ . - becomes _)}",
+            always,
+            import
+        ),
         cmd!("resource.list", "List resources", [], None, "{}", always, |s, _| Ok(list(s))),
         cmd!("resource.remove", "Remove resource", [], None, "{name}", always, remove),
         cmd!("file.removeUnused", "Remove unused resources...", ["File"], None, "{}", always, remove_unused),
@@ -38,18 +46,33 @@ pub(crate) fn decoded(d: texturecraft_formats::DecodedImage) -> Arc<ImageRes> {
 impl Session {
     /// Add an image resource from bytes (one undo step); returns its unique, sanitized name
     pub fn import_resource_bytes(&mut self, file_name: &str, bytes: Vec<u8>) -> Result<String> {
-        self.edit("Import resource", |session| session.add_image_resource(file_name, bytes, texturecraft_formats::MAX_RESOURCE_TEXELS))
+        self.import_resource_bytes_prefixed("", file_name, bytes)
+    }
+
+    /// Like [`Self::import_resource_bytes`], with `prefix` put in front of the resource's name
+    pub fn import_resource_bytes_prefixed(&mut self, prefix: &str, file_name: &str, bytes: Vec<u8>) -> Result<String> {
+        self.edit("Import resource", |session| session.add_image_resource_prefixed(prefix, file_name, bytes, texturecraft_formats::MAX_RESOURCE_TEXELS))
     }
 
     /// Add an image within a decoded texel budget, inside the caller's edit
     pub(crate) fn add_image_resource(&mut self, file_name: &str, bytes: Vec<u8>, max_texels: u64) -> Result<String> {
+        self.add_image_resource_prefixed("", file_name, bytes, max_texels)
+    }
+
+    fn add_image_resource_prefixed(&mut self, prefix: &str, file_name: &str, bytes: Vec<u8>, max_texels: u64) -> Result<String> {
         if bytes.len() > MAX_BYTES {
             return Err(EngineError::Other(format!("{file_name} is larger than {} MB", MAX_BYTES >> 20)));
         }
 
         let image = texturecraft_formats::decode_image_within(&bytes, max_texels).map_err(|error| EngineError::Other(format!("{file_name}: {error}")))?;
         let leaf = std::path::Path::new(file_name).file_name().and_then(|name| name.to_str()).unwrap_or("image");
-        let base = texturecraft_formats::sanitize_resource_name(leaf);
+        let mut base = texturecraft_formats::sanitize_resource_name(leaf);
+        if !prefix.trim().is_empty() {
+            // Names stay within the sanitized length; the file name keeps its room
+            let room = 120usize.saturating_sub(base.chars().count());
+            let prefix: String = texturecraft_formats::sanitize_resource_name(prefix.trim()).chars().take(room).collect();
+            base = format!("{prefix}{base}");
+        }
         let mut name = base.clone();
         let mut duplicate_index = 2;
         while self.doc.resources.contains_key(&name) {
@@ -101,7 +124,7 @@ fn list(s: &Session) -> Value {
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = strp(p, "path").ok_or_else(|| bad("resource.import", "`path` is required"))?;
     let bytes = read_image_file("resource.import", path, MAX_BYTES as u64)?;
-    let name = s.import_resource_bytes(path, bytes)?;
+    let name = s.import_resource_bytes_prefixed(strp(p, "prefix").unwrap_or(""), path, bytes)?;
     Ok(json!({ "name": name }))
 }
 
