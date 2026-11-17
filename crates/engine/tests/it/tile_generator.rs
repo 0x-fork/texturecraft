@@ -1,7 +1,9 @@
 //! The Tile Generator pattern and pattern resolutions through engine commands
 
 use serde_json::{Value, json};
-use texturecraft_engine::core::{Channel, EffectKind, LayerId, LayerKind, Procedural, ProceduralKind, ResolutionMode, Source, TileGenerator, TileShape};
+use texturecraft_engine::core::{
+    Channel, EffectKind, LayerId, LayerKind, Procedural, ProceduralKind, Projection, ResolutionMode, Source, TileGenerator, TileShape,
+};
 use texturecraft_engine::geom::primitives;
 use texturecraft_engine::{Session, execute};
 
@@ -163,6 +165,21 @@ fn a_uniform_pick_outranks_pattern_edits_on_a_mask_fill() {
 
     let Some((_, edited)) = session.doc.project.effect(LayerId(effect)) else { panic!("the mask fill is gone") };
     assert!(matches!(&edited.kind, EffectKind::Fill { source: Source::Uniform(value), .. } if *value == [0.3; 3]), "the fill reads the value, not the pattern");
+}
+
+/// A fill effect's `scale` is also its projection's: while it reads a pattern, the pattern takes it
+#[test]
+fn a_pattern_scale_edit_leaves_the_mask_fills_projection_alone() {
+    let mut session = session();
+    let effect = mask_fill(&mut session);
+    execute(&mut session, "effect.set", &json!({"effect": effect, "procedural": "Tile Generator"})).unwrap();
+
+    execute(&mut session, "effect.set", &json!({"effect": effect, "scale": 3.0})).unwrap();
+
+    let Some((_, edited)) = session.doc.project.effect(LayerId(effect)) else { panic!("the mask fill is gone") };
+    let EffectKind::Fill { source: Source::Procedural { pattern, .. }, projection } = &edited.kind else { panic!("the fill reads a pattern") };
+    assert_eq!(pattern.scale, 3.0);
+    assert_eq!(*projection, Projection::default(), "the projection keeps its scale");
 }
 
 #[test]

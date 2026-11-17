@@ -126,11 +126,12 @@ fn a_mask_fill_selects_an_image_edits_projection_and_returns_to_uniform() {
     harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(4);
 
-    harness.get_all_by_role(egui::Role::ComboBox).find(|node| node.value().as_deref() == Some("Uniform value")).unwrap().scroll_to_me();
+    // The mask fill's slot opens the source picker
+    harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").scroll_to_me();
     harness.run_steps(30);
-    harness.get_all_by_role(egui::Role::ComboBox).find(|node| node.value().as_deref() == Some("Uniform value")).unwrap().click();
-    harness.run_steps(2);
-    harness.get_by_label(&image_name).click();
+    harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").click();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(egui::Role::Button, &image_name).click();
     harness.run_steps(3);
 
     let effect = &harness.state().session.doc.project.effect(effect_id).unwrap().1.kind;
@@ -144,10 +145,10 @@ fn a_mask_fill_selects_an_image_edits_projection_and_returns_to_uniform() {
     let effect = &harness.state().session.doc.project.effect(effect_id).unwrap().1.kind;
     assert!(matches!(effect, EffectKind::Fill { projection: Projection::Triplanar { .. }, .. }));
 
-    let image_label = format!("Image: {image_name}");
-    harness.get_all_by_role(egui::Role::ComboBox).find(|node| node.value().as_deref() == Some(image_label.as_str())).unwrap().click();
-    harness.run_steps(2);
-    harness.get_by_label("Uniform value").click();
+    assert_eq!(harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").value().as_deref(), Some(image_name.as_str()), "the slot names the image");
+    harness.get_by_role_and_label(egui::Role::ComboBox, "Grayscale").click();
+    harness.run_steps(3);
+    harness.get_by_role_and_label(egui::Role::Button, "Uniform value").click();
     harness.run_steps(3);
 
     let effect = &harness.state().session.doc.project.effect(effect_id).unwrap().1.kind;

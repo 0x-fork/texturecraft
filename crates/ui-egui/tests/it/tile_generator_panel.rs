@@ -248,4 +248,15 @@ fn tile_generator_snapshots() {
     harness.state_mut().session.update();
     settle(&mut harness);
     harness.render().unwrap().save(directory.join("tile-adjusted.png")).unwrap();
+
+    // An image as the mask fill's source: the slot names it over its projection
+    let mut png_bytes = Vec::new();
+    image::RgbaImage::from_fn(8, 8, |x, y| image::Rgba([if (x + y) % 2 == 0 { 230 } else { 40 }; 4]))
+        .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+        .unwrap();
+    let name = harness.state_mut().session.import_resource_bytes("checks.png", png_bytes).unwrap();
+    execute(&mut harness.state_mut().session, "effect.set", &json!({"effect": effect.0, "image": name})).unwrap();
+    harness.state_mut().session.update();
+    settle(&mut harness);
+    harness.render().unwrap().save(directory.join("mask-fill-image.png")).unwrap();
 }

@@ -52,8 +52,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ui: &mut Ui, fill: &FillSourceTarg
         return;
     }
 
-    let images = matches!(fill, FillSourceTarget::Channel { .. });
-    let tiles = tiles(app, &ctx, images);
+    let tiles = tiles(app, &ctx);
     let anchors: Vec<ResourcePickerAnchor> = anchors
         .iter()
         .map(|(anchor, name)| ResourcePickerAnchor {
@@ -127,8 +126,8 @@ fn current_key(source: &Source) -> Option<String> {
     }
 }
 
-/// The Resources tab: the patterns, the project's images (`images`) and a uniform value
-fn tiles(app: &mut TextureCraftApp, ctx: &egui::Context, images: bool) -> Vec<ResourcePickerTile<'static>> {
+/// The Resources tab: the patterns, the project's images and a uniform value
+fn tiles(app: &mut TextureCraftApp, ctx: &egui::Context) -> Vec<ResourcePickerTile<'static>> {
     let mut tiles: Vec<ResourcePickerTile<'static>> = ProceduralKind::ALL
         .into_iter()
         .map(|kind| ResourcePickerTile {
@@ -139,20 +138,18 @@ fn tiles(app: &mut TextureCraftApp, ctx: &egui::Context, images: bool) -> Vec<Re
             preview: Box::new(move || ShelfPreview::Procedural(kind)),
         })
         .collect();
-    if images {
-        let mut names: Vec<(String, Arc<ImageRes>)> = app.session.images.iter().map(|(name, image)| (name.clone(), image.clone())).collect();
-        names.sort_by(|a, b| a.0.cmp(&b.0));
-        for (name, image) in names {
-            let thumbnail = Some(app.thumbs.image(ctx, &name, &image));
-            let preview_name = name.clone();
-            tiles.push(ResourcePickerTile {
-                key: format!("{IMAGE_PREFIX}{name}"),
-                label: name,
-                group: tr("Images"),
-                thumbnail,
-                preview: Box::new(move || ShelfPreview::Image(preview_name.clone(), image.clone())),
-            });
-        }
+    let mut names: Vec<(String, Arc<ImageRes>)> = app.session.images.iter().map(|(name, image)| (name.clone(), image.clone())).collect();
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, image) in names {
+        let thumbnail = Some(app.thumbs.image(ctx, &name, &image));
+        let preview_name = name.clone();
+        tiles.push(ResourcePickerTile {
+            key: format!("{IMAGE_PREFIX}{name}"),
+            label: name,
+            group: tr("Images"),
+            thumbnail,
+            preview: Box::new(move || ShelfPreview::Image(preview_name.clone(), image.clone())),
+        });
     }
     tiles.push(ResourcePickerTile {
         key: UNIFORM_KEY.to_string(),
@@ -171,9 +168,14 @@ fn pick_resource(app: &mut TextureCraftApp, fill: &FillSourceTarget, key: &str) 
         (FillSourceTarget::Mask { effect }, Some(kind)) => {
             app.run("effect.set", json!({"effect": effect, "procedural": kind.label()}));
         }
-        (FillSourceTarget::Mask { effect }, None) => {
-            app.run("effect.set", json!({"effect": effect, "uniform": 1.0}));
-        }
+        (FillSourceTarget::Mask { effect }, None) => match key.strip_prefix(IMAGE_PREFIX) {
+            Some(name) => {
+                app.run("effect.set", json!({"effect": effect, "image": name}));
+            }
+            None => {
+                app.run("effect.set", json!({"effect": effect, "uniform": 1.0}));
+            }
+        },
         (FillSourceTarget::Channel { base, channel }, Some(kind)) => {
             let (low, high) = pattern_range(*channel);
             app.run("layer.fill.set", with(base, json!({"channel": channel.id(), "procedural": kind.label(), "low": low, "high": high})));
