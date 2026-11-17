@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use texturecraft_core::{Channel, Fill, Layer, LayerKind, NormalFormat, Projection, Source};
+use texturecraft_core::{Channel, Fill, Layer, LayerKind, NormalFormat, Source};
 use texturecraft_formats::pbr_maps::{self, MapKind, PbrSet};
 
 use crate::commands::{CommandSpec, always, bad, strp};
@@ -29,6 +29,29 @@ pub const MAX_FILE_BYTES: u64 = 256 << 20;
 pub const MAX_IMAGE_TEXELS: u64 = 64 << 20;
 /// Largest sum of decoded texels in one import.
 pub const MAX_TOTAL_TEXELS: u64 = 320 << 20;
+/// Upper bound on the import's estimated decoded and temporary image memory.
+const MAX_IMPORT_MEMORY_BYTES: u64 = 4 << 30;
+/// Leave most available memory to the document, renderer, and operating system.
+const IMPORT_MEMORY_SHARE: u64 = 4;
+const RGBA_FLOAT_BYTES_PER_TEXEL: u64 = 16;
+/// Headroom for the decoder and one generated-map conversion in flight.
+const IMPORT_TEMP_BYTES_PER_TEXEL: u64 = 32;
+
+fn import_memory_budget() -> u64 {
+    #[cfg(not(target_arch = "wasm32"))]
+    let available_bytes = texturecraft_formats::available_save_resources().1;
+    #[cfg(target_arch = "wasm32")]
+    let available_bytes = MAX_IMPORT_MEMORY_BYTES;
+
+    (available_bytes / IMPORT_MEMORY_SHARE).min(MAX_IMPORT_MEMORY_BYTES)
+}
+
+fn allowed_source_texels(budget_bytes: u64, retained_bytes: u64, output_count: usize) -> u64 {
+    // A source and each output retain RGBA floats; leave room for decoding and conversion
+    let retained_per_texel = RGBA_FLOAT_BYTES_PER_TEXEL * (1 + output_count as u64);
+    let temporary_per_texel = IMPORT_TEMP_BYTES_PER_TEXEL;
+    budget_bytes.saturating_sub(retained_bytes) / (retained_per_texel + temporary_per_texel)
+}
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -46,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Scan PBR texture folder",
             [],
             None,
-            "{path | files} → {name, maps, candidates, normalFormat, ignored}: what file.importPbrFolder would use, changing nothing",
+            "{path | files, name?, normalFormat?, choose?, projection?, scale?} → {name, maps, candidates, normalFormat, channelsAvailable, ignored}: native paths only; validates import options without decoding or changing the project",
             always,
             scan
         ),
@@ -58,16 +81,11 @@ pub type FileList = Vec<(String, u64)>;
 /// Reads a file of the list by name.
 pub type Loader<'a> = &'a dyn Fn(&str) -> std::result::Result<Vec<u8>, String>;
 
-/// How to import.
-#[derive(Clone, Debug, Default)]
-pub struct PbrOptions {
-    pub name: Option<String>,
-    /// Forces every normal map's convention; `None` reads it from the file name (default OpenGL).
-    pub normal_format: Option<NormalFormat>,
-    pub projection: Projection,
-    /// Files chosen by the caller where several name one map.
-    pub choose: BTreeMap<MapKind, String>,
-}
+mod pbr_options;
+mod take;
+
+pub use pbr_options::PbrOptions;
+use take::Take;
 
 /// The detection for a file list with the caller's choices applied.
 fn detect_with(files: &FileList, choose: &BTreeMap<MapKind, String>) -> Result<PbrSet> {
@@ -76,7 +94,8 @@ fn detect_with(files: &FileList, choose: &BTreeMap<MapKind, String>) -> Result<P
         let list = set.candidates.get(kind).ok_or_else(|| EngineError::Other(format!("choose: no file names the map {}", kind.id())))?;
         let pick =
             list.iter().find(|c| c.name == *file).ok_or_else(|| EngineError::Other(format!("choose: {file} is not a candidate for {}", kind.id())))?.clone();
-        // The previously chosen file becomes an ignored one, the picked one stops being ignored.
+
+        // The previously chosen file becomes an ignored one, the picked one stops being ignored
         if let Some(old) = set.chosen.insert(*kind, pick.clone())
             && old.name != pick.name
         {
@@ -114,34 +133,28 @@ fn report(set: &PbrSet, forced: Option<NormalFormat>) -> Value {
 /// A file's bytes and its decoded image.
 type Loaded = (Arc<Vec<u8>>, texturecraft_formats::DecodedImage);
 
-/// How a channel's image is made from the file chosen for a map.
-#[derive(Clone, Copy, PartialEq)]
-enum Take {
-    /// The file as it is.
-    Whole,
-    /// One colour channel (0 = red) of a packed image.
-    Channel(usize),
-    /// 1 − red: glossiness as roughness.
-    Inverted,
-}
-
 impl Session {
     /// Import the maps found among `files` as one fill layer on the active texture set; `load`
     /// reads a file by name. Returns the reply of `file.importPbrFolder`.
-    pub fn import_pbr(&mut self, files: &FileList, load: Loader, opts: &PbrOptions) -> Result<Value> {
-        let set = detect_with(files, &opts.choose)?;
+    pub fn import_pbr(&mut self, files: &FileList, load: Loader, options: &PbrOptions) -> Result<Value> {
+        self.import_pbr_with_budget(files, load, options, import_memory_budget())
+    }
+
+    fn import_pbr_with_budget(&mut self, files: &FileList, load: Loader, options: &PbrOptions, memory_budget: u64) -> Result<Value> {
+        let set = detect_with(files, &options.choose)?;
         if set.is_empty() {
             return Err(EngineError::Other(format!(
                 "file.importPbrFolder: no PBR texture maps found among {} files (names such as albedo, roughness, metallic, normal, height, ao)",
                 files.len()
             )));
         }
-        let ts = self.ts();
-        let available = self.doc.project.texture_set(ts).map(|t| t.channel_list()).unwrap_or_default();
-        let nf = normal_format_for(&set, opts.normal_format);
+
+        let texture_set_index = self.ts();
+        let available = self.doc.project.texture_set(texture_set_index).map(|t| t.channel_list()).unwrap_or_default();
+        let normal_format = normal_format_for(&set, options.normal_format);
         let mut warnings: Vec<String> = Vec::new();
 
-        // Which file feeds which channel, and how.
+        // Which file feeds which channel, and how
         let mut plan: Vec<(Channel, MapKind, Take)> = Vec::new();
         let has = |k: MapKind| set.chosen.contains_key(&k);
         let direct = [
@@ -156,7 +169,8 @@ impl Session {
                 plan.push((channel, kind, Take::Whole));
             }
         }
-        // Separate files win; a packed image fills what they leave open (R = occlusion, G = roughness, B = metallic).
+
+        // Separate files win; a packed image fills what they leave open (R = occlusion, G = roughness, B = metallic)
         let orm = has(MapKind::PackedOrm);
         for (channel, kind, index) in
             [(Channel::AmbientOcclusion, MapKind::AmbientOcclusion, 0), (Channel::Roughness, MapKind::Roughness, 1), (Channel::Metallic, MapKind::Metallic, 2)]
@@ -176,49 +190,63 @@ impl Session {
             warnings.push("the glossiness map was not used: a roughness map exists".into());
         }
 
-        let mut fill = Fill { projection: opts.projection.clone(), ..Fill::default() };
+        let mut fill = Fill { projection: options.projection.clone(), ..Fill::default() };
         let mut added: Vec<(String, Arc<Vec<u8>>)> = Vec::new();
         let mut decoded = Vec::new();
         let mut channels: Vec<Channel> = Vec::new();
         let mut total_texels = 0u64;
-        // Decoded source files by name (a packed image feeds three channels).
+        let mut retained_bytes = 0u64;
+
+        // Decoded source files by name (a packed image feeds three channels)
         let mut sources: BTreeMap<String, Option<Loaded>> = BTreeMap::new();
-        // Resource per (file, how) so a file used twice is stored once.
-        let mut made: BTreeMap<(String, usize), String> = BTreeMap::new();
+
+        // Resource per (file, how) so a file used twice is stored once
+        let mut made: BTreeMap<(String, Take), String> = BTreeMap::new();
 
         let mut uses: BTreeMap<String, usize> = BTreeMap::new();
-        for (_, kind, _) in &plan {
+        for (channel, kind, _) in &plan {
+            if !available.contains(channel) {
+                continue;
+            }
+
             if let Some(c) = set.chosen.get(kind) {
                 *uses.entry(c.name.clone()).or_default() += 1;
             }
         }
+
         for (channel, kind, take) in plan {
             if !available.contains(&channel) {
                 warnings.push(format!("{} was skipped: this texture set has no such channel", channel.id()));
                 continue;
             }
+
             let Some(chosen) = set.chosen.get(&kind) else { continue };
             let file = chosen.name.clone();
-            let slot = match take {
-                Take::Whole => 9,
-                Take::Inverted => 8,
-                Take::Channel(c) => c,
-            };
-            let resource = if let Some(name) = made.get(&(file.clone(), slot)) {
+            let resource = if let Some(name) = made.get(&(file.clone(), take)) {
                 name.clone()
             } else {
                 if !sources.contains_key(&file) {
-                    let loaded = load(&file).and_then(|bytes| {
-                        if bytes.len() as u64 > MAX_FILE_BYTES {
-                            return Err(format!("the file is over {} MB", MAX_FILE_BYTES >> 20));
-                        }
-                        let image = texturecraft_formats::decode_image_within(&bytes, MAX_IMAGE_TEXELS).map_err(|e| e.to_string())?;
-                        total_texels = total_texels.saturating_add(u64::from(image.width) * u64::from(image.height));
-                        if total_texels > MAX_TOTAL_TEXELS {
-                            return Err("the textures together are too large to import".into());
-                        }
-                        Ok((Arc::new(bytes), image))
-                    });
+                    let output_count = uses.get(&file).copied().unwrap_or_default();
+                    let allowed_texels = allowed_source_texels(memory_budget, retained_bytes, output_count).min(MAX_IMAGE_TEXELS);
+                    let loaded = if allowed_texels == 0 {
+                        Err("not enough memory is available to import more textures".to_string())
+                    } else {
+                        load(&file).and_then(|bytes| {
+                            if bytes.len() as u64 > MAX_FILE_BYTES {
+                                return Err(format!("the file is over {} MB", MAX_FILE_BYTES >> 20));
+                            }
+
+                            let image = texturecraft_formats::decode_image_within(&bytes, allowed_texels).map_err(|e| e.to_string())?;
+                            let texels = u64::from(image.width) * u64::from(image.height);
+                            total_texels = total_texels.saturating_add(texels);
+                            if total_texels > MAX_TOTAL_TEXELS {
+                                return Err("the textures together are too large to import".into());
+                            }
+
+                            retained_bytes = retained_bytes.saturating_add(texels.saturating_mul(RGBA_FLOAT_BYTES_PER_TEXEL * (1 + output_count as u64)));
+                            Ok((Arc::new(bytes), image))
+                        })
+                    };
                     match loaded {
                         Ok(v) => sources.insert(file.clone(), Some(v)),
                         Err(e) => {
@@ -232,9 +260,9 @@ impl Session {
                 let last_use = *remaining == 0;
                 let leaf = file.rsplit(['/', '\\']).next().unwrap_or(&file).to_string();
                 let stem = leaf.rsplit_once('.').map_or(leaf.as_str(), |(s, _)| s).to_string();
-                let (res_name, res_bytes, res_image) = match take {
+                let (resource_name, resource_bytes, resource_image) = match take {
                     Take::Whole => {
-                        // The file itself; its decoded image moves into the session on its last use.
+                        // The file itself; its decoded image moves into the session on its last use
                         let entry = if last_use { sources.remove(&file).flatten() } else { sources.get(&file).cloned().flatten() };
                         let Some((bytes, image)) = entry else { continue };
                         (leaf, bytes, image)
@@ -249,58 +277,70 @@ impl Session {
                             let v = p.get(c).copied().unwrap_or(0.0);
                             if invert { 1.0 - v } else { v }
                         });
-                        let png = texturecraft_formats::gray16_png(image.width, image.height, values).map_err(|e| EngineError::Other(e.to_string()))?;
-                        let again = texturecraft_formats::decode_image(&png).map_err(|e| EngineError::Other(e.to_string()))?;
-                        (format!("{stem}_{suffix}.png"), Arc::new(png), again)
+                        let (png, generated_image) =
+                            texturecraft_formats::gray16_resource(image.width, image.height, values).map_err(|error| EngineError::Other(error.to_string()))?;
+
+                        if last_use {
+                            sources.remove(&file);
+                        }
+
+                        (format!("{stem}_{suffix}.png"), Arc::new(png), generated_image)
                     }
                 };
-                let base = texturecraft_formats::sanitize_resource_name(&res_name);
-                let (mut unique, mut n) = (base.clone(), 2);
+                let base = texturecraft_formats::sanitize_resource_name(&resource_name);
+                let (mut unique, mut suffix_index) = (base.clone(), 2);
                 while self.doc.resources.contains_key(&unique) || added.iter().any(|(a, _)| *a == unique) {
-                    unique = format!("{n}_{base}");
-                    n += 1;
+                    unique = format!("{suffix_index}_{base}");
+                    suffix_index += 1;
                 }
-                added.push((unique.clone(), res_bytes));
-                decoded.push((unique.clone(), crate::resource_cmds::decoded(res_image)));
-                made.insert((file.clone(), slot), unique.clone());
+
+                added.push((unique.clone(), resource_bytes));
+                decoded.push((unique.clone(), crate::resource_cmds::decoded(resource_image)));
+                made.insert((file.clone(), take), unique.clone());
                 unique
             };
-            let source = if channel == Channel::Normal { Source::Image { name: resource, normal_format: nf } } else { Source::image(resource) };
+            let source = if channel == Channel::Normal { Source::Image { name: resource, normal_format } } else { Source::image(resource) };
             fill.sources.insert(channel, source);
             channels.push(channel);
         }
+
         if channels.is_empty() {
             let why = if warnings.is_empty() { String::new() } else { format!(" ({})", warnings.join("; ")) };
             return Err(EngineError::Other(format!("file.importPbrFolder: nothing could be imported{why}")));
         }
-        let base_name = opts.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "PBR material".to_string());
-        let layer_name = self.doc.project.next_layer_name(ts, &base_name);
+
+        let base_name = options.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "PBR material".to_string());
+        let layer_name = self.doc.project.next_layer_name(texture_set_index, &base_name);
         let resource_names: Vec<String> = added.iter().map(|(n, _)| n.clone()).collect();
         let id = self.edit("Import PBR textures", |s| {
             for (n, bytes) in &added {
                 s.doc.resources.insert(n.clone(), bytes.clone());
             }
             let id = s.doc.project.alloc_id();
-            crate::layer_cmds::insert_selected(s, Layer::new(id, layer_name, LayerKind::Fill(fill), &channels))
+            crate::layer_cmds::insert_selected(s, Layer::new(id, layer_name.clone(), LayerKind::Fill(fill), &channels))
         })?;
         self.images.extend(decoded);
-        let mut reply = report(&set, opts.normal_format);
+
+        let mut reply = report(&set, options.normal_format);
         if let Some(o) = reply.as_object_mut() {
             o.insert("layer".into(), json!(id.0));
-            o.insert("name".into(), json!(base_name));
+            o.insert("name".into(), json!(layer_name));
             o.insert("channels".into(), json!(channels.iter().map(|c| c.id()).collect::<Vec<_>>()));
             o.insert("resources".into(), json!(resource_names));
             o.insert("warnings".into(), json!(warnings));
         }
+
         Ok(reply)
     }
 
     /// [`Session::import_pbr`] for files already in memory (the browser, tests).
-    pub fn import_pbr_bytes(&mut self, files: Vec<(String, Vec<u8>)>, opts: &PbrOptions) -> Result<Value> {
+    pub fn import_pbr_bytes(&mut self, files: Vec<(String, Vec<u8>)>, options: &PbrOptions) -> Result<Value> {
         let list: FileList = files.iter().map(|(n, b)| (n.clone(), b.len() as u64)).collect();
-        let by_name: BTreeMap<&str, &Vec<u8>> = files.iter().map(|(n, b)| (n.as_str(), b)).collect();
-        let load = |name: &str| by_name.get(name).map(|b| (*b).clone()).ok_or_else(|| "no such file".to_string());
-        self.import_pbr(&list, &load, opts)
+        let by_name = std::cell::RefCell::new(files.into_iter().collect::<BTreeMap<_, _>>());
+
+        // The importer caches each source, so ownership transfers on its only load
+        let load = |name: &str| by_name.borrow_mut().remove(name).ok_or_else(|| "no such file".to_string());
+        self.import_pbr(&list, &load, options)
     }
 }
 
@@ -316,8 +356,7 @@ pub fn common_name(files: &[String]) -> Option<String> {
     (prefix.chars().filter(|c| c.is_alphanumeric()).count() >= 2).then(|| prefix.replace(['_', '-'], " "))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Parameters and sources (native).
+// Parameters and sources (native)
 
 fn options(cmd: &str, p: &Value) -> Result<PbrOptions> {
     let normal_format = match strp(p, "normalFormat") {
@@ -326,6 +365,7 @@ fn options(cmd: &str, p: &Value) -> Result<PbrOptions> {
         Some("directX" | "directx") => Some(NormalFormat::DirectX),
         Some(other) => return Err(bad(cmd, format!("unknown normal format `{other}` (auto, openGl or directX)"))),
     };
+
     let mut choose = BTreeMap::new();
     if let Some(obj) = p.get("choose").and_then(Value::as_object) {
         for (k, v) in obj {
@@ -334,11 +374,17 @@ fn options(cmd: &str, p: &Value) -> Result<PbrOptions> {
             choose.insert(kind, file.to_string());
         }
     }
-    Ok(PbrOptions { name: strp(p, "name").map(str::to_string), normal_format, projection: crate::layer_cmds::projection_from(p, cmd, None)?, choose })
+    Ok(PbrOptions {
+        name: strp(p, "name").filter(|name| !name.trim().is_empty()).map(str::to_string),
+        normal_format,
+        projection: crate::layer_cmds::projection_from(p, cmd, None)?,
+        choose,
+    })
 }
 
 /// Pick the one group of files that holds a material: the files at the root if they hold maps,
 /// else the one folder that does. Returns the group's folder prefix (`""` or `"sub/"`).
+#[cfg(not(target_arch = "wasm32"))]
 fn pick_group(cmd: &str, files: &FileList) -> Result<String> {
     let mut dirs: BTreeMap<String, FileList> = BTreeMap::new();
     for (name, size) in files {
@@ -349,6 +395,7 @@ fn pick_group(cmd: &str, files: &FileList) -> Result<String> {
     if with_maps.iter().any(|d| d.is_empty()) {
         return Ok(String::new());
     }
+
     match with_maps.as_slice() {
         [] => Err(bad(cmd, format!("no PBR texture maps found among {} files (names such as albedo, roughness, metallic, normal, height, ao)", files.len()))),
         [one] => Ok(format!("{one}/")),
@@ -363,150 +410,27 @@ fn pick_group(cmd: &str, files: &FileList) -> Result<String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-mod native {
-    use std::cell::RefCell;
-    use std::path::{Path, PathBuf};
-
-    use super::*;
-
-    /// Where the files of an import come from.
-    pub enum Origin {
-        Folder { root: PathBuf },
-        Files(Vec<PathBuf>),
-        Zip(RefCell<texturecraft_formats::zip_read::ZipFiles>),
-    }
-
-    pub struct Found {
-        pub source: Origin,
-        pub files: FileList,
-        /// A name for the material (folder, archive or shared file-name prefix).
-        pub name: Option<String>,
-    }
-
-    /// Regular files below `dir` (not following symbolic links), at most `MAX_FILES`, 4 levels deep.
-    fn walk(root: &Path, dir: &Path, depth: usize, out: &mut FileList) {
-        if depth > 4 || out.len() >= MAX_FILES {
-            return;
-        }
-        let Ok(rd) = std::fs::read_dir(dir) else { return };
-        for entry in rd.flatten() {
-            if out.len() >= MAX_FILES {
-                return;
-            }
-            let path = entry.path();
-            // `symlink_metadata`: a link, pipe or device is neither read nor followed.
-            let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-            if meta.is_dir() {
-                walk(root, &path, depth + 1, out);
-            } else if meta.is_file()
-                && let Ok(rel) = path.strip_prefix(root)
-            {
-                let name = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
-                out.push((name, meta.len()));
-            }
-        }
-    }
-
-    pub fn find(cmd: &str, p: &Value) -> Result<Found> {
-        if let Some(arr) = p.get("files").and_then(Value::as_array) {
-            let mut paths = Vec::new();
-            let mut list = FileList::new();
-            for v in arr.iter().take(MAX_FILES) {
-                let Some(s) = v.as_str() else { return Err(bad(cmd, "`files` must be a list of paths")) };
-                let path = PathBuf::from(s);
-                let meta = std::fs::symlink_metadata(&path).map_err(|e| bad(cmd, format!("cannot read {s}: {e}")))?;
-                if !meta.is_file() {
-                    continue;
-                }
-                let leaf = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                // Names are leaf names; the same leaf twice keeps the first.
-                if list.iter().any(|(n, _)| *n == leaf) {
-                    continue;
-                }
-                list.push((leaf, meta.len()));
-                paths.push(path);
-            }
-            let name = common_name(&list.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>());
-            return Ok(Found { source: Origin::Files(paths), files: list, name });
-        }
-        let path = strp(p, "path").filter(|s| !s.trim().is_empty()).ok_or_else(|| bad(cmd, "`path` (a folder or .zip) or `files` is required"))?;
-        let meta = std::fs::symlink_metadata(path).map_err(|e| bad(cmd, format!("cannot read {path}: {e}")))?;
-        let stem = |s: &str| Path::new(s).file_stem().map(|n| n.to_string_lossy().replace(['_', '-'], " "));
-        if meta.is_dir() {
-            let root = Path::new(path).canonicalize().map_err(|e| bad(cmd, format!("cannot read {path}: {e}")))?;
-            let mut files = FileList::new();
-            walk(&root, &root, 0, &mut files);
-            let group = pick_group(cmd, &files)?;
-            let files: FileList = files.into_iter().filter(|(n, _)| n.strip_prefix(group.as_str()).is_some_and(|rest| !rest.contains('/'))).collect();
-            let name = if group.is_empty() { stem(path) } else { stem(group.trim_end_matches('/')) }
-                .or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()));
-            let root = if group.is_empty() { root } else { root.join(group.trim_end_matches('/')) };
-            let files = files.into_iter().map(|(n, s)| (n.rsplit('/').next().unwrap_or(&n).to_string(), s)).collect();
-            return Ok(Found { source: Origin::Folder { root }, files, name });
-        }
-        if meta.is_file() && path.to_ascii_lowercase().ends_with(".zip") {
-            if meta.len() > MAX_FILE_BYTES * 2 {
-                return Err(bad(cmd, format!("{path} is too large")));
-            }
-            let bytes = std::fs::read(path).map_err(|e| bad(cmd, format!("cannot read {path}: {e}")))?;
-            let mut zip = texturecraft_formats::zip_read::ZipFiles::open(bytes).map_err(|e| bad(cmd, format!("{path} is not a readable zip: {e}")))?;
-            let files = zip.list(MAX_FILES);
-            let group = pick_group(cmd, &files)?;
-            let files: FileList = files.into_iter().filter(|(n, _)| n.strip_prefix(group.as_str()).is_some_and(|rest| !rest.contains('/'))).collect();
-            let name = if group.is_empty() { stem(path) } else { stem(group.trim_end_matches('/')) };
-            return Ok(Found { source: Origin::Zip(RefCell::new(zip)), files, name });
-        }
-        Err(bad(cmd, format!("{path} is not a folder or a .zip file")))
-    }
-
-    impl Found {
-        /// Reads one file of the list. Archive entries are read through a limit, since their
-        /// declared size can lie.
-        pub fn load(&self, name: &str) -> std::result::Result<Vec<u8>, String> {
-            match &self.source {
-                Origin::Folder { root } => read_regular(&root.join(name)),
-                Origin::Files(paths) => {
-                    let path = paths.iter().find(|p| p.file_name().is_some_and(|n| n.to_string_lossy() == name)).ok_or("no such file")?;
-                    read_regular(path)
-                }
-                Origin::Zip(zip) => zip.borrow_mut().read(name, MAX_FILE_BYTES).map_err(|e| e.to_string()),
-            }
-        }
-    }
-
-    fn read_regular(path: &Path) -> std::result::Result<Vec<u8>, String> {
-        let meta = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
-        // A link, pipe or device in the folder would escape it or block the read.
-        if !meta.is_file() {
-            return Err("it is not a regular file".into());
-        }
-        if meta.len() > MAX_FILE_BYTES {
-            return Err(format!("the file is over {} MB", MAX_FILE_BYTES >> 20));
-        }
-        std::fs::read(path).map_err(|e| e.to_string())
-    }
-}
-
+mod native;
 #[cfg(not(target_arch = "wasm32"))]
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.importPbrFolder";
-    let mut opts = options(cmd, p)?;
+    let mut options = options(cmd, p)?;
     let found = native::find(cmd, p)?;
-    if opts.name.is_none() {
-        opts.name = found.name.clone();
+    if options.name.is_none() {
+        options.name = found.name.clone();
     }
-    s.import_pbr(&found.files, &|name| found.load(name), &opts)
+    s.import_pbr(&found.files, &|name| found.load(name), &options)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn scan(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "file.scanPbrFolder";
-    let opts = options(cmd, p)?;
+    let options = options(cmd, p)?;
     let found = native::find(cmd, p)?;
-    let set = detect_with(&found.files, &opts.choose)?;
-    let mut reply = report(&set, opts.normal_format);
+    let set = detect_with(&found.files, &options.choose)?;
+    let mut reply = report(&set, options.normal_format);
     if let Some(o) = reply.as_object_mut() {
-        o.insert("name".into(), json!(opts.name.or(found.name)));
+        o.insert("name".into(), json!(options.name.or(found.name)));
         o.insert(
             "channelsAvailable".into(),
             json!(s.doc.project.texture_set(s.ts()).map(|t| t.channel_list()).unwrap_or_default().iter().map(|c| c.id()).collect::<Vec<_>>()),
@@ -524,4 +448,30 @@ fn import(_: &mut Session, p: &Value) -> Result<Value> {
 #[cfg(target_arch = "wasm32")]
 fn scan(_: &mut Session, _: &Value) -> Result<Value> {
     Err(EngineError::Other("file paths are not available in the browser".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn import_rejects_an_image_before_decoding_when_memory_is_insufficient() {
+        let bytes = texturecraft_formats::gray16_png(2, 2, [0.5; 4].into_iter()).unwrap();
+        let files = vec![("tile_albedo.png".to_string(), bytes.len() as u64)];
+        let mut session = Session::new_project("test", crate::geom::primitives::builtin("plane").unwrap(), "builtin:plane", None, 128).unwrap();
+        let load = |_: &str| Ok(bytes.clone());
+
+        let result = session.import_pbr_with_budget(&files, &load, &PbrOptions::default(), 64);
+
+        assert!(result.unwrap_err().to_string().contains("more than 1 texels"));
+        assert!(session.doc.resources.is_empty());
+        assert_eq!(allowed_source_texels(64, 0, 1), 1);
+        assert_eq!(allowed_source_texels(256, 0, 1), 4);
+        assert_eq!(allowed_source_texels(256, 64, 3), 2);
+
+        let never_load = |_: &str| -> std::result::Result<Vec<u8>, String> { panic!("no source should load after the budget is spent") };
+        let result = session.import_pbr_with_budget(&files, &never_load, &PbrOptions::default(), 0);
+
+        assert!(result.unwrap_err().to_string().contains("not enough memory"));
+    }
 }

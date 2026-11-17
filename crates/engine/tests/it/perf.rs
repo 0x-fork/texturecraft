@@ -350,3 +350,90 @@ fn bench_8k_resize() {
     println!("[resize] dilation {:.2?}", t.elapsed());
     drop(d);
 }
+
+/// Layer-panel thumbnails on the 4K stack: the snapshot, each kind of picture, and a whole panel.
+#[test]
+#[ignore]
+fn bench_layer_thumbs_4k() {
+    use texturecraft_engine::compose::ThumbTarget;
+    use texturecraft_engine::core::Channel;
+    use texturecraft_engine::thumbs::{GbufCache, ThumbSnapshot};
+    let s = stack(4096);
+    let ts = s.ts();
+    let mut gbufs = GbufCache::default();
+    let t = Instant::now();
+    let snap = ThumbSnapshot::new(&s, ts, &mut gbufs).unwrap();
+    let first = t.elapsed();
+    let t = Instant::now();
+    let _again = ThumbSnapshot::new(&s, ts, &mut gbufs).unwrap();
+    let cached = t.elapsed();
+    let p = &s.doc.project;
+    let mut targets = Vec::new();
+    for l in p.layers.values() {
+        targets.push(("content", ThumbTarget::Content { layer: l.id, channel: Channel::BaseColor }));
+        if l.mask.is_some() {
+            targets.push(("mask", ThumbTarget::Mask { layer: l.id }));
+        }
+        for e in l.mask.iter().flat_map(|m| m.effects.iter()).chain(l.content_effects.iter()) {
+            targets.push(("stage", ThumbTarget::Stage { effect: e.id, channel: Channel::BaseColor }));
+        }
+    }
+    let mut per: std::collections::BTreeMap<&str, (Duration, usize, Duration)> = Default::default();
+    let all = Instant::now();
+    for (kind, target) in &targets {
+        let t = Instant::now();
+        let _ = snap.render(*target);
+        let d = t.elapsed();
+        let e = per.entry(kind).or_default();
+        e.0 += d;
+        e.1 += 1;
+        e.2 = e.2.max(d);
+    }
+    let total = all.elapsed();
+    eprintln!("layer thumbnails, 4096 set, {} layers, 64 px:", p.layers.len());
+    eprintln!("  snapshot: {:.2} ms first (with the 64 px G-buffer), {:.2} ms after", first.as_secs_f64() * 1e3, cached.as_secs_f64() * 1e3);
+    for (kind, (sum, n, max)) in per {
+        eprintln!("  {kind:8} {n:3} × avg {:.2} ms, max {:.2} ms", sum.as_secs_f64() * 1e3 / n as f64, max.as_secs_f64() * 1e3);
+    }
+    eprintln!("  every target once: {:.1} ms ({} pictures)", total.as_secs_f64() * 1e3, targets.len());
+}
+
+/// A full recomposite in one call against the same one spread over frames, as the UI runs it, with and without a blurred mask
+/// in the stack: neighbourhood filters are what a frame slice pays for apart from its own tiles.
+#[test]
+#[ignore]
+fn bench_sliced_filters_4k() {
+    for blur in [false, true] {
+        let mut session = Session::new_project("sliced", primitives::sphere(1.0, 64, 32), "builtin:sphere", None, 4096).unwrap();
+        session.viewport = Vec2::new(800.0, 800.0);
+        let run = |session: &mut Session, id: &str, params: Value| execute(session, id, &params).unwrap();
+        run(&mut session, "layer.add.fill", json!({"color": [0.6, 0.5, 0.4], "roughness": 0.6}));
+        run(&mut session, "layer.add.fill", json!({"color": [0.1, 0.3, 0.6]}));
+        run(&mut session, "mask.add.black", Value::Null);
+        run(&mut session, "effect.add.generator", json!({"generator": "position", "level": 0.5}));
+        if blur {
+            run(&mut session, "effect.add.filter", json!({"filter": "blur", "radius": 8}));
+        }
+
+        session.update();
+
+        session.caches[0].invalidate_all();
+        let started = Instant::now();
+        session.update();
+        let direct = started.elapsed();
+
+        session.caches[0].invalidate_all();
+        let clock = Instant::now();
+        let elapsed_ms = || clock.elapsed().as_secs_f64() * 1000.0;
+        let (mut frames, mut longest_frame) = (0, Duration::ZERO);
+        while session.pending_tiles() > 0 {
+            let started = Instant::now();
+            session.update_for(30.0, elapsed_ms);
+            longest_frame = longest_frame.max(started.elapsed());
+            frames += 1;
+        }
+
+        let label = if blur { "blurred mask" } else { "no filter" };
+        println!("[sliced 4096², {label}] one call {direct:.2?}; in 30 ms slices {frames} frames, worst {longest_frame:.2?}, total {:.2?}", clock.elapsed());
+    }
+}

@@ -1,5 +1,5 @@
 //! Interactive painting on the session: strokes (begin / continue / end / cancel), polygon fill
-//! and the color picker. The UI, CLI and agents all go through these.
+//! and the material picker. The UI, CLI and agents all go through these.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -155,6 +155,7 @@ impl Session {
     /// Common setup of 3D and 2D strokes. `first_uv` is where the stroke starts on the mesh
     /// (the Clone tool's destination anchor).
     fn start_stroke(&mut self, viewport: Vec2, uv_mode: bool, first_uv: Option<Vec2>) -> Result<()> {
+        self.refuse_while_baking()?;
         let tool = self.tool.tool;
         let erase = tool == Tool::Eraser;
         let quick_mask = self.quick_mask.editing;
@@ -296,9 +297,18 @@ impl Session {
         Some(texturecraft_compose::Stencil { image, view_proj: self.camera.view_proj(aspect), center, half, rotation, tile: st.tile })
     }
 
+    /// Painting is paused while a bake preview shows the baked maps instead of the material.
+    pub(crate) fn refuse_while_baking(&self) -> Result<()> {
+        match self.painting_blocked() {
+            Some(why) => Err(EngineError::Other(why.into())),
+            None => Ok(()),
+        }
+    }
+
     /// Start a stroke at `screen` (viewport pixels). Returns false when the cursor misses the
     /// mesh (the stroke starts anyway and resumes when the cursor enters the mesh).
     pub fn begin_stroke(&mut self, screen: Vec2, viewport: Vec2, pressure: f32) -> Result<bool> {
+        self.refuse_while_baking()?;
         self.cancel_stroke();
         match self.tool.tool {
             Tool::PolygonFill => return self.polygon_fill(screen, viewport).map(|_| true),
@@ -313,6 +323,7 @@ impl Session {
 
     /// Start a stroke in the 2D view at texture coordinate `uv` (polygon fill fills there).
     pub fn begin_stroke_uv(&mut self, uv: Vec2, pressure: f32) -> Result<()> {
+        self.refuse_while_baking()?;
         self.cancel_stroke();
         match self.tool.tool {
             Tool::PolygonFill => return self.polygon_fill_uv(uv).map(|_| ()),
@@ -332,9 +343,7 @@ impl Session {
         let Some(cache) = self.caches.get_mut(active.ts) else { return };
 
         let settings = &active.stroke.settings;
-        let pressure = pressure.clamp(0.0, 1.0);
-        let size_scale = if pressure < 1.0 { settings.min_size + (1.0 - settings.min_size) * pressure } else { 1.0 };
-        let radius = settings.size * 2.0 * size_scale;
+        let radius = settings.uv_stamp_radius(pressure);
         let step = (settings.spacing * 2.0 * radius).max(MIN_UV_STAMP_STEP);
 
         // Follow path: turn the stamp with the stroke direction (y up on screen, v grows down)
@@ -544,20 +553,22 @@ impl Session {
         Ok(())
     }
 
-    /// Color picker: copy the material under the cursor into the tool's paint values.
+    /// Material picker: copy the material under the cursor into the tool's paint values
     pub fn color_pick(&mut self, screen: Vec2, viewport: Vec2) -> Result<BTreeMap<Channel, [f32; 3]>> {
         let hit = self.pick(screen, viewport).ok_or_else(|| EngineError::Other("nothing under the cursor".into()))?;
-        let ts = self.texture_set_of_material(hit.material).unwrap_or(self.ts());
-        let cache = self.caches.get(ts).ok_or_else(|| EngineError::Other("texture set not ready".into()))?;
-        let (w, h) = (cache.size.0 as f32, cache.size.1 as f32);
-        let (x, y) = ((hit.uv.x * w).clamp(0.0, w - 1.0) as u32, (hit.uv.y * h).clamp(0.0, h - 1.0) as u32);
-        let mut out = BTreeMap::new();
-        for c in cache.composite.channels.keys() {
-            let v = cache.composite.value(*c, x, y);
-            self.tool.values.insert(*c, v);
-            out.insert(*c, v);
+        let texture_set = self.texture_set_of_material(hit.material).unwrap_or(self.ts());
+        let cache = self.caches.get(texture_set).ok_or_else(|| EngineError::Other("texture set not ready".into()))?;
+
+        let (width, height) = (cache.size.0 as f32, cache.size.1 as f32);
+        let (x, y) = ((hit.uv.x * width).clamp(0.0, width - 1.0) as u32, (hit.uv.y * height).clamp(0.0, height - 1.0) as u32);
+
+        let mut picked = BTreeMap::new();
+        for channel in cache.composite.channels.keys() {
+            let value = cache.composite.value(*channel, x, y);
+            self.tool.values.insert(*channel, value);
+            picked.insert(*channel, value);
         }
-        Ok(out)
+        Ok(picked)
     }
 
     /// The stroke canvas alpha of the active stroke (for overlays and tests).

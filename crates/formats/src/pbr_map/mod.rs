@@ -28,143 +28,54 @@
 //! Single letters are not accepted, except a trailing `n` (normal): `r`, `m`, `d` and `h` are
 //! ambiguous with colour channels.
 
-use std::collections::BTreeMap;
-
 use texturecraft_core::NormalFormat;
 
-/// The kinds of map a PBR folder holds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum MapKind {
-    BaseColor,
-    Roughness,
-    /// Glossiness is the inverse of roughness; the importer inverts it.
-    Glossiness,
-    Metallic,
-    Normal,
-    Height,
-    AmbientOcclusion,
-    Emissive,
-    Opacity,
-    /// One image: occlusion in red, roughness in green, metallic in blue (`ORM`, `ARM`).
-    PackedOrm,
-    /// Recognised, but TextureCraft has no channel for it (cavity, specular, ...): reported,
-    /// not imported.
-    Unused,
-}
+mod candidate;
+mod detected;
+mod map_kind;
+mod pbr_set;
 
-impl MapKind {
-    const IMPORTED: [MapKind; 10] = [
-        MapKind::BaseColor,
-        MapKind::Roughness,
-        MapKind::Glossiness,
-        MapKind::Metallic,
-        MapKind::Normal,
-        MapKind::Height,
-        MapKind::AmbientOcclusion,
-        MapKind::Emissive,
-        MapKind::Opacity,
-        MapKind::PackedOrm,
-    ];
-
-    /// Stable id for JSON.
-    pub fn id(self) -> &'static str {
-        match self {
-            MapKind::BaseColor => "baseColor",
-            MapKind::Roughness => "roughness",
-            MapKind::Glossiness => "glossiness",
-            MapKind::Metallic => "metallic",
-            MapKind::Normal => "normal",
-            MapKind::Height => "height",
-            MapKind::AmbientOcclusion => "ambientOcclusion",
-            MapKind::Emissive => "emissive",
-            MapKind::Opacity => "opacity",
-            MapKind::PackedOrm => "orm",
-            MapKind::Unused => "unused",
-        }
-    }
-
-    /// The kind with this JSON id.
-    pub fn from_id(id: &str) -> Option<MapKind> {
-        Self::IMPORTED.into_iter().find(|k| k.id() == id)
-    }
-}
+pub use candidate::Candidate;
+pub use detected::Detected;
+pub use map_kind::MapKind;
+pub use pbr_set::PbrSet;
 
 /// File extensions read as images (lower case).
 pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "tga", "tif", "tiff", "bmp", "webp", "exr", "hdr"];
 
-/// What the name of one file says.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Detected {
-    pub kind: MapKind,
-    /// The convention named for a normal map, if any.
-    pub normal: Option<NormalFormat>,
-    /// Resolution in pixels named by a `2k` / `2048` token, 0 if none.
-    pub resolution: u32,
-    /// Higher is a stronger match (a weak word such as `bump` loses to a strong one).
-    pub strength: u8,
-}
-
-/// One candidate file.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Candidate {
-    /// The file's path as given.
-    pub name: String,
-    pub detected: Detected,
-    /// File size in bytes (a tie-breaker; 0 when unknown).
-    pub bytes: u64,
-}
-
-/// The maps found among a list of files.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PbrSet {
-    /// The best file per kind.
-    pub chosen: BTreeMap<MapKind, Candidate>,
-    /// Every file that names each kind, best first (the chosen one is first).
-    pub candidates: BTreeMap<MapKind, Vec<Candidate>>,
-    /// Files not used, with why (`not an image`, `preview image`, `unknown map name`,
-    /// `unused map`, `another file is used for <kind>`).
-    pub ignored: Vec<(String, String)>,
-}
-
-impl PbrSet {
-    /// True when no map was recognised.
-    pub fn is_empty(&self) -> bool {
-        self.chosen.is_empty()
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Tokens.
+// Tokens
 
 /// Lower-case tokens of a file stem: split at separators, camelCase changes and letter/digit
 /// changes; a number and its unit stay together (`4k`, `16bit`).
 fn tokens(stem: &str) -> Vec<String> {
     let chars: Vec<char> = stem.chars().collect();
     let mut out: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut prev: Option<char> = None;
+    let mut current_token = String::new();
+    let mut previous_char: Option<char> = None;
     for (i, &c) in chars.iter().enumerate() {
         if !c.is_alphanumeric() {
-            if !cur.is_empty() {
-                out.push(std::mem::take(&mut cur));
+            if !current_token.is_empty() {
+                out.push(std::mem::take(&mut current_token));
             }
-            prev = None;
+            previous_char = None;
             continue;
         }
-        if let Some(p) = prev {
+
+        if let Some(p) = previous_char {
             let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
-            // aB -> a|B; ABc -> A|Bc; a1 -> a|1; 1a -> 1|a.
+
+            // aB -> a|B; ABc -> A|Bc; a1 -> a|1; 1a -> 1|a
             let split =
                 (p.is_lowercase() && c.is_uppercase()) || (p.is_uppercase() && c.is_uppercase() && next_lower) || (p.is_alphabetic() != c.is_alphabetic());
-            if split && !cur.is_empty() {
-                out.push(std::mem::take(&mut cur));
+            if split && !current_token.is_empty() {
+                out.push(std::mem::take(&mut current_token));
             }
         }
-        cur.extend(c.to_lowercase());
-        prev = Some(c);
+        current_token.extend(c.to_lowercase());
+        previous_char = Some(c);
     }
-    if !cur.is_empty() {
-        out.push(cur);
+    if !current_token.is_empty() {
+        out.push(current_token);
     }
     let mut joined: Vec<String> = Vec::new();
     for t in out {
@@ -184,11 +95,13 @@ fn tokens(stem: &str) -> Vec<String> {
 /// Pixels named by a resolution token: `1k`..`16k`, `512px`, or a bare power of two ≥ 128.
 fn resolution_of(t: &str) -> Option<u32> {
     if let Some(n) = t.strip_suffix('k').and_then(|n| n.parse::<u32>().ok()) {
-        return (1..=16).contains(&n).then_some(n * 1024);
+        return (1..=16).contains(&n).then(|| n * 1024);
     }
+
     if let Some(n) = t.strip_suffix("px").and_then(|n| n.parse::<u32>().ok()) {
         return (16..=16384).contains(&n).then_some(n);
     }
+
     let n: u32 = t.parse().ok()?;
     ((128..=16384).contains(&n) && n.is_power_of_two()).then_some(n)
 }
@@ -237,23 +150,27 @@ pub fn classify(name: &str) -> std::result::Result<Detected, &'static str> {
     if is_junk_path(name) {
         return Err("hidden or archive metadata file");
     }
+
     let leaf = name.rsplit(['/', '\\']).next().unwrap_or(name);
     let (stem, ext) = leaf.rsplit_once('.').unwrap_or((leaf, ""));
     if !IMAGE_EXTS.contains(&ext.to_ascii_lowercase().as_str()) {
         return Err("not an image");
     }
-    let toks = tokens(stem);
-    if toks.iter().any(|t| is_preview(t)) {
+
+    let name_tokens = tokens(stem);
+    if name_tokens.iter().any(|t| is_preview(t)) {
         return Err("preview image");
     }
-    let resolution = toks.iter().filter_map(|t| resolution_of(t)).max().unwrap_or(0);
-    let normal = toks.iter().find_map(|t| normal_format_of(t));
-    // (token index, kind, strength) of every known word.
-    let words: Vec<(usize, MapKind, u8)> = toks.iter().enumerate().filter_map(|(i, t)| word(t).map(|(k, s)| (i, k, s))).collect();
+
+    let resolution = name_tokens.iter().filter_map(|t| resolution_of(t)).max().unwrap_or(0);
+    let normal = name_tokens.iter().find_map(|t| normal_format_of(t));
+
+    // (token index, kind, strength) of every known word
+    let words: Vec<(usize, MapKind, u8)> = name_tokens.iter().enumerate().filter_map(|(i, t)| word(t).map(|(k, s)| (i, k, s))).collect();
 
     let done = |kind: MapKind, strength: u8| Ok(Detected { kind, normal: if kind == MapKind::Normal { normal } else { None }, resolution, strength });
 
-    // `ao rough metal` written as three words.
+    // `ao rough metal` written as three words
     for w in words.windows(3) {
         if let [(a, MapKind::AmbientOcclusion, _), (b, MapKind::Roughness, _), (c, MapKind::Metallic, _)] = w
             && *b == a + 1
@@ -262,10 +179,11 @@ pub fn classify(name: &str) -> std::result::Result<Detected, &'static str> {
             return done(MapKind::PackedOrm, 4);
         }
     }
-    // Word pairs and the position they end at.
+
+    // Word pairs and the position they end at
     let mut pair: Option<(usize, MapKind)> = None;
-    for (i, t) in toks.iter().enumerate() {
-        let next = toks.get(i + 1).map(String::as_str);
+    for (i, t) in name_tokens.iter().enumerate() {
+        let next = name_tokens.get(i + 1).map(String::as_str);
         let kind = match (t.as_str(), next) {
             ("base", Some("color" | "colour" | "map")) | ("main", Some("tex")) => Some(MapKind::BaseColor),
             ("ambient", Some("occlusion")) | ("mixed", Some("ao")) => Some(MapKind::AmbientOcclusion),
@@ -276,18 +194,20 @@ pub fn classify(name: &str) -> std::result::Result<Detected, &'static str> {
             pair = Some((i + 1, kind));
         }
     }
-    // The last known word wins; a pair counts if it ends at or after it.
+
+    // The last known word wins; a pair counts if it ends at or after it
     let single = words.iter().rev().find(|(i, kind, _)| {
-        // A lone `n` only names a normal map as the final meaningful token.
-        let lone_n = toks.get(*i).is_some_and(|t| t == "n");
+        // A lone `n` only names a normal map as the final meaningful token
+        let lone_n = name_tokens.get(*i).is_some_and(|t| t == "n");
         !lone_n
-            || (*kind == MapKind::Normal && toks.iter().skip(i + 1).all(|t| resolution_of(t).is_some() || normal_format_of(t).is_some() || t.ends_with("bit")))
+            || (*kind == MapKind::Normal
+                && name_tokens.iter().skip(i + 1).all(|t| resolution_of(t).is_some() || normal_format_of(t).is_some() || t.ends_with("bit")))
     });
     match (pair, single) {
-        (Some((pi, kind)), Some((si, _, _))) if pi >= *si => done(kind, 3),
+        (Some((pair_index, kind)), Some((single_index, _, _))) if pair_index >= *single_index => done(kind, 3),
         (Some((_, kind)), None) => done(kind, 3),
         (_, Some((_, MapKind::Height, 1))) => {
-            // `bump` is weak: any stronger word in the name wins over it.
+            // `bump` is weak: any stronger word in the name wins over it
             match words.iter().rev().find(|(_, k, s)| *s >= 3 && *k != MapKind::Unused) {
                 Some((_, k, s)) => done(*k, *s),
                 None => done(MapKind::Height, 1),
@@ -302,13 +222,13 @@ pub fn classify(name: &str) -> std::result::Result<Detected, &'static str> {
 type Rank = (u8, std::cmp::Reverse<u8>, std::cmp::Reverse<u32>, std::cmp::Reverse<u64>, String);
 
 fn rank(c: &Candidate) -> Rank {
-    // OpenGL first (no flip), then unlabelled, then DirectX.
-    let fmt = match c.detected.normal {
+    // OpenGL first (no flip), then unlabelled, then DirectX
+    let format_priority = match c.detected.normal {
         Some(NormalFormat::OpenGl) => 0,
         None => 1,
         Some(NormalFormat::DirectX) => 2,
     };
-    (fmt, std::cmp::Reverse(c.detected.strength), std::cmp::Reverse(c.detected.resolution), std::cmp::Reverse(c.bytes), c.name.to_ascii_lowercase())
+    (format_priority, std::cmp::Reverse(c.detected.strength), std::cmp::Reverse(c.detected.resolution), std::cmp::Reverse(c.bytes), c.name.to_ascii_lowercase())
 }
 
 /// Group `files` (`(path, size in bytes)`) into a [`PbrSet`].
@@ -345,7 +265,7 @@ mod tests {
     #[test]
     fn real_world_naming_styles() {
         let table: &[(&str, MapKind)] = &[
-            // Plain suffixes, any case and separator.
+            // Plain suffixes, any case and separator
             ("brick_albedo.png", BaseColor),
             ("brick_basecolor.png", BaseColor),
             ("brick_base_color.png", BaseColor),
@@ -389,7 +309,7 @@ mod tests {
             ("brick_orm.png", PackedOrm),
             ("brick_arm_2k.jpg", PackedOrm),
             ("brick_ao_rough_metal.png", PackedOrm),
-            // Prefix styles and engine conventions.
+            // Prefix styles and engine conventions
             ("Albedo_brick.png", BaseColor),
             ("T_Brick_BC.tga", BaseColor),
             ("T_Brick_N.tga", Normal),
@@ -399,14 +319,14 @@ mod tests {
             ("brick_BumpMap.png", Normal),
             ("brick_OcclusionMap.png", AmbientOcclusion),
             ("brick_EmissionMap.png", Emissive),
-            // Scan sites: ids, resolution and format tokens in the name.
+            // Scan sites: ids, resolution and format tokens in the name
             ("Bricks059_4K-JPG_Color.jpg", BaseColor),
             ("Bricks059_4K-JPG_NormalGL.jpg", Normal),
             ("Bricks059_4K-JPG_Roughness.jpg", Roughness),
             ("Bricks059_1K_AmbientOcclusion.png", AmbientOcclusion),
             ("wall_1234_8k_Albedo.png", BaseColor),
             ("wood16bit_roughness.png", Roughness),
-            // Weak and inverted maps.
+            // Weak and inverted maps
             ("brick_bump.png", Height),
             ("WoodFloor_Gloss.png", Glossiness),
             ("wood_smoothness.png", Glossiness),
@@ -431,17 +351,19 @@ mod tests {
         ] {
             assert_eq!(classify(name).unwrap_err(), why, "{name}");
         }
-        // Recognised words with no channel here are reported as unused, not as maps.
+
+        // Recognised words with no channel here are reported as unused, not as maps
         assert_eq!(kind("brick_cavity.png"), Some(Unused));
         assert!(detect([("brick_cavity.png", 1)]).ignored.iter().any(|(_, w)| w == "unused map"));
     }
 
     #[test]
     fn a_weak_word_loses_to_a_strong_one() {
-        // `bump` alone is a height map; next to a stronger word that word names the file.
+        // `bump` alone is a height map; next to a stronger word that word names the file
         assert_eq!(kind("brick_bump.png"), Some(Height));
         assert_eq!(kind("bump_brick_normal.png"), Some(Normal));
-        // A pair at the end beats an earlier single word.
+
+        // A pair at the end beats an earlier single word
         assert_eq!(kind("diffuse_wall_ambient_occlusion.png"), Some(AmbientOcclusion));
     }
 
@@ -454,7 +376,8 @@ mod tests {
         assert_eq!(n("a_NormalDX.png"), Some(NormalFormat::DirectX));
         assert_eq!(n("a_nor_directx_2k.png"), Some(NormalFormat::DirectX));
         assert_eq!(n("a_normal.png"), None);
-        // `dx` on a map that is not a normal map says nothing.
+
+        // `dx` on a map that is not a normal map says nothing
         assert_eq!(n("a_roughness_dx.png"), None);
     }
 
@@ -473,11 +396,14 @@ mod tests {
             ("m/mystery.png", 1),
         ]);
         let pick = |k| set.chosen.get(&k).map(|c| c.name.as_str());
-        // The convention that needs no flip wins even when the DirectX file is bigger.
+
+        // The convention that needs no flip wins even when the DirectX file is bigger
         assert_eq!(pick(Normal), Some("m/n_gl.png"));
-        // The higher resolution token wins over file size.
+
+        // The higher resolution token wins over file size
         assert_eq!(pick(BaseColor), Some("m/albedo_4k.png"));
-        // No resolution token: the larger file.
+
+        // No resolution token: the larger file
         assert_eq!(pick(Roughness), Some("m/rough.jpg"));
         assert_eq!(set.candidates[&BaseColor].len(), 3);
         let why = |name: &str| set.ignored.iter().find(|(n, _)| n == name).map(|(_, w)| w.as_str());
@@ -485,6 +411,11 @@ mod tests {
         assert_eq!(why("m/preview.png"), Some("preview image"));
         assert_eq!(why("m/mystery.png"), Some("unknown map name"));
         assert_eq!(why("m/albedo_1k.png"), Some("another file is used for baseColor"));
+    }
+
+    #[test]
+    fn oversized_resolution_tokens_do_not_overflow() {
+        assert_eq!(classify("brick_4294967295k_albedo.png").unwrap().resolution, 0);
     }
 
     #[test]

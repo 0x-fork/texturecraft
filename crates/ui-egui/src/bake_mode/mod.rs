@@ -1,10 +1,13 @@
 //! Bake Mode presentation; persisted settings live in core and edits use engine commands
 
+mod bake_checks;
 mod bake_paint_brush;
 mod bake_visualization_panel;
 mod bake_visualization_toggles;
 mod breadcrumb;
 mod common_settings;
+mod section_opening;
+pub(crate) use bake_checks::bake_warnings;
 pub use bake_paint_brush::BakePaintBrush;
 pub(crate) use bake_visualization_panel::bake_visualization_panel;
 pub use bake_visualization_toggles::BakeVisualizationToggles;
@@ -47,18 +50,23 @@ pub fn texture_sets(app: &mut TextureCraftApp, ui: &mut Ui) {
                     if ui.checkbox(&mut is_enabled, "").on_hover_text(tr("Include in Bake")).changed() {
                         app.run("bake.settings", json!({ "ts": set_index, "enabled": is_enabled }));
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if let Some(selected) = resolution_menu(ui, tr("Texture set resolution"), format!("{resolution} × {resolution}"), resolution, None)
-                            && selected != resolution
-                        {
-                            app.start_resize(set_index, selected);
-                        }
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            if ui.add(egui::Button::selectable(set_index == app.session.ts(), &name).truncate()).on_hover_text(&name).clicked() {
-                                app.run("textureSet.select", json!({ "ts": set_index }));
-                            }
-                        });
+
+                    // The name takes the room the resolution leaves, so it only shortens when the row is too narrow
+                    let resolution_text = format!("{resolution}x{resolution}");
+                    let name_width = (ui.available_width() - resolution_menu_width(ui, &resolution_text) - ui.spacing().item_spacing.x).max(0.0);
+                    let name_size = egui::vec2(name_width, ui.spacing().interact_size.y);
+                    let name_button = ui.allocate_ui_with_layout(name_size, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.set_min_width(name_width);
+                        ui.add(egui::Button::selectable(set_index == app.session.ts(), &name).truncate())
                     });
+                    if name_button.inner.on_hover_text(&name).clicked() {
+                        app.run("textureSet.select", json!({ "ts": set_index }));
+                    }
+                    if let Some(selected) = resolution_menu(ui, tr("Texture set resolution"), resolution_text, resolution, None)
+                        && selected != resolution
+                    {
+                        app.start_resize(set_index, selected);
+                    }
                 });
 
                 if !tiles.is_empty() {
@@ -71,7 +79,7 @@ pub fn texture_sets(app: &mut TextureCraftApp, ui: &mut Ui) {
                                         app.run("bake.tile.set", json!({"ts": set_index, "tile": tile, "enabled": enabled}));
                                     }
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        let text = override_resolution.map(|value| format!("{value} × {value}*")).unwrap_or_default();
+                                        let text = override_resolution.map(|value| format!("{value}x{value}*")).unwrap_or_default();
                                         let label = trf("UV tile {tile} resolution", &[("tile", &tile.to_string())]);
                                         if let Some(selected) = resolution_menu(
                                             ui,
@@ -93,12 +101,17 @@ pub fn texture_sets(app: &mut TextureCraftApp, ui: &mut Ui) {
     });
 }
 
+/// How wide [`resolution_menu`] draws `text`, with a button's padding on both sides
+fn resolution_menu_width(ui: &Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    ui.painter().layout_no_wrap(text.to_owned(), font, ui.visuals().text_color()).size().x + ui.spacing().button_padding.x * 2.0
+}
+
 fn resolution_menu(ui: &mut Ui, label: &str, text: String, resolution: u32, inherited_resolution: Option<u32>) -> Option<u32> {
-    let effective_size = format!("{resolution} × {resolution}");
+    let effective_size = format!("{resolution}x{resolution}");
     let measured = if text.is_empty() { &effective_size } else { &text };
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let text_width = ui.painter().layout_no_wrap(measured.clone(), font.clone(), ui.visuals().text_color()).size().x;
-    let width = text_width + ui.spacing().button_padding.x * 2.0;
+    let width = resolution_menu_width(ui, measured);
     let response = ui.add_sized([width, ui.spacing().interact_size.y], egui::Button::new("").frame(false));
     let popup_id = response.id.with("resolution_menu");
     let open = egui::Popup::is_id_open(ui.ctx(), popup_id) || response.clicked();
@@ -115,7 +128,7 @@ fn resolution_menu(ui: &mut Ui, label: &str, text: String, resolution: u32, inhe
             ui.separator();
         }
         for candidate in [128, 256, 512, 1024, 2048, 4096, 8192] {
-            if ui.selectable_label(candidate == resolution, format!("{candidate} × {candidate}")).clicked() {
+            if ui.selectable_label(candidate == resolution, format!("{candidate}x{candidate}")).clicked() {
                 selected = Some(candidate);
             }
         }
@@ -184,16 +197,81 @@ fn edit_settings(
     app.run("bake.settings", json!({ "ts": texture_sets, "patch": patch }));
 }
 
+/// What the 3D view shows while a bake runs: the newest finished map, one finished map or the material
+fn preview_control(app: &mut TextureCraftApp, ui: &mut Ui) {
+    use texturecraft_engine::PreviewShow;
+
+    let Some(preview) = app.session.bake_preview.as_ref() else { return };
+
+    let show = preview.show;
+
+    // Finished maps of the set baking now can be pinned; the others are still neutral
+    let rows: Vec<(BakedMap, bool)> =
+        preview.current_set().map(|set| set.order.iter().map(|&map| (map, set.baked.maps.contains_key(&map))).collect()).unwrap_or_default();
+    let text = match show {
+        PreviewShow::Follow => tr("Follow Newest Map").to_owned(),
+        PreviewShow::Material => tr("Material").to_owned(),
+        PreviewShow::Pin(map) => trf("Mesh map: {map}", &[("map", &tr(crate::i18n::baked_map_label(map)))]),
+    };
+
+    let mut choice = None;
+    egui::ComboBox::from_id_salt("bake_preview_show")
+        .selected_text(text)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(show == PreviewShow::Follow, tr("Follow Newest Map")).clicked() {
+                choice = Some(PreviewShow::Follow);
+            }
+            for (map, done) in rows {
+                let label = trf("Mesh map: {map}", &[("map", &tr(crate::i18n::baked_map_label(map)))]);
+                if ui.add_enabled(done, egui::Button::selectable(show == PreviewShow::Pin(map), label)).clicked() {
+                    choice = Some(PreviewShow::Pin(map));
+                }
+            }
+            if ui.selectable_label(show == PreviewShow::Material, tr("Material")).clicked() {
+                choice = Some(PreviewShow::Material);
+            }
+        })
+        .response
+        .on_hover_text(tr(
+            "What the 3D view shows while the bake runs: the newest finished map, one finished map, or the material. Maps not baked yet show a neutral value.",
+        ));
+
+    if let Some(show) = choice {
+        app.run("bake.preview", json!({ "show": show.id() }));
+    }
+}
+
+/// How many maps baking `texture_sets` makes, counted as the reference's Bake button counts them: checked maps × included UV tiles, per set
+fn maps_to_bake(app: &TextureCraftApp, texture_sets: &[usize]) -> usize {
+    texture_sets
+        .iter()
+        .filter_map(|index| app.session.doc.project.texture_sets.get(*index))
+        .map(|set| {
+            let tiles = if set.uv_tiles.is_empty() { 1 } else { set.uv_tiles.iter().filter(|tile| !set.bake_excluded_tiles.contains(tile)).count() };
+            set.bake.maps.enabled().count() * tiles
+        })
+        .sum()
+}
+
+/// The bake bar's gap from the bottom of the 3D view, in points (the pre-bake warnings sit above it)
+pub(super) const BAKE_BAR_MARGIN: f32 = 16.0;
+
 pub(crate) fn bake_bar(app: &mut TextureCraftApp, ctx: &egui::Context, viewport: egui::Rect) {
-    egui::Area::new(egui::Id::unique("bake_bar")).constrain_to(viewport).anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -16.0)).default_width(0.0).show(
-        ctx,
-        |ui| {
+    egui::Area::new(egui::Id::unique("bake_bar"))
+        .constrain_to(viewport)
+        .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -BAKE_BAR_MARGIN))
+        .default_width(0.0)
+        .show(ctx, |ui| {
+            if let Some(status) = app.bake_status() {
+                ui.vertical_centered(|ui| ui.label(egui::RichText::new(status).strong()));
+            }
             ui.horizontal(|ui| {
                 if let Some(progress) = app.bake_progress() {
                     ui.add(egui::ProgressBar::new(progress).desired_width(220.0).show_percentage());
                     if ui.button(tr("Cancel")).clicked() {
                         app.cancel_bake();
                     }
+                    preview_control(app, ui);
                 } else {
                     let texture_sets: Vec<usize> = app
                         .session
@@ -205,8 +283,9 @@ pub(crate) fn bake_bar(app: &mut TextureCraftApp, ctx: &egui::Context, viewport:
                         .filter(|(_, texture_set)| texture_set.bake.common.is_enabled && texture_set.has_enabled_bake_tiles())
                         .map(|(index, _)| index)
                         .collect();
-                    let label = trf("Bake Selected Textures ({n})", &[("n", &texture_sets.len())]);
-                    if ui.add_enabled(!texture_sets.is_empty(), primary_button(ui, &label)).clicked() {
+                    let maps = maps_to_bake(app, &texture_sets);
+                    let label = trf("Bake ({n})", &[("n", &maps)]);
+                    if ui.add_enabled(maps > 0, primary_button(ui, &label)).clicked() {
                         app.start_bake(texture_sets);
                     }
                 }
@@ -215,6 +294,5 @@ pub(crate) fn bake_bar(app: &mut TextureCraftApp, ctx: &egui::Context, viewport:
                     app.ui.mode = Mode::Painting;
                 }
             });
-        },
-    );
+        });
 }
