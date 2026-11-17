@@ -19,6 +19,20 @@ pub struct FilterDef {
     pub mask: bool,
 }
 
+impl FilterDef {
+    /// Whether it builds a filter effect (levels and material finishes are effect types of their own)
+    pub fn is_filter_effect(&self) -> bool {
+        matches!(build(self.id, &Value::Null), Ok(EffectKind::Filter(_)))
+    }
+}
+
+/// The library entries that build filter effects, in shelf order, worked out once
+pub fn filter_effects() -> &'static [&'static FilterDef] {
+    static FILTER_EFFECTS: std::sync::LazyLock<Vec<&'static FilterDef>> =
+        std::sync::LazyLock::new(|| FILTERS.iter().filter(|def| def.is_filter_effect()).collect());
+    &FILTER_EFFECTS
+}
+
 const fn def(id: &'static str, label: &'static str, group: &'static str, mask: bool) -> FilterDef {
     FilterDef { id, label, group, mask }
 }
@@ -239,8 +253,8 @@ pub(crate) fn apply(p: &Value, f: &mut Filter, cmd: &str) -> Result<()> {
         }
         Filter::ColorBalance { shadows, midtones, highlights } => {
             for (key, slot) in [("shadows", shadows), ("midtones", midtones), ("highlights", highlights)] {
-                if p.get(key).is_some() {
-                    let v = color_param(p, key).ok_or_else(|| bad(cmd, format!("`{key}` must be [r, g, b] offsets in -1..1")))?;
+                if let Some(val) = p.get(key).filter(|v| !v.is_null()) {
+                    let v = color_of(val).ok_or_else(|| bad(cmd, format!("`{key}` must be [r, g, b] offsets in -1..1")))?;
                     *slot = v.map(|x| x.clamp(-1.0, 1.0));
                 }
             }
@@ -291,8 +305,7 @@ pub(crate) fn apply(p: &Value, f: &mut Filter, cmd: &str) -> Result<()> {
         }
         Filter::ReplaceColor { from, to, tolerance, softness } => {
             for (key, slot) in [("from", from), ("to", to)] {
-                if p.get(key).is_some() {
-                    let v = color_param(p, key).ok_or_else(|| bad(cmd, format!("`{key}` must be a color ([r, g, b] linear or \"#rrggbb\")")))?;
+                if let Some(v) = color_param(cmd, p, key)? {
                     *slot = v.map(|x| x.clamp(0.0, 1.0));
                 }
             }

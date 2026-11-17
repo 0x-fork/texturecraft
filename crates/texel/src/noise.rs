@@ -16,22 +16,25 @@ pub fn pcg3d(x: u32, y: u32, z: u32) -> [u32; 3] {
 }
 
 /// Every f32 at least this large is an integer.
-const INTEGRAL: f32 = 8_388_608.0;
+const F32_INTEGER_THRESHOLD: f32 = 8_388_608.0;
 
 /// The lattice cell of `p` and the position inside it: `(floor(p) as i32, p − floor(p))`,
-/// without `f32::floor`, a libm call on x86-64 without SSE4.1 (the noise calls it three times
-/// per lookup). Bit for bit the same, NaN and huge values included.
+/// using hardware floor with SSE4.1 and truncation otherwise to avoid a libm call on baseline
+/// x86-64. Bit for bit the same, NaN and huge values included.
 #[inline]
 fn cell(p: f32) -> (i32, f32) {
-    if p.is_nan() || p.abs() >= INTEGRAL {
-        // Rare (already integral, infinite or NaN): the plain definition.
-        let f = p.floor();
-        return (f as i32, p - f);
+    // SSE4.1 floor is cheaper than truncation plus correction and needs no special cases
+    if cfg!(target_feature = "sse4.1") || p.is_nan() || p.abs() >= F32_INTEGER_THRESHOLD {
+        // Preserve the original result for integral and nonfinite inputs
+        let floor_value = p.floor();
+        return (floor_value as i32, p - floor_value);
     }
-    let t = p as i32;
-    let i = if (t as f32) > p { t - 1 } else { t };
-    // `+ 0.0` turns the −0 of p = −0 into the +0 `p − floor(p)` gives (exact otherwise).
-    (i, (p - i as f32) + 0.0)
+
+    let truncated = p as i32;
+    let cell_index = if (truncated as f32) > p { truncated - 1 } else { truncated };
+
+    // Addition turns negative zero into the positive zero returned by subtraction
+    (cell_index, (p - cell_index as f32) + 0.0)
 }
 
 #[inline]
@@ -55,16 +58,16 @@ pub fn value(p: [f32; 3], seed: u32) -> f32 {
     let (iy, fy) = cell(p[1]);
     let (iz, fz) = cell(p[2]);
     let (sx, sy, sz) = (smooth(fx), smooth(fy), smooth(fz));
-    let h = |dx: i32, dy: i32, dz: i32| hash01(ix.wrapping_add(dx), iy.wrapping_add(dy), iz.wrapping_add(dz), seed);
+    let hash = |dx: i32, dy: i32, dz: i32| hash01(ix.wrapping_add(dx), iy.wrapping_add(dy), iz.wrapping_add(dz), seed);
     lerp(
-        lerp(lerp(h(0, 0, 0), h(1, 0, 0), sx), lerp(h(0, 1, 0), h(1, 1, 0), sx), sy),
-        lerp(lerp(h(0, 0, 1), h(1, 0, 1), sx), lerp(h(0, 1, 1), h(1, 1, 1), sx), sy),
+        lerp(lerp(hash(0, 0, 0), hash(1, 0, 0), sx), lerp(hash(0, 1, 0), hash(1, 1, 0), sx), sy),
+        lerp(lerp(hash(0, 0, 1), hash(1, 0, 1), sx), lerp(hash(0, 1, 1), hash(1, 1, 1), sx), sy),
         sz,
     )
 }
 
 /// Perlin's 12 edge gradients of the unit cube.
-const GRADS: [[f32; 3]; 12] = [
+const EDGE_GRADIENTS: [[f32; 3]; 12] = [
     [1.0, 1.0, 0.0],
     [-1.0, 1.0, 0.0],
     [1.0, -1.0, 0.0],
@@ -84,8 +87,8 @@ const GRADS: [[f32; 3]; 12] = [
 /// is exact, so the sum equals the two signed components the gradient picks.
 #[inline]
 fn grad(x: i32, y: i32, z: i32, seed: u32, f: [f32; 3]) -> f32 {
-    let g = GRADS[(pcg3d(x as u32 ^ seed.wrapping_mul(0x85EB_CA6B), y as u32, z as u32)[1] % 12) as usize];
-    g[0] * f[0] + g[1] * f[1] + g[2] * f[2]
+    let gradient = EDGE_GRADIENTS[(pcg3d(x as u32 ^ seed.wrapping_mul(0x85EB_CA6B), y as u32, z as u32)[1] % 12) as usize];
+    gradient[0] * f[0] + gradient[1] * f[1] + gradient[2] * f[2]
 }
 
 /// Gradient (Perlin) noise in about 0..1.
@@ -143,14 +146,22 @@ pub fn cell_hash(x: i32, y: i32, z: i32, seed: u32) -> f32 {
 /// pointer, so each base noise is inlined into the octave loop.
 #[inline]
 pub fn fbm(p: [f32; 3], octaves: u32, seed: u32, base: impl Fn([f32; 3], u32) -> f32) -> f32 {
-    let (mut sum, mut amp, mut norm, mut q) = (0.0, 0.5, 0.0, p);
-    for o in 0..octaves.clamp(1, 12) {
-        sum += amp * base(q, seed.wrapping_add(o * 31));
-        norm += amp;
-        q = q.map(|v| v * 2.0 + 17.13);
-        amp *= 0.5;
+    // Bound work even for untrusted octave counts
+    const MAX_OCTAVES: u32 = 12;
+
+    // Offset each octave in seed and position to decorrelate its lattice
+    const OCTAVE_SEED_STRIDE: u32 = 31;
+    const OCTAVE_POSITION_OFFSET: f32 = 17.13;
+    let (mut sum, mut amplitude, mut normalization, mut position) = (0.0, 0.5, 0.0, p);
+
+    for octave in 0..octaves.clamp(1, MAX_OCTAVES) {
+        sum += amplitude * base(position, seed.wrapping_add(octave * OCTAVE_SEED_STRIDE));
+        normalization += amplitude;
+        position = position.map(|value| value * 2.0 + OCTAVE_POSITION_OFFSET);
+        amplitude *= 0.5;
     }
-    sum / norm
+
+    sum / normalization
 }
 
 #[cfg(test)]
@@ -179,40 +190,46 @@ mod tests {
     /// use only basic arithmetic (no `sin`, whose last bits differ between platforms).
     #[test]
     fn noises_match_the_reference_bit_for_bit() {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut eat = |v: f32| {
-            h = (h ^ u64::from(v.to_bits())).wrapping_mul(0x0100_0000_01b3);
+        const REFERENCE: u64 = 0x67e8_14aa_2127_b333;
+        let mut checksum: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut add_to_checksum = |value: f32| {
+            checksum = (checksum ^ u64::from(value.to_bits())).wrapping_mul(0x0100_0000_01b3);
         };
-        let specials = [0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 1e-7, -1e-7, 8_388_607.5, -8_388_607.5, 8_388_608.0, 3e9, -3e9];
+        let special_coordinates = [0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 1e-7, -1e-7, 8_388_607.5, -8_388_607.5, 8_388_608.0, 3e9, -3e9];
         let mut points: Vec<[f32; 3]> =
             (0..4000).map(|i| [i as f32 * 0.37 - 700.0, ((i * 7919) % 8000) as f32 * 0.01 - 40.0, (i % 97) as f32 * -0.53]).collect();
-        points.extend(specials.iter().flat_map(|&a| specials.iter().map(move |&b| [a, b, a - b])));
-        for p in points {
+        points.extend(special_coordinates.iter().flat_map(|&first| special_coordinates.iter().map(move |&second| [first, second, first - second])));
+
+        for point in points {
             for seed in [0, 7] {
-                eat(value(p, seed));
-                eat(perlin(p, seed));
-                let (f1, f2, id) = cellular(p, seed);
-                eat(f1);
-                eat(f2);
-                eat(id);
-                eat(fbm(p, 6, seed, perlin));
-                eat(fbm(p, 3, seed, value));
+                add_to_checksum(value(point, seed));
+                add_to_checksum(perlin(point, seed));
+                let (nearest, second_nearest, cell_id) = cellular(point, seed);
+                add_to_checksum(nearest);
+                add_to_checksum(second_nearest);
+                add_to_checksum(cell_id);
+                add_to_checksum(fbm(point, 6, seed, perlin));
+                add_to_checksum(fbm(point, 3, seed, value));
             }
         }
-        assert_eq!(h, REFERENCE, "noise output changed: {h:#x}");
+
+        assert_eq!(checksum, REFERENCE, "noise output changed: {checksum:#x}");
     }
-    const REFERENCE: u64 = 0x67e8_14aa_2127_b333;
 
     /// A coordinate past the i32 range puts its cell at i32::MAX or MIN; the neighbouring cells
     /// wrap around instead of overflowing (which panics in debug builds).
     #[test]
     fn huge_coordinates_do_not_overflow_the_lattice() {
-        for a in [3e9, -3e9, 2_147_483_648.0, -2_147_483_904.0, f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY] {
-            for p in [[a, 0.5, 0.5], [0.5, a, 0.5], [0.5, 0.5, a], [a, a, a]] {
-                let (v, n, (f1, f2, id)) = (value(p, 1), perlin(p, 1), cellular(p, 1));
-                // Infinities have no position inside a cell (NaN): only finite ones must stay in range.
-                if a.is_finite() {
-                    assert!([v, n, f1, f2, id].iter().all(|x| (0.0..=1.0).contains(x)), "{p:?}: {v} {n} {f1} {f2} {id}");
+        for coordinate in [3e9, -3e9, 2_147_483_648.0, -2_147_483_904.0, f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY] {
+            for point in [[coordinate, 0.5, 0.5], [0.5, coordinate, 0.5], [0.5, 0.5, coordinate], [coordinate, coordinate, coordinate]] {
+                let (value_noise, perlin_noise, (nearest, second_nearest, cell_id)) = (value(point, 1), perlin(point, 1), cellular(point, 1));
+
+                // Infinities have no finite position inside a cell
+                if coordinate.is_finite() {
+                    assert!(
+                        [value_noise, perlin_noise, nearest, second_nearest, cell_id].iter().all(|value| (0.0..=1.0).contains(value)),
+                        "{point:?}: {value_noise} {perlin_noise} {nearest} {second_nearest} {cell_id}"
+                    );
                 }
             }
         }
@@ -227,9 +244,11 @@ mod tests {
         let edge = [0.0, -0.0, 0.5, -0.5, 1.0, -1.0, 1.0 - f32::EPSILON, -1e-30, 8_388_607.5, -8_388_607.5, 8_388_608.0, -8_388_609.0, 3e9, -3e9];
         let all =
             edge.into_iter().chain([f32::INFINITY, f32::NEG_INFINITY, f32::NAN, f32::MAX, f32::MIN]).chain((0..20_000).map(|i| (i as f32 - 10_000.0) * 0.013));
-        for p in all {
-            let (a, b) = (cell(p), reference(p));
-            assert!(a.0 == b.0 && a.1.to_bits() == b.1.to_bits(), "{p}: {a:?} vs {b:?}");
+
+        for coordinate in all {
+            let (actual, expected) = (cell(coordinate), reference(coordinate));
+
+            assert!(actual.0 == expected.0 && actual.1.to_bits() == expected.1.to_bits(), "{coordinate}: {actual:?} vs {expected:?}");
         }
     }
 

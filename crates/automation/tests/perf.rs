@@ -25,270 +25,242 @@ use texturecraft_automation::headless::{Filesystem, Headless};
 use texturecraft_engine::Session;
 use texturecraft_engine::bake::Progress;
 use texturecraft_engine::compose::{DisplayKind, tile_bytes};
-use texturecraft_engine::core::BakedMap;
+use texturecraft_engine::core::{BakeResolution, BakedMap};
 use texturecraft_engine::geom::glam::Vec2;
 use texturecraft_engine::project_cmds::sample_session;
 
-// ---------------------------------------------------------------------------------------------
-// Reporting
+#[path = "perf/report.rs"]
+mod report;
 
-struct Row {
-    stage: String,
-    took: Duration,
-    budget: Option<Duration>,
-    note: String,
-}
-
-struct Report {
-    test: &'static str,
-    rows: Vec<Row>,
-}
-
-fn scale() -> f64 {
-    std::env::var("TC_PERF_SCALE").ok().and_then(|s| s.parse::<f64>().ok()).filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1.0)
-}
-
-fn ms(d: Duration) -> f64 {
-    d.as_secs_f64() * 1000.0
-}
-
-impl Report {
-    fn new(test: &'static str) -> Report {
-        println!("\n=== {test} ({} threads, {} build)", rayon::current_num_threads(), if cfg!(debug_assertions) { "debug" } else { "release" });
-        Report { test, rows: Vec::new() }
-    }
-
-    /// Record a stage; `budget_ms` is scaled by `TC_PERF_SCALE`.
-    fn add(&mut self, stage: impl Into<String>, took: Duration, budget_ms: Option<f64>, note: impl Into<String>) {
-        let row = Row { stage: stage.into(), took, budget: budget_ms.map(|b| Duration::from_secs_f64(b * scale() / 1000.0)), note: note.into() };
-        let budget = row.budget.map_or(String::new(), |b| format!(" / {:>9.1} ms{}", ms(b), if row.took > b { "  OVER" } else { "" }));
-        println!("  {:<58} {:>9.1} ms{budget}  {}", row.stage, ms(row.took), row.note);
-        self.rows.push(row);
-    }
-
-    /// Time `f` as one stage.
-    fn time<T>(&mut self, stage: impl Into<String>, budget_ms: Option<f64>, f: impl FnOnce() -> T) -> T {
-        let t = Instant::now();
-        let out = f();
-        self.add(stage, t.elapsed(), budget_ms, "");
-        out
-    }
-
-    /// Write the JSON report and fail on blown budgets (release builds only).
-    fn finish(self) {
-        if let Ok(dir) = std::env::var("TC_PERF_OUT") {
-            let rows: Vec<Value> =
-                self.rows.iter().map(|r| json!({"stage": r.stage, "ms": ms(r.took), "budgetMs": r.budget.map(ms), "note": r.note})).collect();
-            let doc = json!({"test": self.test, "threads": rayon::current_num_threads(), "release": !cfg!(debug_assertions), "stages": rows});
-            // Tests run in the crate's directory: a relative path is taken from the workspace root.
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join(format!("{}.json", self.test));
-            std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap()).unwrap();
-            println!("  report: {}", path.display());
-        }
-        let over: Vec<String> =
-            self.rows.iter().filter_map(|r| r.budget.filter(|b| r.took > *b).map(|b| format!("{}: {:.1} ms > {:.1} ms", r.stage, ms(r.took), ms(b)))).collect();
-        if over.is_empty() {
-            return;
-        }
-        if cfg!(debug_assertions) || std::env::var("TC_PERF_BUDGETS").is_ok_and(|v| v == "off") {
-            println!("  ({} stages over budget; not failing: {})", over.len(), if cfg!(debug_assertions) { "debug build" } else { "TC_PERF_BUDGETS=off" });
-            return;
-        }
-        panic!("{}: {} stages over budget:\n  {}", self.test, over.len(), over.join("\n  "));
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Setup
+use report::{Report, ms};
 
 /// The startup sample project (material ball, two texture sets with smart materials whose
-/// generators read the baked maps) at `res`, in a headless backend with the GPU tracer installed.
+/// generators read the baked maps) at `resolution`, in a headless backend with the GPU tracer installed.
 /// The sample's own bake is a cheap 256² one: tests rebake at the size they measure.
-fn sample(res: u32) -> Headless {
-    // `Headless::new` installs the GPU tracer; the sample session must bake after it.
-    let mut h = Headless::new(Headless::default_session().unwrap(), Filesystem::Denied);
-    let mut s = sample_session(res, 256).unwrap();
-    s.viewport = Vec2::new(1000.0, 880.0);
-    h.session = s;
-    h.session.update();
-    h
+fn sample(resolution: u32) -> Headless {
+    // Install the GPU tracer before the sample session performs its bake
+    let mut backend = Headless::new(Headless::default_session().unwrap(), Filesystem::Denied);
+    let mut session = sample_session(resolution, 256).unwrap();
+    session.viewport = Vec2::new(1000.0, 880.0);
+    backend.session = session;
+    backend.session.update();
+
+    backend
 }
 
 /// Every tile the viewport would upload, converted to every display format as the UI does
 /// (in parallel); returns the bytes.
-fn display_all(s: &mut Session) -> usize {
+fn display_all(session: &mut Session) -> usize {
     let mut bytes = 0;
-    for ts in 0..s.set_count() {
-        let tiles = s.take_uploads(ts);
-        let baked = s.baked(ts).cloned().unwrap_or_default();
-        let comp = &s.caches[ts].composite;
-        bytes += tiles.par_iter().flat_map_iter(|&(tx, ty)| DisplayKind::ALL.map(|k| tile_bytes(comp, &baked, k, tx, ty).len())).sum::<usize>();
+
+    for texture_set in 0..session.set_count() {
+        let tiles = session.take_uploads(texture_set);
+        let baked = session.baked(texture_set).cloned().unwrap_or_default();
+        let composite = &session.caches[texture_set].composite;
+        bytes += tiles
+            .par_iter()
+            .flat_map_iter(|&(tile_x, tile_y)| DisplayKind::ALL.map(|kind| tile_bytes(composite, &baked, kind, tile_x, tile_y).len()))
+            .sum::<usize>();
     }
+
     bytes
 }
 
-fn tiles_of(s: &Session) -> usize {
-    s.caches.iter().map(|c| c.dirty.len()).sum()
+fn tiles_of(session: &Session) -> usize {
+    session.caches.iter().map(|cache| cache.dirty.len()).sum()
 }
 
 /// Every tile of every set dirty, with the per-tile cache of the layers below the selected one
 /// kept (`warm`) or emptied as any bake or stack edit empties it (cold, what users wait on).
-fn invalidate(s: &mut Session, warm: bool) {
-    for ts in 0..s.set_count() {
-        invalidate_set(s, ts, warm);
+fn invalidate(session: &mut Session, warm: bool) {
+    for texture_set in 0..session.set_count() {
+        invalidate_set(session, texture_set, warm);
     }
 }
 
-fn invalidate_set(s: &mut Session, ts: usize, warm: bool) {
-    let c = &mut s.caches[ts];
-    c.invalidate_all();
+fn invalidate_set(session: &mut Session, texture_set: usize, warm: bool) {
+    let cache = &mut session.caches[texture_set];
+    cache.invalidate_all();
     if !warm {
-        c.below.clear();
+        cache.below.clear();
     }
 }
 
-/// Bake every texture set at `bake_res` the way the app does: the ray-casting task (the worker
+/// Bake every texture set at `bake_resolution` the way the app does: the ray-casting task (the worker
 /// thread's part), then `apply_bake` and the recomposite of the layers that read the maps (the
 /// frame's part). `cpu` skips the GPU tracer. Budgets are per whole-project stage.
-fn bake_project(r: &mut Report, h: &mut Headless, label: &str, bake_res: u32, cpu: bool, budgets: [Option<f64>; 3]) {
-    let s = &mut h.session;
-    for ts in 0..s.set_count() {
-        s.doc.project.texture_set_mut(ts).unwrap().bake.resolution = bake_res;
+fn bake_project(report: &mut Report, backend: &mut Headless, label: &str, bake_resolution: u32, cpu: bool, budgets: [Option<f64>; 3]) {
+    let session = &mut backend.session;
+    let resolution = BakeResolution::from_pixels(bake_resolution).unwrap();
+
+    for texture_set in 0..session.set_count() {
+        session.doc.project.texture_set_mut(texture_set).unwrap().bake.common.resolution = resolution;
     }
+
     let (mut rays, mut apply, mut tracer) = (Duration::ZERO, Duration::ZERO, String::new());
-    let mut outs = Vec::new();
-    for ts in 0..s.set_count() {
-        s.begin_bake(ts);
-        let mut task = s.bake_task(ts).unwrap();
+    let mut outputs = Vec::new();
+
+    for texture_set in 0..session.set_count() {
+        let mut task = session.bake_task(texture_set).unwrap();
         if cpu {
             task.tracer = None;
         }
-        let t = Instant::now();
-        let out = task.run(&Progress::new()).unwrap();
-        rays += t.elapsed();
-        tracer = out.tracer.clone();
-        outs.push((ts, out));
-    }
-    for (ts, out) in outs {
-        let t = Instant::now();
-        s.apply_bake(ts, out).unwrap();
-        apply += t.elapsed();
-    }
-    let maps = s.doc.project.texture_sets[0].bake.maps.len();
-    r.add(format!("{label}: bake {} sets × {maps} maps at {bake_res}²", s.set_count()), rays, budgets[0], format!("[{tracer}]"));
-    r.add(format!("{label}: apply_bake (undo snapshot + store)"), apply, budgets[1], "");
-    let dirty = tiles_of(s);
-    r.time(format!("{label}: recomposite after bake ({dirty} tiles)"), budgets[2], || s.update());
-}
 
-// ---------------------------------------------------------------------------------------------
-// Baking
+        let start = Instant::now();
+        let output = task.run(&Progress::new()).unwrap();
+        rays += start.elapsed();
+        tracer = output.tracer.clone();
+        outputs.push((texture_set, output));
+    }
+
+    for (texture_set, output) in outputs {
+        let start = Instant::now();
+        session.apply_bake(texture_set, output).unwrap();
+        apply += start.elapsed();
+    }
+
+    let maps = session.doc.project.texture_sets[0].bake.maps.enabled().count();
+    report.add(format!("{label}: bake {} sets × {maps} maps at {bake_resolution}²", session.set_count()), rays, budgets[0], format!("[{tracer}]"));
+    report.add(format!("{label}: apply_bake (undo snapshot + store)"), apply, budgets[1], "");
+
+    let dirty = tiles_of(session);
+    report.time(format!("{label}: recomposite after bake ({dirty} tiles)"), budgets[2], || session.update());
+}
 
 /// The whole-project bake at the app's default settings (1024², 32 rays, AA 1), then 2048².
 #[test]
 #[ignore]
 fn bake_sample_project() {
-    let mut r = Report::new("bake_sample_project");
-    let mut h = sample(2048);
-    bake_project(&mut r, &mut h, "1K", 1024, false, [Some(5_000.0), Some(200.0), Some(6_500.0)]);
-    bake_project(&mut r, &mut h, "2K", 2048, false, [Some(23_000.0), Some(400.0), Some(6_500.0)]);
-    // The same through the command an agent runs: bake + recomposite in one call.
-    r.time("bake.run (command, all sets, 1K)", Some(12_000.0), || h.command_run("bake.run", json!({"ts": "all", "resolution": 1024})).unwrap());
-    r.finish();
+    let mut report = Report::new("bake_sample_project");
+    let mut backend = sample(2048);
+
+    bake_project(&mut report, &mut backend, "1K", 1024, false, [Some(5_000.0), Some(200.0), Some(6_500.0)]);
+    bake_project(&mut report, &mut backend, "2K", 2048, false, [Some(23_000.0), Some(400.0), Some(6_500.0)]);
+
+    // Measure the agent command with bake and recomposite in one call
+    report.time("bake.run (command, all sets, 1K)", Some(12_000.0), || backend.command_run("bake.run", json!({"ts": "all", "resolution": 1024})).unwrap());
+
+    report.finish();
 }
 
 /// Each mesh map alone at 2048² on texture set 0: which baker is the slow one.
 #[test]
 #[ignore]
 fn bake_each_map() {
-    let mut r = Report::new("bake_each_map");
-    let h = sample(1024);
-    let s = &h.session;
-    let maps: Vec<_> = s.doc.project.texture_sets[0].bake.maps.iter().copied().collect();
+    let mut report = Report::new("bake_each_map");
+    let backend = sample(1024);
+    let session = &backend.session;
+    let maps: Vec<_> = session.doc.project.texture_sets[0].bake.maps.enabled().collect();
+
     for map in maps {
-        let mut task = s.bake_task_for(0, Some(map)).unwrap();
-        task.settings.resolution = 2048;
-        let t = Instant::now();
-        let out = task.run(&Progress::new()).unwrap();
-        // The hemisphere bakers cast `rays` per texel; the others one or a few.
+        let mut task = session.bake_task(0).unwrap();
+        task.settings.maps.select([map]);
+        task.settings.common.resolution = BakeResolution::R2048;
+
+        let start = Instant::now();
+        let output = task.run(&Progress::new()).unwrap();
+
+        // Hemisphere maps cast many rays per texel
         let budget = if matches!(map, BakedMap::AmbientOcclusion | BakedMap::Thickness | BakedMap::BentNormal) { 6_000.0 } else { 300.0 };
-        r.add(format!("set 0, {} at 2048²", map.label()), t.elapsed(), Some(budget), format!("[{}]", out.tracer));
+        report.add(format!("set 0, {} at 2048²", map.id()), start.elapsed(), Some(budget), format!("[{}]", output.tracer));
     }
-    r.finish();
+
+    report.finish();
 }
 
 /// GPU against CPU rays on the same 1K bake (no budget on the CPU row: it is the reference).
 #[test]
 #[ignore]
 fn bake_gpu_vs_cpu() {
-    let mut r = Report::new("bake_gpu_vs_cpu");
-    let mut h = sample(1024);
-    bake_project(&mut r, &mut h, "GPU", 1024, false, [Some(5_000.0), None, None]);
-    bake_project(&mut r, &mut h, "CPU", 1024, true, [None, None, None]);
-    let rays: Vec<f64> = r.rows.iter().filter(|row| row.stage.contains(": bake ")).map(|row| ms(row.took)).collect();
+    let mut report = Report::new("bake_gpu_vs_cpu");
+    let mut backend = sample(1024);
+
+    bake_project(&mut report, &mut backend, "GPU", 1024, false, [Some(5_000.0), None, None]);
+    bake_project(&mut report, &mut backend, "CPU", 1024, true, [None, None, None]);
+
+    let rays: Vec<f64> = report.rows.iter().filter(|row| row.stage.contains(": bake ")).map(|row| ms(row.took)).collect();
     if let [gpu, cpu] = rays[..] {
         println!("  GPU speed-up over CPU: {:.1}×", cpu / gpu.max(1e-3));
     }
-    r.finish();
-}
 
-// ---------------------------------------------------------------------------------------------
-// Compositing
+    report.finish();
+}
 
 /// Full recomposite of the sample project (every texture set) at 2K and 4K: cold (the frame
 /// after a bake, opening a project or any stack edit), then warm (the below-the-selected-layer
 /// cache filled, as far as its byte budget holds it), the display conversion the viewport
 /// uploads, and the UI's cold budgeted path (a 30 ms budget per frame).
-fn composite_full(r: &mut Report, res: u32, budgets: [f64; 3]) {
-    let mut h = sample(res);
-    let s = &mut h.session;
+fn composite_full(report: &mut Report, resolution: u32, budgets: [f64; 3]) {
+    let mut backend = sample(resolution);
+    let session = &mut backend.session;
+
     for warm in [false, true] {
-        invalidate(s, warm);
-        let tiles = tiles_of(s);
-        let t = Instant::now();
-        s.update();
-        let took = t.elapsed();
+        invalidate(session, warm);
+        let tiles = tiles_of(session);
+        let start = Instant::now();
+        session.update();
+        let took = start.elapsed();
         let per_tile = format!("{tiles} tiles, {:.0} µs/tile", took.as_secs_f64() * 1e6 / tiles.max(1) as f64);
         let (label, budget) = if warm { ("warm", None) } else { ("cold", Some(budgets[0])) };
-        r.add(format!("{res}²: full recomposite, {} sets, {label}", s.set_count()), took, budget, per_tile);
+        report.add(format!("{resolution}²: full recomposite, {} sets, {label}", session.set_count()), took, budget, per_tile);
     }
-    let cached = s.caches.iter().map(|c| c.below.len()).sum::<usize>();
-    let covered = s.caches.iter().map(|c| c.covered_tiles.len()).sum::<usize>();
-    let below_mb = s.caches.iter().map(|c| c.below.bytes()).sum::<usize>() as f64 / 1048576.0;
-    println!("  (below cache holds {cached} of {covered} tiles, {below_mb:.0} MB)");
-    let t = Instant::now();
-    let bytes = display_all(s);
-    r.add(format!("{res}²: display conversion of every tile"), t.elapsed(), Some(budgets[1]), format!("{:.0} MB", bytes as f64 / 1048576.0));
 
-    invalidate(s, false);
+    let cached = session.caches.iter().map(|cache| cache.below.len()).sum::<usize>();
+    let covered = session.caches.iter().map(|cache| cache.covered_tiles.len()).sum::<usize>();
+    const BYTES_PER_MIB: f64 = (1 << 20) as f64;
+    let below_mib = session.caches.iter().map(|cache| cache.below.bytes()).sum::<usize>() as f64 / BYTES_PER_MIB;
+    println!("  (below cache holds {cached} of {covered} tiles, {below_mib:.0} MiB)");
+
+    let start = Instant::now();
+    let bytes = display_all(session);
+    report.add(
+        format!("{resolution}²: display conversion of every tile"),
+        start.elapsed(),
+        Some(budgets[1]),
+        format!("{:.0} MiB", bytes as f64 / BYTES_PER_MIB),
+    );
+
+    invalidate(session, false);
     let clock = Instant::now();
     let now = || clock.elapsed().as_secs_f64() * 1000.0;
+
+    // Bound the benchmark if the scheduler stops making progress
+    const MAX_FRAMES: usize = 100_000;
     let (mut frames, mut worst) = (0, Duration::ZERO);
-    while s.pending_tiles() > 0 && frames < 100_000 {
-        let t = Instant::now();
-        s.update_for(30.0, now);
-        worst = worst.max(t.elapsed());
+
+    while session.pending_tiles() > 0 && frames < MAX_FRAMES {
+        let start = Instant::now();
+        session.update_for(30.0, now);
+        worst = worst.max(start.elapsed());
         frames += 1;
     }
-    r.add(format!("{res}²: budgeted recomposite, worst frame of {frames}"), worst, Some(budgets[2]), format!("total {:.0} ms", ms(clock.elapsed())));
+
+    report.add(
+        format!("{resolution}²: budgeted recomposite, worst frame of {frames}"),
+        worst,
+        Some(budgets[2]),
+        format!("total {:.0} ms", ms(clock.elapsed())),
+    );
 }
 
 #[test]
 #[ignore]
 fn composite_sample_2k() {
-    let mut r = Report::new("composite_sample_2k");
-    composite_full(&mut r, 2048, [6_500.0, 150.0, 120.0]);
-    r.finish();
+    let mut report = Report::new("composite_sample_2k");
+
+    composite_full(&mut report, 2048, [6_500.0, 150.0, 120.0]);
+
+    report.finish();
 }
 
 #[test]
 #[ignore]
 fn composite_sample_4k() {
-    let mut r = Report::new("composite_sample_4k");
-    composite_full(&mut r, 4096, [24_000.0, 400.0, 120.0]);
-    r.finish();
+    let mut report = Report::new("composite_sample_4k");
+
+    composite_full(&mut report, 4096, [24_000.0, 400.0, 120.0]);
+
+    report.finish();
 }
 
 /// Editing the stack through the commands the UI runs: selecting the bottom layer (the
@@ -297,19 +269,21 @@ fn composite_sample_4k() {
 #[test]
 #[ignore]
 fn composite_after_edits() {
-    let mut r = Report::new("composite_after_edits");
-    let mut h = sample(2048);
-    let bottom = h.session.doc.project.texture_sets[0].stack[0];
-    for (label, id, p) in [
+    let mut report = Report::new("composite_after_edits");
+    let mut backend = sample(2048);
+    let bottom = backend.session.doc.project.texture_sets[0].stack[0];
+
+    for (label, id, params) in [
         ("select bottom layer", "layer.select", json!({"layer": bottom.0})),
         ("toggle bottom layer visibility", "layer.visible", json!({"layer": bottom.0, "visible": false})),
         ("show it again", "layer.visible", json!({"layer": bottom.0, "visible": true})),
     ] {
-        r.time(format!("{label} ({id})"), None, || h.command_run(id, p).unwrap());
-        let dirty = tiles_of(&h.session);
-        r.time(format!("  then recomposite ({dirty} tiles)"), Some(3_000.0), || h.session.update());
+        report.time(format!("{label} ({id})"), None, || backend.command_run(id, params).unwrap());
+        let dirty = tiles_of(&backend.session);
+        report.time(format!("  then recomposite ({dirty} tiles)"), Some(3_000.0), || backend.session.update());
     }
-    r.finish();
+
+    report.finish();
 }
 
 /// What each layer of the sample costs, per texture set: the full recomposite of the set with
@@ -318,66 +292,74 @@ fn composite_after_edits() {
 #[test]
 #[ignore]
 fn composite_per_layer() {
-    let mut r = Report::new("composite_per_layer");
-    let mut h = sample(1024);
-    let set_visibility = |h: &mut Headless, ids: &[texturecraft_engine::core::LayerId], visible: bool| {
+    let mut report = Report::new("composite_per_layer");
+    let mut backend = sample(1024);
+    let set_visibility = |backend: &mut Headless, ids: &[texturecraft_engine::core::LayerId], visible: bool| {
         for id in ids {
-            h.command_run("layer.visible", json!({"layer": id.0, "visible": visible})).unwrap();
+            backend.command_run("layer.visible", json!({"layer": id.0, "visible": visible})).unwrap();
         }
     };
-    for ts in 0..h.session.set_count() {
-        h.session.active_set = ts;
-        // A cold composite of this set only (the others stay clean): with the below cache
-        // filled, a recomposite would only evaluate the selected layer.
-        let full = |h: &mut Headless| {
-            invalidate_set(&mut h.session, ts, false);
-            let t = Instant::now();
-            h.session.update();
-            t.elapsed()
+
+    for texture_set in 0..backend.session.set_count() {
+        backend.session.active_set = texture_set;
+
+        // Invalidate only this set to measure its full composite
+        let full = |backend: &mut Headless| {
+            invalidate_set(&mut backend.session, texture_set, false);
+            let start = Instant::now();
+            backend.session.update();
+            start.elapsed()
         };
-        full(&mut h); // the thread pool and lazily built inputs
-        let all = full(&mut h);
-        let set = &h.session.doc.project.texture_sets[ts];
-        let tiles = h.session.caches[ts].covered_tiles.len();
-        let pct = |d: Duration| format!("{:.0}% of the set", 100.0 * ms(d) / ms(all).max(1e-3));
-        r.add(
-            format!("set {ts} ({}), every layer visible", set.name),
+
+        // Warm the thread pool and lazily built inputs before timing
+        full(&mut backend);
+        let all = full(&mut backend);
+        let set = &backend.session.doc.project.texture_sets[texture_set];
+        let tiles = backend.session.caches[texture_set].covered_tiles.len();
+        let percentage = |d: Duration| format!("{:.0}% of the set", 100.0 * ms(d) / ms(all).max(1e-3));
+        report.add(
+            format!("set {texture_set} ({}), every layer visible", set.name),
             all,
             None,
             format!("{tiles} tiles, {:.0} µs/tile", all.as_secs_f64() * 1e6 / tiles.max(1) as f64),
         );
+
         let top = set.stack.clone();
-        set_visibility(&mut h, &top, false);
-        let none = full(&mut h);
-        set_visibility(&mut h, &top, true);
-        r.add(format!("set {ts}, every layer hidden (fixed per-tile cost)"), none, None, pct(none));
-        for (id, depth) in h.session.doc.project.walk(ts) {
-            let layer = h.session.doc.project.layer(id).unwrap();
+        set_visibility(&mut backend, &top, false);
+        let none = full(&mut backend);
+        set_visibility(&mut backend, &top, true);
+        report.add(format!("set {texture_set}, every layer hidden (fixed per-tile cost)"), none, None, percentage(none));
+
+        for (id, depth) in backend.session.doc.project.walk(texture_set) {
+            let layer = backend.session.doc.project.layer(id).unwrap();
             if !layer.visible {
                 continue;
             }
+
             let name = format!("{}{}", "  ".repeat(depth), layer.name);
-            set_visibility(&mut h, &[id], false);
-            let hidden = full(&mut h);
-            set_visibility(&mut h, &[id], true);
+            set_visibility(&mut backend, &[id], false);
+            let hidden = full(&mut backend);
+            set_visibility(&mut backend, &[id], true);
             let saved = all.saturating_sub(hidden);
-            r.add(format!("  hide {name}"), saved, None, format!("saves {}", pct(saved)));
+            report.add(format!("  hide {name}"), saved, None, format!("saves {}", percentage(saved)));
         }
     }
-    r.finish();
+
+    report.finish();
 }
 
-/// Median of three cold composites of set `ts` (the other sets stay clean).
-fn cold_median(h: &mut Headless, ts: usize) -> Duration {
+/// Median of three cold composites of set `texture_set` (the other sets stay clean).
+fn cold_median(backend: &mut Headless, texture_set: usize) -> Duration {
     let mut runs: Vec<Duration> = (0..3)
         .map(|_| {
-            invalidate_set(&mut h.session, ts, false);
-            let t = Instant::now();
-            h.session.update();
-            t.elapsed()
+            invalidate_set(&mut backend.session, texture_set, false);
+            let start = Instant::now();
+            backend.session.update();
+            start.elapsed()
         })
         .collect();
     runs.sort();
+
     runs[1]
 }
 
@@ -389,54 +371,67 @@ fn cold_median(h: &mut Headless, ts: usize) -> Duration {
 #[ignore]
 fn composite_per_effect() {
     use texturecraft_engine::core::{LayerKind, Source};
-    let mut r = Report::new("composite_per_effect");
-    let mut h = sample(1024);
-    let only: Option<Vec<String>> = std::env::var("TC_PERF_LAYERS").ok().map(|v| v.split(',').map(|s| s.trim().to_string()).collect());
-    for ts in 0..h.session.set_count() {
-        h.session.active_set = ts;
-        cold_median(&mut h, ts); // the thread pool and lazily built inputs
-        let all = cold_median(&mut h, ts);
-        r.add(format!("set {ts} ({}), cold", h.session.doc.project.texture_sets[ts].name), all, None, "");
-        let pct = |d: Duration| format!("{:.0}% of the set", 100.0 * ms(d) / ms(all).max(1e-3));
-        for (id, _) in h.session.doc.project.walk(ts) {
-            let layer = h.session.doc.project.layer(id).unwrap().clone();
+
+    let mut report = Report::new("composite_per_effect");
+    let mut backend = sample(1024);
+    let selected_layers: Option<Vec<String>> = std::env::var("TC_PERF_LAYERS").ok().map(|v| v.split(',').map(|name| name.trim().to_string()).collect());
+
+    for texture_set in 0..backend.session.set_count() {
+        backend.session.active_set = texture_set;
+
+        // Warm the thread pool and lazily built inputs before timing
+        cold_median(&mut backend, texture_set);
+        let all = cold_median(&mut backend, texture_set);
+        report.add(format!("set {texture_set} ({}), cold", backend.session.doc.project.texture_sets[texture_set].name), all, None, "");
+        let percentage = |d: Duration| format!("{:.0}% of the set", 100.0 * ms(d) / ms(all).max(1e-3));
+
+        for (id, _) in backend.session.doc.project.walk(texture_set) {
+            let layer = backend.session.doc.project.layer(id).unwrap().clone();
             let LayerKind::Fill(fill) = &layer.kind else { continue };
-            if only.as_ref().is_some_and(|names| !names.contains(&layer.name)) {
+            if selected_layers.as_ref().is_some_and(|names| !names.contains(&layer.name)) {
                 continue;
             }
-            // (row label, command, params): each row is undone before the next.
+
+            // Undo each edit before measuring the next
             let mut edits: Vec<(String, &str, Value)> = Vec::new();
             if let Some(mask) = &layer.mask {
                 edits.push(("mask off".into(), "mask.toggle", json!({"layer": id.0, "enabled": false})));
-                for (i, e) in mask.effects.iter().enumerate() {
-                    let what = match &e.kind {
-                        texturecraft_engine::core::EffectKind::Generator(g) => format!("{:?} generator", g.kind),
+                for (index, effect) in mask.effects.iter().enumerate() {
+                    let description = match &effect.kind {
+                        texturecraft_engine::core::EffectKind::Generator(generator) => format!("{:?} generator", generator.kind),
                         texturecraft_engine::core::EffectKind::Fill { source: Source::Procedural { pattern, .. }, .. } => {
                             format!("{:?} pattern (scale {})", pattern.kind, pattern.scale)
                         }
-                        k => format!("{k:?}").chars().take(40).collect(),
+                        kind => format!("{kind:?}").chars().take(40).collect(),
                     };
-                    edits.push((format!("mask effect {i}: {what}, {:?}", e.blend), "effect.set", json!({"effect": e.id.0, "visible": false})));
+                    edits.push((
+                        format!("mask effect {index}: {description}, {:?}", effect.blend),
+                        "effect.set",
+                        json!({"effect": effect.id.0, "visible": false}),
+                    ));
                 }
             }
+
             for (channel, source) in &fill.sources {
                 if let Source::Procedural { pattern, low, .. } = source {
                     let value = if channel.components() == 3 { json!({"color": low}) } else { json!({"value": low[0]}) };
-                    let mut p = json!({"layer": id.0, "channel": channel});
-                    p.as_object_mut().unwrap().extend(value.as_object().unwrap().clone());
-                    edits.push((format!("{channel:?}: {:?} (scale {}) → uniform", pattern.kind, pattern.scale), "layer.fill.set", p));
+                    let mut params = json!({"layer": id.0, "channel": channel});
+                    params.as_object_mut().unwrap().extend(value.as_object().unwrap().clone());
+                    edits.push((format!("{channel:?}: {:?} (scale {}) → uniform", pattern.kind, pattern.scale), "layer.fill.set", params));
                 }
             }
-            for (label, cmd, p) in edits {
-                h.command_run(cmd, p).unwrap();
-                let took = cold_median(&mut h, ts);
-                h.command_run("edit.undo", Value::Null).unwrap();
+
+            for (label, command, params) in edits {
+                backend.command_run(command, params).unwrap();
+                let took = cold_median(&mut backend, texture_set);
+                backend.command_run("edit.undo", Value::Null).unwrap();
                 let saved = all.saturating_sub(took);
-                r.add(format!("{} / {label}", layer.name), saved, None, format!("saves {}", pct(saved)));
+                report.add(format!("{} / {label}", layer.name), saved, None, format!("saves {}", percentage(saved)));
             }
         }
     }
-    r.finish();
+
+    report.finish();
 }
 
 /// The smart materials project every pattern triplanar (sharpness 8), which evaluates the
@@ -446,28 +441,31 @@ fn composite_per_effect() {
 #[test]
 #[ignore]
 fn triplanar_skippable_planes() {
-    let h = sample(1024);
-    let s = &h.session;
+    let backend = sample(1024);
+    let session = &backend.session;
     println!("\n=== triplanar_skippable_planes (sharpness 8)");
-    for ts in 0..s.set_count() {
-        let g = &s.caches[ts].gbuf;
+
+    for texture_set in 0..session.set_count() {
+        let gbuffer = &session.caches[texture_set].gbuf;
         let (mut planes, mut under_u16, mut under_u8, mut one_plane) = (0usize, 0usize, 0usize, 0usize);
-        for i in 0..(g.width * g.height) as usize {
-            let Some(surf) = g.surface(&s.mesh, i) else { continue };
-            let w = surf.nrm.abs().powf(8.0);
-            let w = w / (w.x + w.y + w.z).max(1e-6);
-            let small = w.to_array().map(|w| (w < 1.0 / 65535.0, w < 1.0 / 255.0));
+
+        for index in 0..(gbuffer.width * gbuffer.height) as usize {
+            let Some(surface) = gbuffer.surface(&session.mesh, index) else { continue };
+            let weights = surface.nrm.abs().powf(8.0);
+            let weights = weights / (weights.x + weights.y + weights.z).max(1e-6);
+            let small = weights.to_array().map(|weight| (weight < 1.0 / 65535.0, weight < 1.0 / 255.0));
             planes += 3;
-            under_u16 += small.iter().filter(|s| s.0).count();
-            under_u8 += small.iter().filter(|s| s.1).count();
-            one_plane += usize::from(small.iter().filter(|s| s.0).count() == 2);
+            under_u16 += small.iter().filter(|weight| weight.0).count();
+            under_u8 += small.iter().filter(|weight| weight.1).count();
+            one_plane += usize::from(small.iter().filter(|weight| weight.0).count() == 2);
         }
-        let pct = |n: usize, of: usize| 100.0 * n as f64 / of.max(1) as f64;
+
+        let percentage = |count: usize, total: usize| 100.0 * count as f64 / total.max(1) as f64;
         println!(
-            "  set {ts}: {:.0}% of plane evaluations weigh < 1/65535, {:.0}% < 1/255; {:.0}% of texels need one plane only",
-            pct(under_u16, planes),
-            pct(under_u8, planes),
-            pct(one_plane, planes / 3)
+            "  set {texture_set}: {:.0}% of plane evaluations weigh < 1/65535, {:.0}% < 1/255; {:.0}% of texels need one plane only",
+            percentage(under_u16, planes),
+            percentage(under_u8, planes),
+            percentage(one_plane, planes / 3)
         );
     }
 }
@@ -477,37 +475,45 @@ fn triplanar_skippable_planes() {
 #[test]
 #[ignore]
 fn composite_painting_frames() {
-    let mut r = Report::new("composite_painting_frames");
-    let mut h = sample(2048);
-    let s = &mut h.session;
-    display_all(s);
+    let mut report = Report::new("composite_painting_frames");
+    let mut backend = sample(2048);
+    let session = &mut backend.session;
+    display_all(session);
+
     for (size, brush) in [(0.02, "default brush"), (0.08, "large brush")] {
-        s.tool.brush.size = size;
-        let (mut stamp, mut comp, mut conv, mut worst, mut tiles) = (Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO, 0);
-        s.begin_stroke(Vec2::new(350.0, 400.0), s.viewport, 1.0).unwrap();
+        session.tool.brush.size = size;
+        let (mut stamping, mut compositing, mut conversion, mut worst, mut tiles) = (Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO, 0);
+        session.begin_stroke(Vec2::new(350.0, 400.0), session.viewport, 1.0).unwrap();
         let frames = 60;
         for i in 0..frames {
-            let p = Vec2::new(350.0 + i as f32 * 5.0, 400.0 + (i as f32 * 0.2).sin() * 60.0);
-            let t = Instant::now();
-            s.continue_stroke(p, 1.0);
-            let a = t.elapsed();
-            tiles += tiles_of(s);
-            let t = Instant::now();
-            s.update();
-            let b = t.elapsed();
-            let t = Instant::now();
-            display_all(s);
-            let c = t.elapsed();
-            (stamp, comp, conv, worst) = (stamp + a, comp + b, conv + c, worst.max(a + b + c));
+            let position = Vec2::new(350.0 + i as f32 * 5.0, 400.0 + (i as f32 * 0.2).sin() * 60.0);
+            let start = Instant::now();
+            session.continue_stroke(position, 1.0);
+            let stamp_time = start.elapsed();
+            tiles += tiles_of(session);
+
+            let start = Instant::now();
+            session.update();
+            let composite_time = start.elapsed();
+
+            let start = Instant::now();
+            display_all(session);
+            let conversion_time = start.elapsed();
+            stamping += stamp_time;
+            compositing += composite_time;
+            conversion += conversion_time;
+            worst = worst.max(stamp_time + composite_time + conversion_time);
         }
-        let f = frames as u32;
+
+        let frame_count = frames as u32;
         let note = format!("{:.0} dirty tiles/frame", tiles as f64 / frames as f64);
-        r.add(format!("{brush}: stamp per frame"), stamp / f, Some(8.0), "");
-        r.add(format!("{brush}: composite per frame"), comp / f, Some(16.0), note);
-        r.add(format!("{brush}: display per frame"), conv / f, Some(8.0), "");
-        r.add(format!("{brush}: worst frame"), worst, Some(50.0), "");
-        r.time(format!("{brush}: end_stroke"), Some(100.0), || s.end_stroke().unwrap());
-        r.time(format!("{brush}: recomposite after commit"), Some(200.0), || s.update());
+        report.add(format!("{brush}: stamp per frame"), stamping / frame_count, Some(8.0), "");
+        report.add(format!("{brush}: composite per frame"), compositing / frame_count, Some(16.0), note);
+        report.add(format!("{brush}: display per frame"), conversion / frame_count, Some(8.0), "");
+        report.add(format!("{brush}: worst frame"), worst, Some(50.0), "");
+        report.time(format!("{brush}: end_stroke"), Some(100.0), || session.end_stroke().unwrap());
+        report.time(format!("{brush}: recomposite after commit"), Some(200.0), || session.update());
     }
-    r.finish();
+
+    report.finish();
 }

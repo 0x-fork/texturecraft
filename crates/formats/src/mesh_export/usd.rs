@@ -6,7 +6,6 @@
 //! UsdUVTexture shaders. Meters, Y up.
 
 use std::fmt::Write as _;
-use std::io::Write as _;
 
 use texturecraft_core::{Channel, NormalFormat};
 use texturecraft_geom::Mesh;
@@ -166,60 +165,64 @@ fn identifier(s: &str, taken: &mut Vec<String>) -> String {
 /// The export scene: `/<name>` with the `Mesh` and `Materials`. `files[m]` are the texture
 /// file names (by slot) of material `m`.
 fn scene(mesh: &Mesh, name: &str, files: &[Vec<(usize, String)>]) -> Result<UsdLayer> {
-    let n = mesh.positions.len();
-    if n == 0 || mesh.indices.len() < 3 {
+    let vertex_count = mesh.positions.len();
+    if vertex_count == 0 || mesh.indices.len() < 3 {
         return Err(FormatError::Invalid("the mesh is empty".into()));
     }
+
     let ints =
         |v: &[u32]| v.iter().map(|&i| i32::try_from(i).map_err(|_| FormatError::TooLarge("vertex index beyond 2^31".into()))).collect::<Result<Vec<i32>>>();
     let mut taken = Vec::new();
     let root_name = identifier(name, &mut taken);
     let mut root = UsdPrim::new(&root_name, "Xform");
-    let mut geo = UsdPrim::new(&identifier(&format!("{name}_mesh"), &mut taken), "Mesh");
-    let mat_names: Vec<String> = mesh.materials.iter().map(|m| identifier(m, &mut taken)).collect();
-    let mat_path = |m: usize| mat_names.get(m).map(|id| format!("/{root_name}/Materials/{id}"));
+    let mut geometry = UsdPrim::new(&identifier(&format!("{name}_mesh"), &mut taken), "Mesh");
+    let material_names: Vec<String> = mesh.materials.iter().map(|m| identifier(m, &mut taken)).collect();
+    let material_path = |m: usize| material_names.get(m).map(|id| format!("/{root_name}/Materials/{id}"));
     let (lo, hi) = mesh.bounds();
-    // Faces in submesh order; subsets index them.
-    let mut tris: Vec<u32> = Vec::with_capacity(mesh.indices.len());
+
+    // Faces in submesh order; subsets index them
+    let mut indices: Vec<u32> = Vec::with_capacity(mesh.indices.len());
     let mut faces_of: Vec<Vec<i32>> = vec![Vec::new(); mesh.materials.len()];
-    for sm in parts(mesh, name) {
-        let range = mesh.indices.get(sm.start as usize..(sm.start as usize).saturating_add(sm.count as usize)).unwrap_or_default();
-        for t in range.chunks_exact(3) {
-            if let Some(f) = faces_of.get_mut(sm.material) {
-                f.push(i32::try_from(tris.len() / 3).map_err(|_| FormatError::TooLarge("triangle count".into()))?);
+    for part in parts(mesh, name) {
+        let range = mesh.indices.get(part.start as usize..(part.start as usize).saturating_add(part.count as usize)).unwrap_or_default();
+        for t in range.as_chunks::<3>().0 {
+            if let Some(f) = faces_of.get_mut(part.material) {
+                f.push(i32::try_from(indices.len() / 3).map_err(|_| FormatError::TooLarge("triangle count".into()))?);
             }
-            tris.extend_from_slice(t);
+            indices.extend_from_slice(t);
         }
     }
+
     let vertex = |mut a: UsdAttr| {
         a.interpolation = Some("vertex");
         a
     };
-    geo.attrs = vec![
+    geometry.attrs = vec![
         UsdAttr::new("extent", "float3[]", Some(UsdValue::Vec3fs(vec![lo.to_array(), hi.to_array()]))),
-        UsdAttr::new("faceVertexCounts", "int[]", Some(UsdValue::Ints(vec![3; tris.len() / 3]))),
-        UsdAttr::new("faceVertexIndices", "int[]", Some(UsdValue::Ints(ints(&tris)?))),
+        UsdAttr::new("faceVertexCounts", "int[]", Some(UsdValue::Ints(vec![3; indices.len() / 3]))),
+        UsdAttr::new("faceVertexIndices", "int[]", Some(UsdValue::Ints(ints(&indices)?))),
         UsdAttr::new("points", "point3f[]", Some(UsdValue::Vec3fs(mesh.positions.iter().map(|p| p.to_array()).collect()))),
         UsdAttr::new("subdivisionScheme", "token", Some(UsdValue::Token("none".into()))).uniform(),
     ];
-    if mesh.normals.len() == n {
-        geo.attrs.push(vertex(UsdAttr::new("normals", "normal3f[]", Some(UsdValue::Vec3fs(mesh.normals.iter().map(|v| v.to_array()).collect())))));
+    if mesh.normals.len() == vertex_count {
+        geometry.attrs.push(vertex(UsdAttr::new("normals", "normal3f[]", Some(UsdValue::Vec3fs(mesh.normals.iter().map(|v| v.to_array()).collect())))));
     }
-    if mesh.uvs.len() == n {
-        // USD's st origin is bottom-left.
+    if mesh.uvs.len() == vertex_count {
+        // USD's st origin is bottom-left
         let st = mesh.uvs.iter().map(|t| [t.x, 1.0 - t.y]).collect();
-        geo.attrs.push(vertex(UsdAttr::new("primvars:st", "texCoord2f[]", Some(UsdValue::Vec2fs(st)))));
+        geometry.attrs.push(vertex(UsdAttr::new("primvars:st", "texCoord2f[]", Some(UsdValue::Vec2fs(st)))));
     }
+
     let used: Vec<usize> = (0..mesh.materials.len()).filter(|m| faces_of.get(*m).is_some_and(|f| !f.is_empty())).collect();
     match used.as_slice() {
         [] => {}
         [m] => {
-            geo.binding_api = true;
-            geo.attrs.extend(mat_path(*m).map(|p| UsdAttr::rel("material:binding", p)));
+            geometry.binding_api = true;
+            geometry.attrs.extend(material_path(*m).map(|p| UsdAttr::rel("material:binding", p)));
         }
         _ => {
             for &m in &used {
-                let (Some(id), Some(path)) = (mat_names.get(m), mat_path(m)) else { continue };
+                let (Some(id), Some(path)) = (material_names.get(m), material_path(m)) else { continue };
                 let mut subset = UsdPrim::new(id, "GeomSubset");
                 subset.binding_api = true;
                 subset.attrs = vec![
@@ -228,18 +231,20 @@ fn scene(mesh: &Mesh, name: &str, files: &[Vec<(usize, String)>]) -> Result<UsdL
                     UsdAttr::new("indices", "int[]", Some(UsdValue::Ints(faces_of.get(m).cloned().unwrap_or_default()))),
                     UsdAttr::rel("material:binding", path),
                 ];
-                geo.children.push(subset);
+                geometry.children.push(subset);
             }
         }
     }
-    root.children.push(geo);
+
+    root.children.push(geometry);
     let mut materials = UsdPrim::new("Materials", "Scope");
-    for (m, id) in mat_names.iter().enumerate() {
+    for (m, id) in material_names.iter().enumerate() {
         materials.children.push(material(&format!("/{root_name}/Materials/{id}"), id, files.get(m).map_or(&[][..], Vec::as_slice)));
     }
     if !materials.children.is_empty() {
         root.children.push(materials);
     }
+
     Ok(UsdLayer { root })
 }
 
@@ -338,14 +343,12 @@ pub(crate) fn material_maps(mesh: &Mesh, stem: &str, textures: &[Vec<ExportedFil
 
 /// A usdz package: the layer first, every entry stored uncompressed at a 64-byte aligned offset.
 pub(crate) fn usdz(layer_name: &str, layer: &[u8], files: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
-    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).with_alignment(64);
-    let err = |e: zip::result::ZipError| FormatError::Invalid(format!("usdz package: {e}"));
+    let mut zip = craft_zip_usdz::Writer::new();
+    let err = |e| FormatError::Invalid(format!("usdz package: {e}"));
     for (name, bytes) in std::iter::once((layer_name, layer)).chain(files.iter().map(|(n, b)| (n.as_str(), b.as_slice()))) {
-        zip.start_file(name, opts).map_err(err)?;
-        zip.write_all(bytes)?;
+        zip.add_stored_aligned(name, bytes, 64).map_err(err)?;
     }
-    Ok(zip.finish().map_err(err)?.into_inner())
+    zip.finish().map_err(err)
 }
 
 /// Text of a value as usda writes it.
@@ -432,4 +435,42 @@ pub(crate) fn usda(layer: &UsdLayer) -> String {
     );
     usda_prim(&mut s, &layer.root, 0);
     s
+}
+
+#[cfg(test)]
+mod aligned_package_tests {
+    use super::*;
+    use std::io::{Cursor, Read, Write};
+
+    #[test]
+    fn shared_usdz_keeps_layer_first_and_exact_archive_bytes() {
+        let files = vec![("textures/color.png".to_owned(), vec![0, 1, 255]), ("empty".to_owned(), Vec::new())];
+        let bytes = usdz("scene.usdc", b"PXR-USDC", &files).unwrap();
+        let mut previous = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).with_alignment(64);
+        for (name, data) in std::iter::once(("scene.usdc", b"PXR-USDC".as_slice())).chain(files.iter().map(|(n, b)| (n.as_str(), b.as_slice()))) {
+            previous.start_file(name, opts).unwrap();
+            previous.write_all(data).unwrap();
+        }
+        assert_eq!(bytes, previous.finish().unwrap().into_inner());
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(archive.len(), 3);
+        for (i, (name, data)) in
+            std::iter::once(("scene.usdc", b"PXR-USDC".as_slice())).chain(files.iter().map(|(n, b)| (n.as_str(), b.as_slice()))).enumerate()
+        {
+            let mut entry = archive.by_index(i).unwrap();
+            assert_eq!(entry.name().unwrap(), name);
+            assert_eq!(entry.compression(), zip::CompressionMethod::Stored);
+            assert_eq!(entry.data_start().unwrap() % 64, 0);
+            let mut actual = Vec::new();
+            entry.read_to_end(&mut actual).unwrap();
+            assert_eq!(actual, data);
+        }
+    }
+
+    #[test]
+    fn shared_usdz_rejects_duplicate_layer_name() {
+        let err = usdz("scene.usdc", b"PXR-USDC", &[("scene.usdc".to_owned(), Vec::new())]).unwrap_err();
+        assert!(matches!(err, FormatError::Invalid(ref why) if why.starts_with("usdz package:")));
+    }
 }
