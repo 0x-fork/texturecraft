@@ -3,8 +3,8 @@
 
 use serde_json::{Value, json};
 #[cfg(not(target_arch = "wasm32"))]
-use texturecraft_core::PROJECT_EXT;
-use texturecraft_core::{NormalFormat, Project, TextureSet};
+use texturecraft_core::{NormalFormat, PROJECT_EXT};
+use texturecraft_core::{Project, TextureSet};
 use texturecraft_formats::{ExportInput, ExportOptions, ExportedFile, FileFormat, Padding, ProjectFile};
 use texturecraft_geom::{Mesh, primitives};
 
@@ -36,6 +36,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path?, preserveStrokes?: bool (painted pixels follow the surface when the UVs changed; default false)} → {preserved?: texels re-projected}",
             always,
             reimport
+        ),
+        cmd!(
+            "file.changeMesh",
+            "Change mesh",
+            [],
+            None,
+            "{path: the new mesh file, preserveStrokes?: bool (painted pixels follow the surface where the UVs differ; default true)} → {preserved?: texels re-projected}. Keeps layers, texture sets and settings; texture sets map to the new mesh by material index",
+            always,
+            change_mesh
         ),
         cmd!(
             "file.exportTextures",
@@ -132,7 +141,7 @@ impl Session {
     fn material_files(&mut self, opts: ExportOptions, tiled: bool, materials: usize) -> Result<Vec<Vec<ExportedFile>>> {
         let opts = ExportOptions { atlas: true, ..opts };
         (0..materials)
-            .map(|m| match self.doc.project.texture_sets.iter().position(|t| t.material == m) {
+            .map(|m| match self.texture_set_of_material(m) {
                 Some(ts) if tiled || self.doc.project.texture_sets.get(ts).is_some_and(|t| t.tile_grid().is_none()) => self.export_files(&[ts], &opts),
                 _ => Ok(Vec::new()),
             })
@@ -331,6 +340,11 @@ mod native {
         strp(p, key).filter(|s| !s.trim().is_empty()).ok_or_else(|| bad(cmd, format!("`{key}` is required")))
     }
 
+    /// `path` made absolute (as given when that fails), for [`Project::mesh_path`].
+    pub fn absolute(path: &str) -> String {
+        std::path::absolute(Path::new(path)).map_or_else(|_| path.to_string(), |p| p.display().to_string())
+    }
+
     /// Mesh file `path` with the files it references next to it folded in (a `.gltf`'s buffers
     /// and images, a loose USD layer's textures), ready to import and store in the project.
     pub fn read_mesh(cmd: &str, path: &str) -> Result<texturecraft_formats::MeshFile> {
@@ -349,6 +363,7 @@ mod native {
         } else {
             let f = read_mesh("file.open", path)?;
             let mut s = Session::from_mesh_bytes(&f.name, &f.bytes, 2048, &stem_of(path))?;
+            s.doc.project.mesh_path = absolute(path);
             s.log.extend(f.warnings);
             Ok(s)
         }
@@ -367,8 +382,10 @@ mod native {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{open_path, read_mesh};
+pub use native::{absolute, open_path, read_mesh};
 
+/// `file.new {mesh, name?, resolution?, uvTiles?, template?}`: a new project from the mesh file `mesh`,
+/// remembering its path for Reimport mesh.
 #[cfg(not(target_arch = "wasm32"))]
 fn new_from_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     let path = native::path_param(p, "mesh", "file.new")?;
@@ -377,6 +394,7 @@ fn new_from_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     let res = u64p(p, "resolution").or(template.as_ref().map(|t| u64::from(t.resolution))).unwrap_or(2048);
     let name = strp(p, "name").map(str::to_string).unwrap_or_else(|| stem_of(path));
     let mut next = Session::from_mesh_bytes_tiled(&f.name, &f.bytes, u32::try_from(res).unwrap_or(0), &name, crate::commands::boolp(p, "uvTiles"))?;
+    next.doc.project.mesh_path = native::absolute(path);
     next.log.extend(f.warnings);
     if let Some(t) = &template {
         next.apply_template(t);
@@ -414,14 +432,38 @@ fn save_copy(s: &mut Session, p: &Value) -> Result<Value> {
     native::save_to(s, &path, false)
 }
 
+/// `file.reimportMesh {path?, preserveStrokes?}`: reimport from `path`, or from the project's own
+/// copy of the mesh when there is none. A path given is remembered as the project's mesh path.
+/// The remembered path is never read implicitly (a project file could point it anywhere on the
+/// host); callers that may read host files pass [`Session::remembered_mesh_path`] as `path`.
 #[cfg(not(target_arch = "wasm32"))]
 fn reimport(s: &mut Session, p: &Value) -> Result<Value> {
-    let file = strp(p, "path").map(|path| native::read_mesh("file.reimportMesh", path)).transpose()?;
-    s.reimport_mesh(file, crate::commands::boolp(p, "preserveStrokes").unwrap_or(false))
+    let path = strp(p, "path");
+    let file = path.map(|path| native::read_mesh("file.reimportMesh", path)).transpose()?;
+    let reply = s.reimport_mesh(file, crate::commands::boolp(p, "preserveStrokes").unwrap_or(false))?;
+    if let Some(path) = path {
+        s.doc.project.mesh_path = native::absolute(path);
+    }
+    Ok(reply)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn change_mesh(s: &mut Session, p: &Value) -> Result<Value> {
+    let path = native::path_param(p, "path", "file.changeMesh")?;
+    let file = native::read_mesh("file.changeMesh", path)?;
+    let reply = s.reimport_mesh(Some(file), crate::commands::boolp(p, "preserveStrokes").unwrap_or(true))?;
+    // Only after the swap succeeded: Reimport mesh and Save keep following the new file.
+    s.doc.project.mesh_path = native::absolute(path);
+    Ok(reply)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Session {
+    /// The file the mesh was imported from, when it is still there: what Reimport mesh reads again.
+    pub fn remembered_mesh_path(&self) -> Option<&str> {
+        Some(self.doc.project.mesh_path.as_str()).filter(|m| !m.is_empty() && std::path::Path::new(m).is_file())
+    }
+
     /// Replace the mesh with `file` (or re-read the project's own copy) and keep the project:
     /// texture sets map by material index. Nothing changes unless the new mesh fits the project.
     /// With `preserve_strokes`, painted pixels follow the surface where the UVs changed. Replies
@@ -448,6 +490,21 @@ impl Session {
         let mut next = Session::new(doc, mesh, source)?;
         next.log.extend(warnings);
         next.path = self.path.clone();
+        next.sync_images();
+        // The high polys and the skew map stay. The cage is sampled by triangle index and
+        // barycentrics, so it stays only for an identical mesh; the low poly's base colours are
+        // read again from the new mesh.
+        next.bake_meshes = self.bake_meshes.clone();
+        next.bake_meshes.low_base_color = Default::default();
+        if next.bake_meshes.cage.is_some() && *next.mesh != *self.mesh {
+            next.bake_meshes.cage = None;
+            next.log.push("the cage mesh was dropped: the low-poly mesh changed".into());
+        }
+        if self.doc.bake_paint.keys().any(|(_, target)| *target == texturecraft_core::BakePaintTarget::Skew) && self.source.uvs != next.source.uvs {
+            next.log.push("the skew map is laid over the old UV layout; check it in Bake mode".into());
+        }
+        next.modified = true;
+        next.project_id = self.project_id;
         let preserved = preserve_strokes.then(|| crate::preserve::preserve_strokes(self, &mut next));
         self.switch_to(next);
         Ok(preserved.map_or(Value::Null, |n| json!({ "preserved": n })))
@@ -596,6 +653,8 @@ use unsupported as save_copy;
 #[cfg(target_arch = "wasm32")]
 use unsupported as reimport;
 #[cfg(target_arch = "wasm32")]
+use unsupported as change_mesh;
+#[cfg(target_arch = "wasm32")]
 use unsupported as export_textures;
 #[cfg(target_arch = "wasm32")]
 use unsupported as export_mesh;
@@ -609,6 +668,59 @@ fn close(s: &mut Session, _: &Value) -> Result<Value> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    /// Reimport mesh reads the mesh file again from where it was imported, so a change saved to
+    /// the file since shows up (it used to re-read the project's own copy and change nothing).
+    #[test]
+    fn reimport_picks_up_changes_saved_to_the_mesh_file() {
+        let dir = std::env::temp_dir().join(format!("tc_reimport_disk_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("tri.obj");
+        let obj = |z: f32| {
+            format!(
+                "v -1 -1 {z}
+v 1 -1 0
+v 1 1 0
+vt 0 0
+vt 1 0
+vt 1 1
+f 1/1 2/2 3/3
+"
+            )
+        };
+        std::fs::write(&file, obj(0.0)).unwrap();
+        let path = file.display().to_string();
+        let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        crate::execute(&mut s, "file.new", &json!({"mesh": path, "resolution": 128})).unwrap();
+        let low = |s: &Session| s.mesh.positions.iter().map(|p| p.z.abs()).fold(0.0_f32, f32::max);
+        assert_eq!(low(&s), 0.0);
+        // Edit the file, save the project, reopen it, then reimport with no path.
+        std::fs::write(&file, obj(0.5)).unwrap();
+        let mut reopened = Session::from_project_bytes(&s.to_project_bytes().unwrap()).unwrap();
+        assert_eq!(low(&reopened), 0.0, "the project still holds the old copy");
+        // A command without a path never reads the remembered host path (automation allows it).
+        crate::execute(&mut reopened, "file.reimportMesh", &Value::Null).unwrap();
+        assert_eq!(low(&reopened), 0.0, "no path: the project's own copy");
+        let remembered = reopened.remembered_mesh_path().map(str::to_string).expect("the imported file is remembered");
+        crate::execute(&mut reopened, "file.reimportMesh", &json!({ "path": remembered })).unwrap();
+        assert!(low(&reopened) > 0.0, "the edited file must be read again");
+        // The file gone: nothing is remembered, so the UI asks for one.
+        std::fs::remove_file(&file).unwrap();
+        assert!(reopened.remembered_mesh_path().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reimporting_a_saved_project_marks_it_modified() {
+        let obj = b"v -1 -1 0\nv 1 -1 0\nv 1 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nf 1/1 2/2 3/3\n";
+        let original = Session::from_mesh_bytes("mesh.obj", obj, 128, "mesh").unwrap();
+        let mut saved = Session::from_project_bytes(&original.to_project_bytes().unwrap()).unwrap();
+        assert!(!saved.modified);
+        let project = saved.project_id;
+        crate::execute(&mut saved, "file.reimportMesh", &Value::Null).unwrap();
+        assert!(saved.modified, "reimport must trigger the unsaved-changes prompt");
+        assert_eq!(saved.project_id, project, "a reimport stays the same project");
+    }
 
     #[test]
     fn export_mesh_writes_obj_by_default_and_textured_glb() {
@@ -684,6 +796,82 @@ mod tests {
             assert!(t.is_file() && text.contains(&format!("@./{}@", t.file_name().unwrap().to_str().unwrap())));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A project built on one mesh moves to another mesh file with its layers intact, even when
+    /// it carries its own copy of the mesh (a plain reimport would only re-read that copy).
+    #[test]
+    fn change_mesh_swaps_the_mesh_and_keeps_the_layers() {
+        let dir = std::env::temp_dir().join(format!("tc_change_mesh_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let quad = dir.join("quad.obj");
+        std::fs::write(&quad, "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 1/1 2/2 3/3 4/4\n").unwrap();
+        let tri = dir.join("tri.obj");
+        std::fs::write(&tri, "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n").unwrap();
+        let mut s = Session::from_mesh_bytes("quad.obj", &std::fs::read(&quad).unwrap(), 128, "quad").unwrap();
+        crate::execute(&mut s, "layer.add.fill", &json!({"color": [1.0, 0.0, 0.0]})).unwrap();
+        let layers = s.doc.project.layers.len();
+        assert!(crate::execute(&mut s, "file.changeMesh", &json!({})).is_err(), "a path is required");
+        crate::execute(&mut s, "file.changeMesh", &json!({"path": tri.display().to_string()})).unwrap();
+        assert_eq!(s.mesh.triangle_count(), 1, "the new mesh is in use");
+        assert_eq!(s.doc.project.mesh_file, "tri.obj");
+        assert_eq!(s.doc.project.layers.len(), layers, "the layers stay");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Open A, change to B, edit B on disk: Reimport mesh (also after save and reopen) must read B,
+    /// not A. A failed change leaves the remembered path alone.
+    #[test]
+    fn change_mesh_remembers_the_new_file_for_reimport() {
+        let dir = std::env::temp_dir().join(format!("tc_change_mesh_path_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let obj = |x: f32| format!("v 0 0 0\nv {x} 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n");
+        let (a, b) = (dir.join("a.obj"), dir.join("b.obj"));
+        std::fs::write(&a, obj(1.0)).unwrap();
+        std::fs::write(&b, obj(2.0)).unwrap();
+        let width = |s: &Session| s.mesh.positions.iter().map(|p| p.x).fold(0.0_f32, f32::max);
+        let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        crate::execute(&mut s, "file.new", &json!({"mesh": a.display().to_string(), "resolution": 128})).unwrap();
+        let a_abs = s.remembered_mesh_path().map(str::to_string).unwrap();
+        // A failed change (unreadable file) keeps A.
+        let missing = dir.join("missing.obj");
+        assert!(crate::execute(&mut s, "file.changeMesh", &json!({"path": missing.display().to_string()})).is_err());
+        assert_eq!(s.remembered_mesh_path(), Some(a_abs.as_str()));
+        crate::execute(&mut s, "file.changeMesh", &json!({"path": b.display().to_string()})).unwrap();
+        assert_eq!(width(&s), 2.0);
+        let b_abs = s.remembered_mesh_path().map(str::to_string).expect("B is remembered");
+        assert_ne!(a_abs, b_abs);
+        // The remembered path survives save and reopen.
+        let mut reopened = Session::from_project_bytes(&s.to_project_bytes().unwrap()).unwrap();
+        assert_eq!(reopened.remembered_mesh_path(), Some(b_abs.as_str()));
+        // Edit B, then Reimport from the remembered path: B's edits arrive, not A.
+        std::fs::write(&b, obj(3.0)).unwrap();
+        let remembered = reopened.remembered_mesh_path().map(str::to_string).unwrap();
+        crate::execute(&mut reopened, "file.reimportMesh", &json!({"path": remembered})).unwrap();
+        assert_eq!(width(&reopened), 3.0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn change_mesh_resets_base_colours_and_drops_a_cage_of_another_mesh() {
+        let dir = std::env::temp_dir().join(format!("tc_change_mesh_cage_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.obj");
+        std::fs::write(&a, "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n").unwrap();
+        // Same triangle count, other vertices.
+        let b = dir.join("b.obj");
+        std::fs::write(&b, "v 0 0 0\nv 2 0 0\nv 0 2 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n").unwrap();
+        let mut s = Session::from_mesh_bytes("a.obj", &std::fs::read(&a).unwrap(), 128, "a").unwrap();
+        let cage = crate::bake::BakeMesh { name: "cage".into(), bytes: Default::default(), mesh: s.mesh.clone(), base_color: Vec::new() };
+        s.bake_meshes.cage = Some(cage);
+        let _ = s.bake_meshes.low_base_color.set(Err("old".into()));
+        // The same mesh again keeps the cage but not the cached colours.
+        crate::execute(&mut s, "file.changeMesh", &json!({"path": a.display().to_string()})).unwrap();
+        assert!(s.bake_meshes.cage.is_some());
+        assert!(s.bake_meshes.low_base_color.get().is_none(), "the colours are read again");
+        crate::execute(&mut s, "file.changeMesh", &json!({"path": b.display().to_string()})).unwrap();
+        assert!(s.bake_meshes.cage.is_none(), "the cage was made for another mesh");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

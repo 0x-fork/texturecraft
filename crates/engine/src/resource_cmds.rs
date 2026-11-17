@@ -21,7 +21,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Add fill layer from image",
             [],
             None,
-            "{name, channel?: baseColor, projection?: uv|triplanar|planar, scale?}",
+            "{name (exact resource name with extension or unique stem), channel?: baseColor, projection?: uv|triplanar|planar, scale?}",
             always,
             add_image_fill
         ),
@@ -36,47 +36,49 @@ pub(crate) fn decoded(d: texturecraft_formats::DecodedImage) -> Arc<ImageRes> {
 }
 
 impl Session {
-    /// Add an image resource from bytes (one undo step); returns its unique, sanitized name.
+    /// Add an image resource from bytes (one undo step); returns its unique, sanitized name
     pub fn import_resource_bytes(&mut self, file_name: &str, bytes: Vec<u8>) -> Result<String> {
+        self.edit("Import resource", |session| session.add_image_resource(file_name, bytes, texturecraft_formats::MAX_RESOURCE_TEXELS))
+    }
+
+    /// Add an image within a decoded texel budget, inside the caller's edit
+    pub(crate) fn add_image_resource(&mut self, file_name: &str, bytes: Vec<u8>, max_texels: u64) -> Result<String> {
         if bytes.len() > MAX_BYTES {
             return Err(EngineError::Other(format!("{file_name} is larger than {} MB", MAX_BYTES >> 20)));
         }
-        let image = texturecraft_formats::decode_image(&bytes).map_err(|e| EngineError::Other(format!("{file_name}: {e}")))?;
-        let leaf = std::path::Path::new(file_name).file_name().and_then(|n| n.to_str()).unwrap_or("image");
+
+        let image = texturecraft_formats::decode_image_within(&bytes, max_texels).map_err(|error| EngineError::Other(format!("{file_name}: {error}")))?;
+        let leaf = std::path::Path::new(file_name).file_name().and_then(|name| name.to_str()).unwrap_or("image");
         let base = texturecraft_formats::sanitize_resource_name(leaf);
         let mut name = base.clone();
-        let mut n = 2;
+        let mut duplicate_index = 2;
         while self.doc.resources.contains_key(&name) {
-            name = format!("{n}_{base}");
-            n += 1;
+            name = format!("{duplicate_index}_{base}");
+            duplicate_index += 1;
         }
-        let key = name.clone();
-        self.edit("Import resource", |s| {
-            s.doc.resources.insert(key, Arc::new(bytes));
-            Ok(())
-        })?;
+
+        self.doc.resources.insert(name.clone(), Arc::new(bytes));
         self.images.insert(name.clone(), decoded(image));
+
         Ok(name)
     }
 
     /// Decode resources that are not decoded yet and forget removed ones (after undo, redo, load).
     pub fn sync_images(&mut self) {
-        let keep: Vec<String> = self.doc.resources.keys().cloned().collect();
-        self.images.retain(|k, _| keep.contains(k));
-        // Linked materials' packages are resources too, not images.
-        let missing: Vec<(String, Arc<Vec<u8>>)> = self
-            .doc
-            .resources
-            .iter()
-            .filter(|(k, _)| !self.images.contains_key(*k) && !k.ends_with(&format!(".{}", texturecraft_formats::mcmat::MCRAFT_EXT)))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        for (k, bytes) in missing {
-            match texturecraft_formats::decode_image(&bytes) {
-                Ok(d) => {
-                    self.images.insert(k, decoded(d));
+        self.images.retain(|name, _| self.doc.resources.contains_key(name));
+
+        // Linked material packages are resources but cannot be decoded as images
+        let package_suffix = format!(".{}", texturecraft_formats::mcmat::MCRAFT_EXT);
+        for (name, bytes) in &self.doc.resources {
+            if self.images.contains_key(name) || name.ends_with(&package_suffix) {
+                continue;
+            }
+
+            match texturecraft_formats::decode_image(bytes) {
+                Ok(image) => {
+                    self.images.insert(name.clone(), decoded(image));
                 }
-                Err(e) => self.log.push(format!("resource {k}: {e}")),
+                Err(error) => self.log.push(format!("resource {name}: {error}")),
             }
         }
     }
@@ -98,13 +100,42 @@ fn list(s: &Session) -> Value {
 #[cfg(not(target_arch = "wasm32"))]
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = strp(p, "path").ok_or_else(|| bad("resource.import", "`path` is required"))?;
-    let meta = std::fs::metadata(path).map_err(|e| bad("resource.import", format!("cannot read {path}: {e}")))?;
-    if meta.len() > MAX_BYTES as u64 {
-        return Err(bad("resource.import", format!("{path} is too large")));
-    }
-    let bytes = std::fs::read(path).map_err(|e| bad("resource.import", format!("cannot read {path}: {e}")))?;
+    let bytes = read_image_file("resource.import", path, MAX_BYTES as u64)?;
     let name = s.import_resource_bytes(path, bytes)?;
     Ok(json!({ "name": name }))
+}
+
+/// Read a regular image file within both the per-file cap and the caller's remaining byte budget
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_image_file(cmd: &str, path: &str, max_bytes: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+
+    let max_bytes = max_bytes.min(MAX_BYTES as u64);
+    let read_error = |error| bad(cmd, format!("cannot read {path}: {error}"));
+    let too_large = || bad(cmd, format!("{path} is too large (limit {max_bytes} bytes)"));
+    let metadata = std::fs::metadata(path).map_err(read_error)?;
+    // Pipes can block on open, and devices may never reach EOF
+    if !metadata.is_file() {
+        return Err(bad(cmd, format!("{path} is not a regular file")));
+    }
+    if metadata.len() > max_bytes {
+        return Err(too_large());
+    }
+
+    // Bound the read even if the file grows after the metadata check
+    let file = std::fs::File::open(path).map_err(read_error)?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(max_bytes + 1).read_to_end(&mut bytes).map_err(read_error)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(too_large());
+    }
+
+    Ok(bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn read_image_file(cmd: &str, _: &str, _: u64) -> Result<Vec<u8>> {
+    Err(bad(cmd, "file paths are not available in the browser"))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -147,11 +178,35 @@ fn remove_unused(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!({ "removed": unused }))
 }
 
-fn add_image_fill(s: &mut Session, p: &Value) -> Result<Value> {
-    let name = strp(p, "name").ok_or_else(|| bad("layer.add.image", "`name` is required"))?.to_string();
-    if !s.doc.resources.contains_key(&name) {
-        return Err(bad("layer.add.image", format!("no resource `{name}`")));
+#[cfg(not(target_arch = "wasm32"))]
+const IMPORT_HINT: &str = "resource.import";
+#[cfg(target_arch = "wasm32")]
+const IMPORT_HINT: &str = "File > Import resources";
+
+/// Resolve an image resource by exact name or unique file stem.
+fn resolve_resource_name(s: &Session, name: &str) -> Result<String> {
+    if s.images.contains_key(name) {
+        return Ok(name.to_string());
     }
+    let matches: Vec<&String> = s.images.keys().filter(|k| std::path::Path::new(k).file_stem().and_then(|stem| stem.to_str()) == Some(name)).collect();
+    match matches.as_slice() {
+        [single] => Ok((*single).clone()),
+        [] => {
+            let available: Vec<&str> = s.images.keys().map(String::as_str).collect();
+            let hint =
+                if available.is_empty() { format!(" (no resources imported: use {IMPORT_HINT})") } else { format!(" (available: {})", available.join(", ")) };
+            Err(bad("layer.add.image", format!("no resource `{name}`{hint}")))
+        }
+        multiple => {
+            let matches_str = multiple.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ");
+            Err(bad("layer.add.image", format!("ambiguous resource `{name}` matches {matches_str}: give the full name with extension")))
+        }
+    }
+}
+
+fn add_image_fill(s: &mut Session, p: &Value) -> Result<Value> {
+    let raw_name = strp(p, "name").ok_or_else(|| bad("layer.add.image", "`name` is required"))?;
+    let name = resolve_resource_name(s, raw_name)?;
     let ch = channel_param("layer.add.image", p, "channel")?.unwrap_or(Channel::BaseColor);
     let projection = crate::layer_cmds::projection_from(p, "layer.add.image", None)?;
     let ts = s.ts();
@@ -164,4 +219,25 @@ fn add_image_fill(s: &mut Session, p: &Value) -> Result<Value> {
         crate::layer_cmds::insert_selected(s, Layer::new(id, layer_name, LayerKind::Fill(fill), &[ch]))
     })?;
     Ok(json!({ "layer": id.0 }))
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_reads_obey_the_remaining_byte_budget() {
+        let path = std::env::temp_dir().join(format!("texturecraft-read-image-{}.png", std::process::id()));
+        std::fs::write(&path, b"1234").unwrap();
+        let name = path.to_str().unwrap();
+        assert!(read_image_file("test", name, 3).unwrap_err().to_string().contains("too large"));
+        assert_eq!(read_image_file("test", name, 4).unwrap(), b"1234");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn devices_are_rejected_before_reading() {
+        assert!(read_image_file("test", "/dev/null", 16).unwrap_err().to_string().contains("not a regular file"));
+    }
 }
