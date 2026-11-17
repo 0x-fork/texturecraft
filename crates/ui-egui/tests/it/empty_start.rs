@@ -84,7 +84,7 @@ fn project_items_are_disabled_without_a_project() {
     ] {
         assert!(!menus::enabled(app, id), "{id} needs a project");
     }
-    for id in ["ui.newProject", "file.open", "project.sample", "ui.settings", "ui.about", "ui.quit", "ui.mode.paint", "ui.layout.split"] {
+    for id in ["ui.newProject", "file.open", "project.sample", "ui.settings", "ui.about", "ui.quit", "ui.hideUi", "ui.resetUi", "viewport.frame", "ui.layout.split"] {
         assert!(menus::enabled(app, id), "{id} works without a project");
     }
     let open = open_project();

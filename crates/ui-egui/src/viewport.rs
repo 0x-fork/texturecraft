@@ -486,7 +486,8 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
         _ => app.session.view.label(),
     };
     let channels = app.session.doc.project.texture_set(app.session.ts()).map(|texture_set| texture_set.channel_list()).unwrap_or_default();
-    egui::ComboBox::from_id_salt(format!("{id}_mode")).width(VIEW_PICKER_WIDTH).selected_text(tr(&label)).show_ui(&mut child, |ui| {
+    // The picker is greyed with no project: it has nothing to show a project's maps of
+    child.add_enabled_ui(project_open, |child| egui::ComboBox::from_id_salt(format!("{id}_mode")).width(VIEW_PICKER_WIDTH).selected_text(tr(&label)).show_ui(child, |ui| {
         if baking && ui.selectable_label(neutral, tr("Neutral Material")).clicked() {
             app.ui.bake_visualization.neutral_shown = true;
             app.run("viewport.view", json!({"mode": "material"}));
@@ -517,7 +518,7 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
         if ui.selectable_label(app.session.view == ViewMode::UvChecker, tr("UV checker")).clicked() {
             app.run("viewport.view", json!({"mode": "uvChecker"}));
         }
-    });
+    }));
 }
 
 /// The view picker's entries that show one baked mesh map

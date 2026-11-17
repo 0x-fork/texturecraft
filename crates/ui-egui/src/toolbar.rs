@@ -76,33 +76,29 @@ pub fn paint_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
 
 /// Width of `view_buttons`, so the bar knows when to move them into the scrolling strip
 fn view_buttons_width(button_size: f32, spacing: f32) -> f32 {
-    // Two icons, two dropdowns, two separators and the five gaps between them
-    2.0 * button_size + 2.0 * icon_dropdown_button_width(button_size) + 2.0 * BAR_SEPARATOR_WIDTH + 5.0 * spacing
+    // Two icons, two dropdowns, one separator and the four gaps between them
+    2.0 * button_size + 2.0 * icon_dropdown_button_width(button_size) + BAR_SEPARATOR_WIDTH + 4.0 * spacing
 }
 
-/// View buttons in a right-to-left layout, with the screenshot button at the end
+/// View buttons in a right-to-left layout: the layout, then the camera type, then the screenshot and UV checker
 fn view_buttons(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
-    // Screenshot, projection and UV checker act on the project: greyed while none is open
-    let project_open = app.session.project_open;
-    ui.add_enabled_ui(project_open, |ui| view_buttons_enabled(app, ui));
-}
-
-fn view_buttons_enabled(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let button_size = ui.spacing().interact_size.y;
-    if icon_button(ui, ic::CAMERA, tr("Screenshot of the viewport"), false, button_size).clicked() {
-        app.toast(tr("Use the control channel or `texturecraft-cli render` for screenshots"), false);
-    }
-
+    // Only the layout works without a project: the others act on it
+    let project_open = app.session.project_open;
+    // Right-to-left: the UV checker is added first and sits rightmost
+    ui.add_enabled_ui(project_open, |ui| {
+        let checker = app.session.view == texturecraft_engine::ViewMode::UvChecker;
+        if icon_button(ui, ic::CHECKERBOARD, &tip(&app.ui.keymap, tr("UV checker"), "ui.uvChecker"), checker, button_size).clicked() {
+            let mode = if checker { "material" } else { "uvChecker" };
+            app.run("viewport.view", json!({"mode": mode}));
+        }
+        if icon_button(ui, ic::CAMERA, tr("Screenshot of the viewport"), false, button_size).clicked() {
+            app.toast(tr("Use the control channel or `texturecraft-cli render` for screenshots"), false);
+        }
+    });
     ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
-    projection_dropdown(app, ui);
+    ui.add_enabled_ui(project_open, |ui| projection_dropdown(app, ui));
     layout_dropdown(app, ui);
-
-    ui.add(egui::Separator::default().spacing(BAR_SEPARATOR_WIDTH));
-    let checker = app.session.view == texturecraft_engine::ViewMode::UvChecker;
-    if icon_button(ui, ic::CHECKERBOARD, &tip(&app.ui.keymap, tr("UV checker"), "ui.uvChecker"), checker, button_size).clicked() {
-        let mode = if checker { "material" } else { "uvChecker" };
-        app.run("viewport.view", json!({"mode": mode}));
-    }
 }
 
 /// The 3D/2D, 3D-only and 2D-only layouts, showing the current one's icon
@@ -317,7 +313,10 @@ fn mode_buttons(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
         (Mode::Painting, ic::PALETTE, tr("Painting"), "ui.mode.paint"),
         (Mode::Baking, ic::ATOM, tr("Bake Mesh Maps"), "ui.mode.bake"),
     ] {
-        if icon_button(ui, icon, &tip(&app.ui.keymap, label, command), app.ui.mode == mode, button_size).clicked() {
+        // Greyed (Painting stays shown as the current mode) while no project is open
+        let on = crate::menus::enabled(app, command);
+        let button = ui.add_enabled_ui(on, |ui| icon_button(ui, icon, &tip(&app.ui.keymap, label, command), app.ui.mode == mode, button_size)).inner;
+        if button.clicked() {
             crate::menus::invoke(app, &ui.ctx().clone(), command);
         }
     }
@@ -472,11 +471,7 @@ pub fn rail(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
         card(ui, &tokens, egui::Margin { left: 0, right: GUTTER, top: GUTTER, bottom: GUTTER }, RAIL_CARD_PADDING, |ui| {
             ui.spacing_mut().item_spacing.y = RAIL_ICON_GAP;
             crate::rail_popup::begin_rail(ui.ctx(), ui.max_rect());
-            let export_on = crate::menus::enabled(app, "ui.export");
-            let export = ui.add_enabled_ui(export_on, |ui| {
-                icon_button(ui, ic::EXPORT, &tip(&app.ui.keymap, tr("Export textures"), "ui.export"), app.ui.windows.export, RAIL_ICON_SIZE)
-            });
-            if export.inner.clicked() {
+            if icon_button(ui, ic::EXPORT, &tip(&app.ui.keymap, tr("Export textures"), "ui.export"), app.ui.windows.export, RAIL_ICON_SIZE).clicked() {
                 app.ui.windows.export = !app.ui.windows.export;
             }
 

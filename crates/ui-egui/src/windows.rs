@@ -1140,10 +1140,6 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
 
 pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let tk = Tokens::get(ctx);
-    // Nothing to export without a project (closed, or a saved layout that left it open)
-    if !app.session.project_open {
-        app.ui.windows.export = false;
-    }
     if !app.ui.windows.export {
         return;
     }
@@ -1151,6 +1147,11 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let mut do_export = false;
     let presets = texturecraft_engine::formats::builtin_presets();
     dialog("export_textures", tr("Export textures"), &mut open).fixed_size(vec2(820.0, 430.0)).show(ctx, |ui| {
+        // Nothing to export without a project
+        if !app.session.project_open {
+            ui.label(tr("No project is open"));
+            return;
+        }
         ui.horizontal(|ui| {
             for (i, t) in [tr("Settings"), tr("Output templates"), tr("List of exports")].iter().enumerate() {
                 if ui.selectable_label(app.ui.export.tab == i as u8, caption(t)).clicked() {

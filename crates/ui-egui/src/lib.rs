@@ -215,11 +215,15 @@ impl TextureCraftApp {
 
         // The first run speaks the OS (or browser) language
         let mut ui_store = ui_state_store::UiStateStore::new(ui_state_store::FILE.get().cloned());
-        let ui = ui_store.load(cc.storage).unwrap_or_else(|| {
+        let mut ui = ui_store.load(cc.storage).unwrap_or_else(|| {
             let mut ui = UiState::default();
             ui.prefs.language = i18n::os_language().into();
             ui
         });
+        // No window opens by itself with no project (a saved layout may have left Export open)
+        if !session.project_open {
+            ui.windows.export = false;
+        }
         let next_autosave = ui.prefs.autosave_minutes as f64 * 60.0;
         ui.prefs.apply_resource_limits();
 
@@ -306,6 +310,7 @@ impl TextureCraftApp {
                 // The empty state has no baking or rendering to show
                 if id == "file.close" {
                     self.ui.mode = state::Mode::Painting;
+                    self.ui.windows.export = false;
                 }
                 if let Some(from) = glide_from.filter(|f| *f != self.session.camera) {
                     self.camera_glide = Some(CameraGlide { from, to: self.session.camera, start: self.last_time });

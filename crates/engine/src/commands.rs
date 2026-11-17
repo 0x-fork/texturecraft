@@ -98,6 +98,7 @@ fn works_without_project(id: &str) -> bool {
             | "project.new"
             | "project.sample"
             | "project.inspect"
+            | "viewport.frame"
             | "project.templates"
             | "export.presets"
             | "export.preset.get"

@@ -38,12 +38,14 @@ pub const TOP: [&str; 6] = ["File", "Edit", "Mode", "Window", "Viewport", "Help"
 pub const CATALOG: &[Item] = &[
     it("File", "New project...", "ui.newProject", Some("Ctrl+N")),
     it("File", "Open...", "file.open", Some("Ctrl+O")),
+    sep("File"),
     it("File", "Open sample project...", "project.sample", None),
+    sep("File"),
     it("File", "Close", "file.close", Some("Ctrl+F4")),
     sep("File"),
     it("File", "Save", "file.save", Some("Ctrl+S")),
     it("File", "Save as...", "file.saveAs", Some("Ctrl+Shift+S")),
-    it("File", "Save a copy...", "file.saveCopy", None),
+    sub("File", "More save options", "Save a copy...", "file.saveCopy", None),
     it("File", "Remove unused resources...", "file.removeUnused", None),
     sep("File"),
     it("File", "Import resources...", "resource.import", None),
@@ -57,7 +59,6 @@ pub const CATALOG: &[Item] = &[
     it("File", "Quit", "ui.quit", Some("Ctrl+Q")),
     it("Edit", "Undo", "edit.undo", Some("Ctrl+Z")),
     it("Edit", "Redo", "edit.redo", Some("Ctrl+Y")),
-    sep("Edit"),
     it("Edit", "Project Configuration...", "ui.projectConfig", None),
     it("Edit", "Reimport mesh", "file.reimportMesh", Some("Ctrl+Shift+R")),
     it("Edit", "Settings...", "ui.settings", None),
@@ -76,8 +77,10 @@ pub const CATALOG: &[Item] = &[
     sub("Window", "Views", "Shader Settings", "ui.view.shader", None),
     sub("Window", "Views", "Texture Sets", "ui.view.textureSetList", None),
     sub("Window", "Views", "Texture Set Settings", "ui.view.textureSetSettings", None),
+    sep("Window"),
     sub("Window", "Save UI Layout", "Save current layout...", "ui.layout.save", None),
     it("Window", "Load UI Layout", "ui.layout.load", None),
+    sep("Window"),
     it("Window", "Hide UI", "ui.hideUi", Some("Tab")),
     it("Window", "Reset UI", "ui.resetUi", None),
     it("Viewport", "Display material", "viewport.displayMaterial", Some("M")),
@@ -98,11 +101,12 @@ pub const CATALOG: &[Item] = &[
     it("Viewport", "Invert quick mask", "viewport.quickMask.invert", Some("Ctrl+Shift+I")),
     it("Help", "Documentation...", "ui.help.docs", None),
     it("Help", "Shortcuts list...", "ui.help.shortcuts", None),
+    sep("Help"),
     it("Help", "Join the community (Discord)...", "ui.help.discord", None),
     it("Help", "ArtCraft website...", "ui.help.website", None),
     it("Help", "Report a bug...", "ui.help.bug", None),
-    sep("Help"),
     it("Help", "Show log...", "ui.view.log", None),
+    sep("Help"),
     #[cfg(not(target_arch = "wasm32"))]
     it("Help", "Check for Updates...", "ui.help.checkForUpdates", None),
     it("Help", "About TextureCraft...", "ui.about", None),
@@ -115,7 +119,7 @@ fn is_ui(id: &str) -> bool {
 
 /// Shell items that act on the open project: greyed while none is open
 fn ui_needs_project(id: &str) -> bool {
-    matches!(id, "ui.export" | "ui.projectConfig" | "ui.uvChecker" | "ui.mode.bake" | "ui.mode.render")
+    matches!(id, "ui.export" | "ui.projectConfig" | "ui.uvChecker" | "ui.mode.bake" | "ui.mode.paint" | "ui.mode.render")
 }
 
 /// Whether an item can run now
