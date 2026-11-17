@@ -14,6 +14,9 @@ use texturecraft_ui_egui::state::Mode;
 use texturecraft_ui_egui::theme::Brightness;
 use texturecraft_ui_egui::titlebar::TitleBar;
 
+#[path = "ui_snapshots/dropped_path.rs"]
+mod dropped_path;
+
 /// Click a map's row in Mesh Map Bakers, which shows its settings
 fn select_map(harness: &mut Harness<'_, TextureCraftApp>, name: &str) {
     harness.get_by_role_and_label(egui::Role::Button, name).click();
@@ -69,16 +72,11 @@ fn pbr_import_dialog_keeps_choices_after_error() {
 
 #[test]
 #[ignore]
-fn pbr_drop_candidates_and_project_replacement() {
-    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
-
-    std::fs::create_dir_all(&output_dir).unwrap();
-    let source_dir = output_dir.join("pbr-drop-candidates");
+fn pbr_import_uses_displayed_default_after_folder_changes() {
+    let source_dir = std::env::temp_dir().join(format!("tc_pbr_pin_{}", std::process::id()));
     std::fs::create_dir_all(&source_dir).unwrap();
-    let files: Vec<_> = ["m_albedo_1k.png", "m_albedo_4k.png", "notes.txt"].iter().map(|name| source_dir.join(name)).collect();
-    for file in &files {
-        std::fs::write(file, b"fixture").unwrap();
-    }
+    let bytes = texturecraft_engine::formats::gray16_png(2, 2, [0.5; 4].into_iter()).unwrap();
+    std::fs::write(source_dir.join("tile_albedo_4k.png"), &bytes).unwrap();
 
     let session = texturecraft_engine::sample_session(128, 64).unwrap();
     let mut harness = Harness::builder()
@@ -86,9 +84,48 @@ fn pbr_drop_candidates_and_project_replacement() {
         .with_pixels_per_point(1.0)
         .wgpu()
         .build_eframe(|context| TextureCraftApp::new(context, session));
-    assert!(texturecraft_ui_egui::pbr_import::dropped(harness.state_mut(), &files));
-    assert!(harness.state().pbr_import.is_some());
+    texturecraft_ui_egui::pbr_import::begin(harness.state_mut(), serde_json::json!({"path": source_dir.display().to_string()}));
+    std::fs::write(source_dir.join("tile_albedo_8k.png"), &bytes).unwrap();
+
     harness.run_steps(3);
+    harness.get_by_role_and_label(egui::Role::Button, "Import").click();
+    harness.run_steps(2);
+
+    let resources = &harness.state().session.doc.resources;
+    assert!(resources.keys().any(|name| name.contains("tile_albedo_4k")), "{resources:?}");
+    assert!(!resources.keys().any(|name| name.contains("tile_albedo_8k")), "{resources:?}");
+    std::fs::remove_dir_all(source_dir).unwrap();
+}
+
+#[test]
+#[ignore]
+fn pbr_drop_candidates_and_project_replacement() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let source_dir = output_dir.join("pbr-drop-candidates");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    let files: Vec<_> = ["m_albedo_1k.png", "m_albedo_4k.png", "reference.png"].iter().map(|name| source_dir.join(name)).collect();
+    for file in &files {
+        std::fs::write(file, b"fixture").unwrap();
+    }
+    let reference = texturecraft_engine::formats::gray16_png(2, 2, [0.5; 4].into_iter()).unwrap();
+    std::fs::write(&files[2], reference).unwrap();
+
+    let session = texturecraft_engine::sample_session(128, 64).unwrap();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1280.0, 800.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.input_mut().dropped_files = files.iter().cloned().map(dropped_path::handle).collect();
+    harness.run_steps(1);
+    assert!(harness.state().pbr_import.is_some());
+    assert!(harness.state().session.doc.resources.keys().any(|name| name.contains("reference.png")));
+    assert!(!harness.state().session.doc.resources.keys().any(|name| name.contains("m_albedo")));
+    harness.run_steps(3);
+    assert!(harness.query_by_label("2 files ignored").is_none());
+    assert!(harness.query_by_label("1 files ignored").is_some());
     assert!(harness.get_all_by_role(egui::Role::ComboBox).any(|node| node.value().as_deref() == Some("m_albedo_4k.png")));
     save(&mut harness, &output_dir, "pbr-drop-candidates");
 
@@ -96,7 +133,7 @@ fn pbr_drop_candidates_and_project_replacement() {
     assert!(harness.state().pbr_import.is_some());
     assert!(harness.state_mut().run("project.new", serde_json::json!({"resolution": 128})).is_some());
     assert!(harness.state().pbr_import.is_none());
-    assert!(!texturecraft_ui_egui::pbr_import::dropped(harness.state_mut(), &files[1..]));
+    assert!(texturecraft_ui_egui::pbr_import::dropped(harness.state_mut(), &files[1..]).is_empty());
     std::fs::remove_dir_all(source_dir).unwrap();
 }
 

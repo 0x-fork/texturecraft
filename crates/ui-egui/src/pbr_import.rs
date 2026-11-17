@@ -60,28 +60,34 @@ pub fn pick(app: &mut TextureCraftApp) {
 }
 
 /// Dropped paths: a folder, a zip, or two or more image files that name PBR maps open the
-/// dialog. Returns true when the drop was taken.
+/// dialog. Returns the indices consumed by the dialog; other files keep their normal drop path.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn dropped(app: &mut TextureCraftApp, paths: &[std::path::PathBuf]) -> bool {
+pub fn dropped(app: &mut TextureCraftApp, paths: &[std::path::PathBuf]) -> Vec<usize> {
     use texturecraft_engine::formats::pbr_maps;
-    if let Some(dir) = paths.iter().find(|p| p.is_dir()) {
+    if let Some((index, dir)) = paths.iter().enumerate().find(|(_, p)| p.is_dir()) {
         begin(app, json!({ "path": dir.display().to_string() }));
-        return true;
+        return vec![index];
     }
 
-    if let Some(zip) = paths.iter().find(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))) {
+    if let Some((index, zip)) = paths.iter().enumerate().find(|(_, p)| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))) {
         begin(app, json!({ "path": zip.display().to_string() }));
-        return true;
+        return vec![index];
     }
 
-    let names: Vec<String> = paths.iter().filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
-    let recognized = pbr_maps::detect(names.iter().map(|n| (n.as_str(), 0))).candidates.values().map(Vec::len).sum::<usize>();
-    if recognized >= 2 {
-        begin(app, json!({ "files": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>() }));
-        return true;
+    let recognized: Vec<usize> = paths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, path)| {
+            let name = path.file_name()?.to_string_lossy();
+            pbr_maps::classify(&name).ok().filter(|detected| detected.kind != pbr_maps::MapKind::Unused).map(|_| index)
+        })
+        .collect();
+    if recognized.len() >= 2 {
+        begin(app, json!({ "files": recognized.iter().filter_map(|&index| paths.get(index)).map(|p| p.display().to_string()).collect::<Vec<_>>() }));
+        return recognized;
     }
 
-    false
+    Vec::new()
 }
 
 fn label_of(id: &str) -> &'static str {
@@ -177,8 +183,19 @@ fn run(app: &mut TextureCraftApp, dialog_state: &PbrDialog) -> bool {
     if dialog_state.triplanar {
         params["projection"] = json!("triplanar");
     }
-    if !dialog_state.choose.is_empty() {
-        params["choose"] = json!(dialog_state.choose);
+
+    // Pin the displayed candidates so a later folder scan cannot silently replace them
+    let mut choose: BTreeMap<String, String> = dialog_state
+        .scan
+        .get("maps")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|maps| maps.iter())
+        .filter_map(|(id, file)| file.as_str().map(|file| (id.clone(), file.to_string())))
+        .collect();
+    choose.extend(dialog_state.choose.clone());
+    if !choose.is_empty() {
+        params["choose"] = json!(choose);
     }
 
     let Some(reply) = app.run("file.importPbrFolder", params) else { return false };

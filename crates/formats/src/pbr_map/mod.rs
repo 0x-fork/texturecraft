@@ -193,6 +193,7 @@ pub fn classify(name: &str) -> std::result::Result<Detected, &'static str> {
         let next = name_tokens.get(i + 1).map(String::as_str);
         let kind = match (t.as_str(), next) {
             ("base", Some("color" | "colour" | "map")) | ("main", Some("tex")) => Some(MapKind::BaseColor),
+            ("emissive", Some("color" | "colour")) => Some(MapKind::Emissive),
             ("ambient", Some("occlusion")) | ("mixed", Some("ao")) => Some(MapKind::AmbientOcclusion),
             ("bump", Some("map")) => Some(MapKind::Normal),
             _ => None,
@@ -270,6 +271,12 @@ mod tests {
 
     fn kind(name: &str) -> Option<MapKind> {
         classify(name).ok().map(|d| d.kind)
+    }
+
+    #[test]
+    fn emissive_color_alias_survives_camel_case() {
+        assert_eq!(kind("brick_emissivecolor.png"), Some(Emissive));
+        assert_eq!(kind("brick_EmissiveColor.png"), Some(Emissive));
     }
 
     #[test]
