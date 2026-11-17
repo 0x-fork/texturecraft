@@ -1,10 +1,13 @@
 //! UI state (serde, so the control channel can read and drive it).
 
 use serde::{Deserialize, Serialize};
-use texturecraft_engine::core::{BakedMap, Channel};
+use texturecraft_engine::core::{BakedMap, Channel, NormalFormat};
 
 use crate::docking::Dock;
 use crate::keymap::Keymap;
+use crate::saved_search::SavedSearch;
+use crate::shelf_panes::ShelfPanes;
+use crate::shelf_view::ShelfView;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Mode {
@@ -118,6 +121,13 @@ pub struct Prefs {
     /// Where autosaves, smart materials, presets, templates and layouts go (desktop; read at
     /// startup). Empty or relative: `Documents/TextureCraft`.
     pub data_folder: String,
+    /// Cores a project save leaves to the UI; Settings bounds this to the available logical CPUs
+    /// (desktop). At least one save worker always runs.
+    pub reserved_cores: u32,
+    /// Maximum decompressed project size accepted on open, in GiB (at least one).
+    pub project_open_limit_gib: u32,
+    /// Percent of the free RAM a project save may hold at once (desktop; 1 to 100).
+    pub save_ram_percent: u8,
 }
 
 impl Default for Prefs {
@@ -132,7 +142,19 @@ impl Default for Prefs {
             system_title_bar: false,
             start_window: true,
             data_folder: String::new(),
+            reserved_cores: 1,
+            project_open_limit_gib: texturecraft_engine::formats::DEFAULT_PROJECT_OPEN_LIMIT_GIB,
+            save_ram_percent: 50,
         }
+    }
+}
+
+impl Prefs {
+    /// Apply resource preferences before commands or file workers can start.
+    pub fn apply_resource_limits(&self) {
+        texturecraft_engine::formats::set_project_open_limit_gib(self.project_open_limit_gib);
+        #[cfg(not(target_arch = "wasm32"))]
+        texturecraft_engine::formats::set_save_resources(self.reserved_cores as usize, self.save_ram_percent);
     }
 }
 
@@ -151,6 +173,12 @@ pub struct NewProject {
     /// Name typed to save the current project's settings as a template.
     #[serde(skip)]
     pub template_name: String,
+    /// Normal map format of the project and its imported normal maps; None keeps the template's
+    #[serde(default)]
+    pub normal_format: Option<NormalFormat>,
+    /// Baked map files to import at creation, matched to sets and mesh maps by name (desktop only)
+    #[serde(skip)]
+    pub baked_maps: Vec<String>,
 }
 
 fn default_template() -> String {
@@ -167,6 +195,8 @@ impl Default for NewProject {
             uv_tiles: None,
             template: default_template(),
             template_name: String::new(),
+            normal_format: None,
+            baked_maps: Vec::new(),
         }
     }
 }
@@ -232,13 +262,36 @@ fn default_export_dir() -> String {
     }
 }
 
+/// The split layout starts with the 3D and 2D views at equal width
+fn default_split_ratio() -> f32 {
+    0.5
+}
+/// The bake layout's version: saved bake docks from an older one load as `Dock::for_baking`
+const BAKE_LAYOUT_VERSION: u32 = 2;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UiState {
     pub mode: Mode,
     pub layout: ViewLayout,
+    /// The 3D view's share of the viewport width in the split layout
+    #[serde(default = "default_split_ratio")]
+    pub split_ratio: f32,
     /// The docked, tabbed and floating panels around the viewport.
     #[serde(default)]
     pub dock: Dock,
+    /// The panel open against the icon rail, if any; not saved, so the app starts with the rail closed
+    #[serde(skip)]
+    pub rail_panel: Option<crate::docking::Panel>,
+    #[serde(default = "Dock::for_baking")]
+    pub(crate) inactive_mode_dock: Dock,
+    #[serde(default)]
+    pub(crate) dock_is_baking: bool,
+    /// The bake layout version the bake dock was saved with; 0 before versions existed.
+    #[serde(default)]
+    pub(crate) bake_layout_version: u32,
+    /// The mesh map whose settings Mesh Map Settings shows; `None` follows the first enabled map.
+    #[serde(default)]
+    pub(crate) selected_baked_map: Option<BakedMap>,
     /// Window ▸ Hide UI (Tab): only the viewport.
     pub hide_ui: bool,
     pub windows: Windows,
@@ -247,9 +300,21 @@ pub struct UiState {
     /// Channel whose blending the layer rows show.
     pub layer_channel: Channel,
     pub shelf_filter: String,
-    /// The asset shelf's open tab.
+    /// The asset shelf's picked type: an index into the shelf's types, or past them for every type
     #[serde(default)]
     pub shelf_tab: usize,
+    /// The asset shelf's library folder: a library id, then folder names (empty: all libraries)
+    #[serde(default)]
+    pub shelf_path: Vec<String>,
+    /// The asset shelf's tile size, or its list
+    #[serde(default)]
+    pub shelf_view: ShelfView,
+    /// The asset shelf's open side panes
+    #[serde(default)]
+    pub shelf_panes: ShelfPanes,
+    /// The asset shelf's saved queries, in the order they were saved
+    #[serde(default)]
+    pub shelf_saved_searches: Vec<SavedSearch>,
     pub props_tab: PropsTab,
     #[serde(default)]
     pub text: TextUi,
@@ -273,42 +338,55 @@ pub struct UiState {
     /// Custom keyboard shortcuts (item id → "Ctrl+Shift+E", "" = none) over the defaults.
     #[serde(default)]
     pub keymap: Keymap,
-    /// The baker whose parameters bake mode shows (None: the common parameters).
-    #[serde(default)]
-    pub bake_baker: Option<BakedMap>,
     /// The brush that paints the skew correction map in the 2D view of bake mode.
     #[serde(default)]
-    pub skew_brush: SkewBrush,
-}
-
-/// Settings of the skew correction brush (radius in UV units).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct SkewBrush {
-    pub on: bool,
-    pub radius: f32,
-    /// 1 turns the rays onto the base normal, 0 erases.
-    pub value: f32,
-    pub hardness: f32,
-}
-
-impl Default for SkewBrush {
-    fn default() -> Self {
-        SkewBrush { on: false, radius: 0.03, value: 1.0, hardness: 0.5 }
-    }
+    pub bake_paint_brush: crate::bake_mode::BakePaintBrush,
+    /// How the 3D view shows symmetry
+    #[serde(default)]
+    pub symmetry: crate::symmetry::SymmetryDisplay,
+    /// The Baking Visualization panel's settings, under a key of their own since the reference defaults: older saved ones start over
+    #[serde(default, rename = "baking_visualization")]
+    pub bake_visualization: crate::bake_mode::BakeVisualizationToggles,
 }
 
 impl UiState {
-    /// Take `layout`'s panels, windows and view settings, keeping this state's dialogs, export
-    /// settings and recent files.
+    /// Replace an outdated or unreadable saved bake dock by the bake layout, then give the mode its dock
+    pub(crate) fn sync_mode_dock(&mut self) {
+        self.reset_outdated_bake_dock();
+
+        let baking = self.mode == Mode::Baking;
+        if baking != self.dock_is_baking {
+            std::mem::swap(&mut self.dock, &mut self.inactive_mode_dock);
+            self.dock_is_baking = baking;
+        }
+    }
+
+    /// Replace a bake dock saved with an older bake layout, or one that could not be read, by the bake default
+    fn reset_outdated_bake_dock(&mut self) {
+        let bake_dock = if self.dock_is_baking { &mut self.dock } else { &mut self.inactive_mode_dock };
+        if self.bake_layout_version >= BAKE_LAYOUT_VERSION && !bake_dock.replaced_unreadable() {
+            return;
+        }
+
+        *bake_dock = Dock::for_baking();
+        self.bake_layout_version = BAKE_LAYOUT_VERSION;
+    }
+
+    /// Take `layout`'s panels, windows and view settings, keeping this state's dialogs, settings, files and shelf query
     pub fn adopt_layout(&mut self, layout: UiState) {
         let keep = std::mem::replace(self, layout);
         self.new_project = keep.new_project;
         self.export = keep.export;
         self.recent = keep.recent;
-        self.shelf_filter = keep.shelf_filter;
         self.prefs = keep.prefs;
         self.keymap = keep.keymap;
         self.rename = None;
+
+        // The shelf's search, type and folder are one query, and saved searches are the user's own
+        self.shelf_filter = keep.shelf_filter;
+        self.shelf_tab = keep.shelf_tab;
+        self.shelf_path = keep.shelf_path;
+        self.shelf_saved_searches = keep.shelf_saved_searches;
     }
 }
 
@@ -317,7 +395,13 @@ impl Default for UiState {
         UiState {
             mode: Mode::Painting,
             layout: ViewLayout::Split,
+            split_ratio: default_split_ratio(),
             dock: Dock::default(),
+            rail_panel: None,
+            inactive_mode_dock: Dock::for_baking(),
+            dock_is_baking: false,
+            bake_layout_version: BAKE_LAYOUT_VERSION,
+            selected_baked_map: None,
             hide_ui: false,
             windows: Windows::default(),
             uv_zoom: 1.0,
@@ -325,6 +409,10 @@ impl Default for UiState {
             layer_channel: Channel::BaseColor,
             shelf_filter: String::new(),
             shelf_tab: 0,
+            shelf_path: Vec::new(),
+            shelf_view: ShelfView::default(),
+            shelf_panes: ShelfPanes::default(),
+            shelf_saved_searches: Vec::new(),
             props_tab: PropsTab::Brush,
             text: TextUi::default(),
             rename: None,
@@ -336,8 +424,9 @@ impl Default for UiState {
             export: ExportUi::default(),
             recent: Vec::new(),
             keymap: Keymap::new(),
-            bake_baker: None,
-            skew_brush: SkewBrush::default(),
+            bake_paint_brush: crate::bake_mode::BakePaintBrush::default(),
+            symmetry: crate::symmetry::SymmetryDisplay::default(),
+            bake_visualization: crate::bake_mode::BakeVisualizationToggles::default(),
         }
     }
 }
@@ -353,11 +442,25 @@ mod tests {
         ui.keymap.insert("file.save".into(), "F5".into());
         let mut layout = UiState::default();
         layout.dock.close(crate::docking::Panel::Assets);
+
         ui.adopt_layout(layout);
+
         assert!(!ui.dock.is_open(crate::docking::Panel::Assets));
         assert_eq!(ui.recent, vec!["a.tcraft".to_string()]);
         assert_eq!(ui.export.preset, "Mine");
         assert_eq!(ui.keymap.get("file.save").map(String::as_str), Some("F5"));
+    }
+
+    #[test]
+    fn adopting_a_layout_keeps_the_shelf_query_and_saved_searches() {
+        let saved = crate::saved_search::SavedSearch { name: "rust".into(), filter: "rust".into(), tab: 2, path: vec!["starter".into()] };
+        let mut ui = UiState { shelf_filter: "rust".into(), shelf_tab: 2, shelf_path: vec!["starter".into()], ..UiState::default() };
+        ui.shelf_saved_searches.push(saved.clone());
+
+        ui.adopt_layout(UiState::default());
+
+        assert_eq!((ui.shelf_filter.as_str(), ui.shelf_tab, ui.shelf_path.as_slice()), ("rust", 2, ["starter".to_string()].as_slice()));
+        assert_eq!(ui.shelf_saved_searches, [saved]);
     }
 
     #[test]
@@ -368,6 +471,52 @@ mod tests {
         let chosen = std::env::temp_dir().join("tc-data");
         assert_eq!(crate::data_folder(&format!(" {} ", chosen.display())), chosen);
         assert_eq!(Prefs::default().data_folder, "", "the default is no choice");
+    }
+
+    #[test]
+    fn a_bake_dock_saved_before_the_bake_layout_version_loads_the_current_bake_layout() {
+        let old_bake_dock = serde_json::json!({"version": 2, "layout": {"root": {"Split": {"axis": "Horizontal", "size": {"FixedFirst": 320.0},
+            "first": {"Tabs": {"panels": ["TextureSetList", "BakeSettings", "BakeMaps"], "active": 0}},
+            "second": {"Tabs": {"panels": ["Viewport"], "active": 0}}}}, "floating": []}});
+        for dock_is_baking in [false, true] {
+            let mut painting_dock = Dock::default();
+            painting_dock.close(crate::docking::Panel::Assets);
+            let (bake_field, painting_field) = if dock_is_baking { ("dock", "inactive_mode_dock") } else { ("inactive_mode_dock", "dock") };
+            let mut saved = serde_json::to_value(UiState::default()).unwrap();
+            let fields = saved.as_object_mut().unwrap();
+            fields.remove("bake_layout_version");
+            fields.insert("dock_is_baking".into(), serde_json::json!(dock_is_baking));
+            fields.insert("mode".into(), serde_json::to_value(if dock_is_baking { Mode::Baking } else { Mode::Painting }).unwrap());
+            fields.insert(bake_field.into(), old_bake_dock.clone());
+            fields.insert(painting_field.into(), serde_json::to_value(&painting_dock).unwrap());
+
+            let mut ui: UiState = serde_json::from_value(saved).unwrap();
+            let loaded_bake_dock = if dock_is_baking { &ui.dock } else { &ui.inactive_mode_dock };
+            assert!(!loaded_bake_dock.is_open(crate::docking::Panel::MeshMapBakers), "the old layout loads without the bakers list");
+
+            ui.sync_mode_dock();
+            let (bake_dock, painting) = if dock_is_baking { (&ui.dock, &ui.inactive_mode_dock) } else { (&ui.inactive_mode_dock, &ui.dock) };
+            assert_eq!(*bake_dock, Dock::for_baking());
+            assert_eq!(*painting, painting_dock, "the painting layout is kept");
+
+            let mut reloaded: UiState = serde_json::from_value(serde_json::to_value(&ui).unwrap()).unwrap();
+            reloaded.sync_mode_dock();
+            assert_eq!(reloaded, ui, "a current layout is not reset again");
+        }
+    }
+
+    #[test]
+    fn the_bake_layout_survives_a_restart_whichever_mode_was_open() {
+        for mode in [Mode::Painting, Mode::Baking] {
+            let mut ui = UiState { mode, ..UiState::default() };
+            ui.sync_mode_dock();
+
+            let mut restarted = crate::ui_state_store::tests::restart(&ui);
+            restarted.sync_mode_dock();
+            let bake_dock = if mode == Mode::Baking { &restarted.dock } else { &restarted.inactive_mode_dock };
+            assert_eq!(*bake_dock, Dock::for_baking(), "{mode:?}");
+            assert!(bake_dock.is_open(crate::docking::Panel::MeshMapBakers), "{mode:?}");
+        }
     }
 
     #[test]
