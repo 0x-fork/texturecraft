@@ -342,9 +342,10 @@ Re-cooks use `materialcraft-cli batch` to open the saved graph by name and run `
 (the app is `$MATERIALCRAFT` / `materialcraft`). Baked maps feed graph input nodes whose identifier
 matches the map's shared id (`ambientOcclusion`, `curvature`, `thickness`, `position`,
 `worldNormal`, `normal`, `height`, `id`, `bentNormal`, `opacity`, `colorMap`, `worldDirection`;
-case and underscores ignored). Usages map to channels of the same id (`baseColor`, `normal` in
-OpenGL convention, `roughness`, `metallic`, `height`, `ambientOcclusion`, `emissive`, `opacity`,
-`specular`); missing channels join the texture set.
+case and underscores ignored; `normal` and `bentNormal` are tangent space, OpenGL green). Usages
+map to channels of the same id (`baseColor`, `normal` in OpenGL convention, `roughness`, `metallic`,
+`height`, `ambientOcclusion`, `emissive`, `opacity`, `specular`); missing channels join the texture
+set.
 
 ## CLI
 

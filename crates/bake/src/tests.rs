@@ -14,6 +14,9 @@ use texturecraft_geom::primitives;
 
 use super::*;
 
+#[path = "test/bent_normal_space.rs"]
+mod bent_normal_space;
+
 #[path = "test/cage_shell.rs"]
 mod cage_shell;
 
@@ -768,7 +771,7 @@ fn bent_normals_point_away_from_occluders() {
     let mean_x = |v: &[&[f32]]| mean(v.iter().map(|b| b[0] * 2.0 - 1.0));
     assert!(mean_x(&near) < -0.15, "near the wall the bent normal leans away from it: {}", mean_x(&near));
     assert!(mean_x(&near) < mean_x(&far), "{} vs {}", mean_x(&near), mean_x(&far));
-    assert!(near.iter().all(|b| b[1] > 0.6), "still points up");
+    assert!(near.iter().all(|b| b[2] > 0.6), "still points up: along the surface normal, tangent-space z");
     let ao_near = mean(ao.iter().filter(|(p, _)| p.x > 0.6).map(|v| v.1));
     assert!(ao_near < mean(ao.iter().filter(|(p, _)| p.x < -0.6).map(|v| v.1)));
 }
