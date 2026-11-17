@@ -127,12 +127,38 @@ fn bake_project(report: &mut Report, backend: &mut Headless, label: &str, bake_r
     report.time(format!("{label}: recomposite after bake ({dirty} tiles)"), budgets[2], || session.update());
 }
 
-/// The whole-project bake at the app's default settings (1024², 32 rays, AA 1), then 2048².
+fn sample_for_project_bake(resolution: u32) -> Headless {
+    const PROJECT_BAKE_RAYS: u32 = 32;
+
+    let mut backend = sample(resolution);
+    for texture_set in 0..backend.session.set_count() {
+        let maps = &mut backend.session.doc.project.texture_set_mut(texture_set).unwrap().bake.maps;
+        for ray_settings in [&mut maps.ao.parameters.rays, &mut maps.thickness.parameters.rays, &mut maps.bent_normal.parameters.rays] {
+            ray_settings.rays = PROJECT_BAKE_RAYS;
+        }
+    }
+
+    backend
+}
+
+#[test]
+fn project_bake_uses_documented_ray_count() {
+    let backend = sample_for_project_bake(256);
+
+    for texture_set in 0..backend.session.set_count() {
+        let task = backend.session.bake_task(texture_set).unwrap();
+        assert_eq!(task.settings.maps.ao.parameters.rays.rays, 32);
+        assert_eq!(task.settings.maps.thickness.parameters.rays.rays, 32);
+        assert_eq!(task.settings.maps.bent_normal.parameters.rays.rays, 32);
+    }
+}
+
+/// The whole-project bake at benchmark settings (1024², 32 rays, AA 1), then 2048².
 #[test]
 #[ignore]
 fn bake_sample_project() {
     let mut report = Report::new("bake_sample_project");
-    let mut backend = sample(2048);
+    let mut backend = sample_for_project_bake(2048);
 
     bake_project(&mut report, &mut backend, "1K", 1024, false, [Some(5_000.0), Some(200.0), Some(6_500.0)]);
     bake_project(&mut report, &mut backend, "2K", 2048, false, [Some(23_000.0), Some(400.0), Some(6_500.0)]);
