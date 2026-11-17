@@ -282,16 +282,16 @@ fn bake_uv_tiles_snapshot() {
     harness.state_mut().ui.mode = Mode::Baking;
     save(&mut harness, &output_dir, "bake-uv-tiles");
 
-    harness.get_by_value("128 × 128*").click();
+    harness.get_by_value("128x128*").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-menu");
     harness.get_by_label("Remove resolution override").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-inherited");
-    assert!(harness.query_by_value("128 × 128*").is_none());
+    assert!(harness.query_by_value("128x128*").is_none());
     assert!(harness.state().session.doc.project.texture_sets[0].tile_resolutions.is_empty());
     let inherited_resolution = harness.get_by_label("UV tile 1002 resolution").rect().center();
     harness.hover_at(inherited_resolution);
     save(&mut harness, &output_dir, "bake-tile-resolution-hover");
-    assert_eq!(harness.get_all_by_value("256 × 256").count(), 2);
+    assert_eq!(harness.get_all_by_value("256x256").count(), 2);
     harness.hover_at(egui::pos2(900.0, 500.0));
     harness.state_mut().session.undo().unwrap();
     harness.run_steps(3);
@@ -440,6 +440,37 @@ fn nested_layers_snapshot() {
     save(&mut harness, &output_dir, "panel-layers-narrow-nested");
 }
 
+/// The mask anchor and generator micro controls in the integrated properties panel
+#[test]
+#[ignore]
+fn mask_anchor_micro_detail_snapshot() {
+    use serde_json::{Value, json};
+    use texturecraft_engine::execute;
+
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
+    let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+    execute(&mut session, "mask.add.black", &json!({"layer": lower})).unwrap();
+    execute(&mut session, "effect.add.fill", &json!({"layer": lower, "value": 0.4})).unwrap();
+    let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower, "target": "mask", "name": "Wear"})).unwrap()["effect"].as_u64().unwrap();
+    let upper = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+    let generator = execute(&mut session, "effect.add.generator", &json!({"layer": upper, "generator": "dirt", "microAnchor": anchor})).unwrap()["effect"]
+        .as_u64()
+        .unwrap();
+    execute(&mut session, "layer.select", &json!({"layer": upper, "target": generator})).unwrap();
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(1600.0, 1200.0))
+        .with_pixels_per_point(1.0)
+        .wgpu()
+        .build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.dock.focus(Panel::Properties);
+    harness.run_steps(6);
+    harness.get_by_label("Micro detail").scroll_to_me();
+    save(&mut harness, &output_dir, "mask-anchor-micro-detail");
+}
+
 #[test]
 #[ignore]
 fn path_tool_snapshots() {
@@ -496,4 +527,61 @@ fn rail_window_snapshots() {
     harness.set_size(egui::vec2(1600.0, 400.0));
     texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, "ui.view.history");
     save(&mut harness, &output_dir, "rail-history-short");
+}
+
+/// Visual check of the migrated catalogs and the live language selector.
+#[test]
+#[ignore]
+fn i18n_snapshots() {
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&output_dir).unwrap();
+    for code in ["en", "es", "ar"] {
+        assert!(texturecraft_ui_egui::i18n::available(code), "build with migrated catalogs for {code}");
+        let session = texturecraft_engine::sample_session(128, 32).unwrap();
+        let mut harness =
+            Harness::builder().with_size(egui::vec2(1600.0, 960.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+        harness.state_mut().ui.prefs.language = code.into();
+        harness.state_mut().ui.windows.settings = true;
+        save(&mut harness, &output_dir, &format!("i18n-{code}"));
+    }
+    texturecraft_ui_egui::i18n::set_language("en");
+}
+
+/// The merged effect panel selects an image and exposes its projection controls
+#[test]
+#[ignore]
+fn mask_fill_image_snapshot() {
+    use serde_json::json;
+    use texturecraft_engine::{
+        core::{EffectKind, LayerId, Source},
+        execute,
+    };
+
+    let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
+    let mut png = Vec::new();
+    image::RgbaImage::from_fn(16, 16, |x, y| {
+        let value = if (x / 4 + y / 4) % 2 == 0 { 255 } else { 32 };
+        image::Rgba([value, value, value, 255])
+    })
+    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .unwrap();
+    let name = session.import_resource_bytes("Mask checker.png", png).unwrap();
+    let layer = execute(&mut session, "layer.add.fill", &json!({"color": [0.8, 0.2, 0.1]})).unwrap()["layer"].as_u64().unwrap();
+    execute(&mut session, "mask.add.black", &json!({})).unwrap();
+    let effect = execute(&mut session, "effect.add.fill", &json!({"target": "mask", "value": 1.0})).unwrap()["effect"].as_u64().unwrap();
+    execute(&mut session, "layer.select", &json!({"layer": layer, "target": effect})).unwrap();
+    let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1100.0)).wgpu().build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.prefs.language = "en".into();
+    harness.run_steps(6);
+    harness.get_by_value("Uniform value").click();
+    harness.run_steps(3);
+    save(&mut harness, &output_dir, "mask-fill-image-menu");
+    harness.get_by_role_and_label(egui::Role::Button, &name).click();
+    harness.run_steps(4);
+    let EffectKind::Fill { source, .. } = &harness.state().session.doc.project.effect(LayerId(effect)).unwrap().1.kind else { panic!("fill effect") };
+    assert_eq!(*source, Source::image(name));
+    assert!(harness.query_by_label("Projection").is_some(), "image projection is editable");
+    save(&mut harness, &output_dir, "mask-fill-image-selected");
 }
