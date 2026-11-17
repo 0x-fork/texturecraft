@@ -23,6 +23,8 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     new_project(app, ctx);
     about(app, ctx);
     settings(app, ctx);
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::project_config::show(app, ctx);
     crate::keymap::window(app, ctx);
     crate::windows::export(app, ctx);
     #[cfg(target_arch = "wasm32")]
@@ -152,7 +154,7 @@ pub(crate) fn window<'a>(id: &str, title: &str, open: &'a mut bool) -> egui::Win
 }
 
 /// A centered dialog; `id` keeps its place across UI languages.
-fn dialog<'a>(id: &str, title: &str, open: &'a mut bool) -> egui::Window<'a> {
+pub(crate) fn dialog<'a>(id: &str, title: &str, open: &'a mut bool) -> egui::Window<'a> {
     egui::Window::new(title.to_owned())
         .id(egui::Id::unique(id))
         .open(open)
