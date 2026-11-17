@@ -226,7 +226,7 @@ fn window_views_open_the_rail_panels_popup() {
     assert!(popup_shows(&harness, "Shader Settings"));
     assert!(!harness.state().ui.dock.is_open(Panel::Shader));
 
-    // Display Settings opens the same way, from its own rail icon (Project Configuration is a window of its own)
+    // Display Settings still opens from its rail icon
     click_rail(&mut harness, "Display Settings");
 
     assert!(popup_shows(&harness, "Display Settings"));

@@ -2,6 +2,7 @@
 //! Keep feature tests in their own modules; the standalone session.rs target remains available.
 
 mod bake;
+mod bake_checks;
 mod bake_resolution;
 mod bake_settings;
 mod bake_tiles;
@@ -25,6 +26,7 @@ mod polygon_fill;
 mod project_recovery;
 mod sample;
 mod thumbs;
+mod tool_availability;
 mod tools;
 mod udim;
 mod uv_strokes;

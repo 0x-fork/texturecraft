@@ -4,6 +4,7 @@
 
 use egui::{Key, Modifiers};
 use serde_json::{Value, json};
+use texturecraft_engine::Tool;
 
 use crate::TextureCraftApp;
 use crate::i18n::tr;
@@ -110,7 +111,7 @@ fn is_ui(id: &str) -> bool {
     id.starts_with("ui.")
 }
 
-/// Whether an item can run now.
+/// Whether an item can run now
 pub fn enabled(app: &TextureCraftApp, id: &str) -> bool {
     if let Some(panel) = crate::docking::view_panel(id) {
         return panel.available_in(app.ui.mode);
@@ -123,7 +124,14 @@ pub fn enabled(app: &TextureCraftApp, id: &str) -> bool {
     if is_ui(id) {
         return true;
     }
-    texturecraft_engine::find(id).is_some_and(|c| (c.enabled)(&app.session).is_ok())
+
+    // Scripts may pick any tool, but the shelf and its shortcuts offer only those that can act
+    let tool = id.strip_prefix("tool.").and_then(|tool_id| Tool::ALL.into_iter().find(|tool| tool.id() == tool_id));
+    if tool.is_some_and(|tool| !app.session.tool_usable(tool)) {
+        return false;
+    }
+
+    texturecraft_engine::find(id).is_some_and(|command| (command.enabled)(&app.session).is_ok())
 }
 
 /// Whether an id is implemented at all (parity report).
@@ -158,7 +166,8 @@ pub fn invoke(app: &mut TextureCraftApp, ctx: &egui::Context, id: &str) {
         "ui.quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         #[cfg(not(target_arch = "wasm32"))]
         "ui.projectConfig" => crate::project_config::open(app),
-        // The browser can't change the mesh file, so only the Display panel is left to open.
+
+        // The browser cannot change the mesh file, so open Display instead
         #[cfg(target_arch = "wasm32")]
         "ui.projectConfig" => crate::rail_popup::open(app, crate::docking::Panel::Display),
         "ui.settings" => app.ui.windows.settings = true,
@@ -187,6 +196,7 @@ pub fn invoke(app: &mut TextureCraftApp, ctx: &egui::Context, id: &str) {
             if crate::windows::file_action(app, ctx, id) {
                 return;
             }
+
             app.run(id, Value::Null);
         }
     }
@@ -383,6 +393,7 @@ pub fn shortcuts(app: &mut TextureCraftApp, ctx: &egui::Context) {
             app.session.cancel_stroke();
             app.session.cancel_path();
         }
+
         commands
     });
 
@@ -393,6 +404,7 @@ pub fn shortcuts(app: &mut TextureCraftApp, ctx: &egui::Context) {
             // Ctrl+V reaches the app only while the system clipboard holds text or an image
             ctx.copy_text(layer.name.clone());
         }
+
         invoke(app, ctx, effect_command(app, id));
     }
 }

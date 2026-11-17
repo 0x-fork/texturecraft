@@ -10,6 +10,8 @@
 mod bake_job;
 pub mod bake_mode;
 mod bake_scene;
+#[cfg(not(target_arch = "wasm32"))]
+mod brush_preset_save;
 mod color_selection_editor;
 pub mod control;
 mod decal_drop;
@@ -22,6 +24,7 @@ mod filter_slot;
 pub mod fonts;
 mod generator_panel;
 pub mod gpu;
+mod grid_tile;
 pub mod i18n;
 pub mod id_color_pick;
 pub mod keymap;
@@ -49,8 +52,16 @@ pub mod render_mode;
 mod resource_picker;
 mod resource_picker_item;
 mod running_bake;
+pub mod saved_search;
+mod screen_color_pick;
 pub mod shelf;
+mod shelf_entry;
+mod shelf_folders;
+pub mod shelf_panes;
 pub mod shelf_preview;
+mod shelf_tabs;
+mod shelf_toolbar;
+pub mod shelf_view;
 mod soft_box;
 pub mod state;
 pub mod symmetry;
@@ -562,7 +573,7 @@ fn spawn_worker<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 's
         let _ = tx.send(f());
     });
     if let Err(e) = spawned {
-        // The receiver reports a stopped worker.
+        // The receiver reports a stopped worker
         log::warn!("could not start {name}: {e}");
     }
     rx
@@ -570,7 +581,7 @@ fn spawn_worker<T: Send + 'static>(name: &str, f: impl FnOnce() -> T + Send + 's
 
 #[cfg(target_arch = "wasm32")]
 fn spawn_worker<T: Send + 'static>(_name: &str, f: impl FnOnce() -> T + Send + 'static) -> std::sync::mpsc::Receiver<T> {
-    // shortcut: no threads on the web; the work runs on the UI thread (the window pauses).
+    // Web builds run the work synchronously because threads are unavailable
     let (tx, rx) = std::sync::mpsc::channel();
     let _ = tx.send(f());
     rx

@@ -179,6 +179,11 @@ fn window_snapshots() {
     save(&mut harness, &output_dir, "window-settings");
     harness.state_mut().ui.windows.settings = false;
 
+    let context = harness.ctx.clone();
+    texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, "ui.projectConfig");
+    save(&mut harness, &output_dir, "window-project-configuration");
+    harness.state_mut().ui.windows.project_config = None;
+
     // A taller window exposes every mesh-map slot
     harness.state_mut().ui.dock.focus(Panel::TextureSetSettings);
     harness.set_size(egui::vec2(1600.0, 1800.0));
@@ -196,6 +201,7 @@ fn window_snapshots() {
         texturecraft_engine::execute(session, id, &params).unwrap();
     }
     save(&mut harness, &output_dir, "properties-levels");
+
     // Show the Layers panel thumbnails with a hidden content effect, a folder and a mask
     let session = &mut harness.state_mut().session;
     for (id, params) in [
@@ -230,6 +236,7 @@ fn window_snapshots() {
     }
     save(&mut harness, &output_dir, "panel-layers");
     harness.set_size(egui::vec2(1600.0, 960.0));
+
     // Show the second path selected in Properties
     let session = &mut harness.state_mut().session;
     for (id, params) in [
@@ -282,16 +289,16 @@ fn bake_uv_tiles_snapshot() {
     harness.state_mut().ui.mode = Mode::Baking;
     save(&mut harness, &output_dir, "bake-uv-tiles");
 
-    harness.get_by_value("128 × 128*").click();
+    harness.get_by_value("128x128*").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-menu");
     harness.get_by_label("Remove resolution override").click();
     save(&mut harness, &output_dir, "bake-tile-resolution-inherited");
-    assert!(harness.query_by_value("128 × 128*").is_none());
+    assert!(harness.query_by_value("128x128*").is_none());
     assert!(harness.state().session.doc.project.texture_sets[0].tile_resolutions.is_empty());
     let inherited_resolution = harness.get_by_label("UV tile 1002 resolution").rect().center();
     harness.hover_at(inherited_resolution);
     save(&mut harness, &output_dir, "bake-tile-resolution-hover");
-    assert_eq!(harness.get_all_by_value("256 × 256").count(), 2);
+    assert_eq!(harness.get_all_by_value("256x256").count(), 2);
     harness.hover_at(egui::pos2(900.0, 500.0));
     harness.state_mut().session.undo().unwrap();
     harness.run_steps(3);

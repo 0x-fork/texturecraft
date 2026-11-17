@@ -1,6 +1,8 @@
 //! Edit > Project Configuration...: the project's settings in sections. Today it has one, the
 //! 3D mesh: pick another mesh file for the project, or read the current one again.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use egui::{Key, Modifiers};
 use serde_json::{Value, json};
 use texturecraft_engine::core::NormalFormat;
@@ -14,14 +16,28 @@ use crate::theme::caption;
 use crate::widgets::primary_button;
 
 /// Room for the Select... button and its info icon beside the path.
-const SELECT_BUTTON_WIDTH: f32 = 150.0;
+const SELECT_BUTTON_WIDTH_POINTS: f32 = 150.0;
 /// Room for an info icon at the end of a row.
-const INFO_WIDTH: f32 = 28.0;
+const INFO_WIDTH_POINTS: f32 = 28.0;
+/// Keep a usable field when the dialog is narrowed.
+const MIN_FIELD_WIDTH_POINTS: f32 = 60.0;
+/// Initial width of the configuration dialog.
+const DEFAULT_DIALOG_WIDTH_POINTS: f32 = 460.0;
 
 /// Opens the window on the current project, with nothing chosen yet.
 pub(crate) fn open(app: &mut TextureCraftApp) {
-    app.ui.windows.project_config =
-        Some(ProjectConfig { mesh: None, reimport: false, preserve: true, normal_format: None, confirm: false, project: app.session.project_id });
+    // Layout resets must not reuse an identity held by a pending file picker
+    static NEXT_OPENING_ID: AtomicU64 = AtomicU64::new(1);
+
+    app.ui.windows.project_config = Some(ProjectConfig {
+        mesh: None,
+        reimport: false,
+        preserve: true,
+        normal_format: None,
+        confirm: false,
+        project: app.session.project_id,
+        opening_id: NEXT_OPENING_ID.fetch_add(1, Ordering::Relaxed),
+    });
 }
 
 /// `text` with its beginning replaced by an ellipsis until `fits` accepts it (the end of a path
@@ -30,9 +46,11 @@ fn elide_start(text: &str, fits: impl Fn(&str) -> bool) -> String {
     if fits(text) {
         return text.to_string();
     }
+
     let chars: Vec<char> = text.chars().collect();
     let shown = |from: usize| format!("…{}", chars[from..].iter().collect::<String>());
-    // Dropping more characters only ever makes it shorter, so the first start that fits is found by bisection.
+
+    // Bisection finds the longest tail that fits because each shorter tail also fits
     let (mut low, mut high) = (1, chars.len());
     while low < high {
         let mid = low + (high - low) / 2;
@@ -42,6 +60,7 @@ fn elide_start(text: &str, fits: impl Fn(&str) -> bool) -> String {
             low = mid + 1;
         }
     }
+
     shown(low)
 }
 
@@ -53,8 +72,10 @@ pub(crate) fn keys_in(app: &mut TextureCraftApp, input: &mut egui::InputState, n
     if popup_open {
         return;
     }
+
     let escape = input.consume_key(Modifiers::NONE, Key::Escape);
     let enter = input.consume_key(Modifiers::NONE, Key::Enter);
+
     if escape {
         app.ui.windows.project_config = None;
     } else if enter
@@ -84,73 +105,87 @@ fn format_name(format: NormalFormat) -> &'static str {
 
 pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let Some(mut config) = app.ui.windows.project_config.clone() else { return };
-    // Another project was opened meanwhile: the choices were for the old one.
+
+    // Choices for another project cannot be applied here
     if config.project != app.session.project_id {
         app.ui.windows.project_config = None;
         return;
     }
+
     let project = &app.session.doc.project;
-    let current = project.mesh_path.clone();
-    // What the project's mesh came from: its file, or at least the name it was imported under.
-    let named = if current.is_empty() { project.mesh_file.clone() } else { current.clone() };
-    let readable = app.session.remembered_mesh_path().is_some();
-    let normal_format = project.normal_format;
-    // Each texture set's UV tiles, as `1001, 1002` (None: the set has none).
-    let tiles: Vec<(String, Option<String>)> = project
+    let current_mesh_path = project.mesh_path.clone();
+
+    // Show the imported name when there is no file path
+    let mesh_label = if current_mesh_path.is_empty() { project.mesh_file.clone() } else { current_mesh_path.clone() };
+    let source_file_available = app.session.remembered_mesh_path().is_some();
+    let current_normal_format = project.normal_format;
+
+    // Keep each texture set's tiles together for the read-only list
+    let texture_set_tiles: Vec<(String, Option<String>)> = project
         .texture_sets
         .iter()
         .map(|set| (set.name.clone(), (!set.uv_tiles.is_empty()).then(|| set.uv_tiles.iter().map(u32::to_string).collect::<Vec<_>>().join(", "))))
         .collect();
-    // A file other than the project's own is the project's new mesh.
-    let changed = config.mesh.as_ref().filter(|chosen| **chosen != current).cloned();
+
+    // Re-selecting the current path cancels an earlier choice
+    let chosen_mesh = config.mesh.as_ref().filter(|chosen| **chosen != current_mesh_path).cloned();
 
     let mut open = true;
     let (mut ok, mut cancel, mut select) = (std::mem::take(&mut config.confirm), false, false);
-    crate::windows::dialog("project_config", tr("Project configuration"), &mut open).default_width(460.0).show(ctx, |ui| {
-        // One section per part of the project; more follow the same pattern.
+
+    crate::windows::dialog("project_config", tr("Project configuration"), &mut open).default_width(DEFAULT_DIALOG_WIDTH_POINTS).show(ctx, |ui| {
+        // Keep the project sections in the order users expect
         ui.label(caption(tr("3D MESH")));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label(tr("3D mesh"));
             info_icon(ui, tr("The mesh file the project is built on. Hover the path to see it in full."));
-            let shown = changed.clone().unwrap_or_else(|| named.clone());
+
+            let display_path = chosen_mesh.clone().unwrap_or_else(|| mesh_label.clone());
             let font = egui::TextStyle::Body.resolve(ui.style());
-            let max = (ui.available_width() - SELECT_BUTTON_WIDTH).max(60.0);
-            let measure = |s: &str| ui.painter().layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE).rect.width() <= max;
-            if shown.is_empty() {
+            let path_width_points = (ui.available_width() - SELECT_BUTTON_WIDTH_POINTS).max(MIN_FIELD_WIDTH_POINTS);
+            let measure = |text: &str| ui.painter().layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE).rect.width() <= path_width_points;
+
+            if display_path.is_empty() {
                 ui.weak(tr("Built-in mesh"));
             } else {
-                ui.label(elide_start(&shown, measure)).on_hover_text(&shown);
+                ui.label(elide_start(&display_path, measure)).on_hover_text(&display_path);
             }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 info_icon(ui, tr("Choose another mesh file for the project. It is read when you press OK."));
                 select = ui.button(tr("Select...")).clicked();
             });
         });
-        if changed.is_none() && !current.is_empty() && !readable {
+        if chosen_mesh.is_none() && !current_mesh_path.is_empty() && !source_file_available {
             ui.colored_label(ui.visuals().error_fg_color, tr("File not found"));
         }
+
         ui.add_space(4.0);
-        // Another file always reads the mesh again, so its box shows ticked and can't be cleared.
-        // Without a file on disk there is nothing to read again.
-        let mut reimport = config.reimport || changed.is_some();
-        let free = changed.is_none() && readable;
-        let tick = ui
+
+        // A selected replacement always reads the mesh again
+        // A missing source file cannot be reimported
+        let mut reimport = config.reimport || chosen_mesh.is_some();
+        let can_reimport_source = chosen_mesh.is_none() && source_file_available;
+        let reimport_checkbox = ui
             .horizontal(|ui| {
-                let tick = ui.add_enabled(free, egui::Checkbox::new(&mut reimport, tr("Reimport mesh")));
+                let checkbox = ui.add_enabled(can_reimport_source, egui::Checkbox::new(&mut reimport, tr("Reimport mesh")));
                 info_icon(ui, tr("Read the mesh file again, keeping the layers and painted strokes"));
-                tick
+                checkbox
             })
             .inner;
-        if free {
+
+        if can_reimport_source {
             config.reimport = reimport;
-        } else if changed.is_none() {
-            tick.on_disabled_hover_text(tr("There is no mesh file to read again. Select one."));
+        } else if chosen_mesh.is_none() {
+            reimport_checkbox.on_disabled_hover_text(tr("There is no mesh file to read again. Select one."));
         }
+
         ui.add_space(8.0);
         ui.label(caption(tr("Import settings")));
-        // Only a mesh that is going to be read has settings to apply.
-        let importing = changed.is_some() || (config.reimport && readable);
+
+        // Import settings matter only when a mesh will be read
+        let importing = chosen_mesh.is_some() || (config.reimport && source_file_available);
         ui.horizontal(|ui| {
             ui.add_enabled(importing, egui::Checkbox::new(&mut config.preserve, tr("Preserve stroke positions on mesh")));
             info_icon(ui, tr("Painted strokes follow the surface when the new mesh's UVs differ"));
@@ -159,17 +194,17 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         ui.add_space(12.0);
         ui.label(caption(tr("PROJECT SETTINGS")));
         ui.add_space(4.0);
-        let shown_format = config.normal_format.unwrap_or(normal_format);
+        let shown_format = config.normal_format.unwrap_or(current_normal_format);
         ui.horizontal(|ui| {
             ui.label(tr("Normal map format"));
             egui::ComboBox::from_id_salt(tr("Normal map format"))
-                .width((ui.available_width() - INFO_WIDTH).max(60.0))
+                .width((ui.available_width() - INFO_WIDTH_POINTS).max(MIN_FIELD_WIDTH_POINTS))
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .selected_text(format_name(shown_format))
                 .show_ui(ui, |ui| {
                     for format in [NormalFormat::OpenGl, NormalFormat::DirectX] {
                         if ui.selectable_label(format == shown_format, format_name(format)).clicked() {
-                            config.normal_format = (format != normal_format).then_some(format);
+                            config.normal_format = (format != current_normal_format).then_some(format);
                         }
                     }
                 })
@@ -180,17 +215,25 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             info_icon(ui, tr("Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it."));
         });
         ui.add_space(4.0);
-        // Read only here; the Texture Set Settings panel changes them.
+
+        // Texture Set Settings owns UV tile changes
         ui.horizontal(|ui| {
             ui.label(tr("UV Tile settings (UDIMs)"));
             info_icon(ui, tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings."));
         });
-        if tiles.iter().all(|(_, t)| t.is_none()) {
+        if texture_set_tiles.iter().all(|(_, tile_text)| tile_text.is_none()) {
             ui.label(egui::RichText::new(tr("No UV tiles")).weak());
         }
-        for (name, t) in tiles.iter().filter(|(_, t)| t.is_some()) {
-            let list = t.as_deref().unwrap_or_default();
-            ui.label(egui::RichText::new(if tiles.len() > 1 { trf("{set}: {tiles}", &[("set", name), ("tiles", &list)]) } else { list.to_string() }).weak());
+        for (name, tile_text) in texture_set_tiles.iter().filter(|(_, tile_text)| tile_text.is_some()) {
+            let tile_list = tile_text.as_deref().unwrap_or_default();
+            ui.label(
+                egui::RichText::new(if texture_set_tiles.len() > 1 {
+                    trf("{set}: {tiles}", &[("set", name), ("tiles", &tile_list)])
+                } else {
+                    tile_list.to_string()
+                })
+                .weak(),
+            );
         }
         ui.label(egui::RichText::new(tr("Change them in Texture Set Settings")).small().weak());
 
@@ -207,32 +250,35 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
 
     if select {
         let dialog = FileDialog::open().filter(tr("3D meshes"), &texturecraft_engine::formats::mesh_import::MESH_EXTENSIONS);
-        app.ask_file(dialog, Bound::Project, |app, paths| {
+        let opening_id = config.opening_id;
+        app.ask_file(dialog, Bound::Project, move |app, paths| {
             let Some(path) = paths.first().map(|p| p.display().to_string()) else { return };
-            let current = app.session.doc.project.mesh_path.clone();
-            if let Some(config) = app.ui.windows.project_config.as_mut() {
-                // Picking the project's own file again drops an earlier choice.
-                config.mesh = (path != current).then_some(path);
+
+            let current_mesh_path = app.session.doc.project.mesh_path.clone();
+            if let Some(config) = app.ui.windows.project_config.as_mut().filter(|config| config.opening_id == opening_id) {
+                // Re-selecting the source file drops an earlier choice
+                config.mesh = (path != current_mesh_path).then_some(path);
             }
         });
     }
-    // OK closes the window once everything worked; a failure leaves it open, choices kept, with its toast.
-    // The mesh goes first: a project that couldn't change its mesh stays as it was.
+
+    // Apply the mesh first so a failed mesh change leaves the format untouched
     let mut mesh_applied = false;
     let done = ok && {
         let reimport = config.reimport.then(|| app.session.remembered_mesh_path().map(str::to_string)).flatten();
-        mesh_applied = if config.reimport && changed.is_none() && reimport.is_none() {
-            // The file went away after the box was ticked: say so and stay open (the tick is dropped, so a second OK applies the rest).
+        mesh_applied = if config.reimport && chosen_mesh.is_none() && reimport.is_none() {
+            // Drop a stale reimport tick so the user can retry the remaining settings
             app.toast(tr("File not found"), true);
             config.reimport = false;
             false
         } else {
-            match mesh_command(changed.as_deref(), reimport.as_deref(), config.preserve) {
+            match mesh_command(chosen_mesh.as_deref(), reimport.as_deref(), config.preserve) {
                 Some((command, params)) => app.run(command, params).is_some(),
                 None => true,
             }
         };
-        // The format is compared with what the project has now: the Texture Set Settings panel may have set it too.
+
+        // Another panel may have set the same format while this dialog was open
         let format = config.normal_format.filter(|format| *format != app.session.doc.project.normal_format);
         mesh_applied
             && match format {
@@ -242,12 +288,14 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 None => true,
             }
     };
+
     if done || cancel || !open {
         app.ui.windows.project_config = None;
     } else if let Some(stored) = app.ui.windows.project_config.as_mut() {
-        // Keep the choices made now; the file answer arrives later through the stored value.
+        // A file answer arrives later through the stored state
         (stored.reimport, stored.preserve, stored.normal_format, stored.confirm) = (config.reimport, config.preserve, config.normal_format, false);
-        // A mesh already changed is not read again by a retry of the rest.
+
+        // A format retry must not reimport an already changed mesh
         if ok && mesh_applied {
             (stored.mesh, stored.reimport) = (None, false);
         }
@@ -266,6 +314,7 @@ mod tests {
     #[test]
     fn a_long_path_loses_its_beginning() {
         let shown = elide_start("/home/me/projects/models/hero.obj", |s| s.chars().count() <= 12);
+
         assert_eq!(shown, "…ls/hero.obj", "the longest tail that fits, not a shorter one");
     }
 
@@ -273,10 +322,14 @@ mod tests {
     fn the_import_setting_goes_to_the_command() {
         for preserve in [true, false] {
             let (command, params) = mesh_command(Some("/a/b.obj"), None, preserve).unwrap();
+
             assert_eq!((command, params["preserveStrokes"].as_bool()), ("file.changeMesh", Some(preserve)));
+
             let (command, params) = mesh_command(None, Some("/a/c.obj"), preserve).unwrap();
+
             assert_eq!((command, params["preserveStrokes"].as_bool(), params["path"].as_str()), ("file.reimportMesh", Some(preserve), Some("/a/c.obj")));
         }
+
         assert!(mesh_command(None, None, true).is_none(), "nothing to read");
     }
 }
