@@ -311,12 +311,12 @@ impl LinkJob {
 
 /// Most texels one map may have: 8192 x 8192, the largest texture set. Decoded as RGBA f32 that is
 /// 1 GiB, so without this a single 16384 x 16384 map (a tiny PNG) would decode to 4 GiB.
-const MAX_MAP_TEXELS: u64 = 8192 * 8192;
-/// Most texels all of a material's maps may decode to together: nine usages at 4096 x 4096 (151 M texels).
+const MAX_MAP_TEXELS: u64 = texturecraft_formats::MAX_RESOURCE_TEXELS;
+/// Most texels all of a material's maps may decode to together: nine 4096 x 4096 images (151 M texels).
 /// A decoded texel is an RGBA `f32` (16 bytes) and the decoded maps stay in the session, so this holds one
 /// `.mcmat` to about 2.25 GiB of pixels however small the file is (a blank 8192 x 8192 PNG is a few hundred
-/// KiB). It still fits all nine usages at 4K, or an 8K base colour with five 4K maps, which covers real
-/// packages; a larger one is refused with an error naming the map, never shrunk silently.
+/// KiB). This is a per-import memory policy, not the number of supported channels. It fits nine 4K maps,
+/// or an 8K base colour with five 4K maps; larger imports are refused, never shrunk silently.
 const MAX_DECODED_TEXELS: u64 = 9 * 4096 * 4096;
 
 /// Decode every map of `m` (validating them) with the channel it feeds. A usage listed more than
@@ -641,5 +641,29 @@ mod tests {
         let m = material(vec![("baseColor", png(8)), ("roughness", png(8)), ("metallic", png(8))]);
         assert_eq!(decoded_maps_within(&m, 192, 64).unwrap().len(), 3, "at the budget");
         assert!(decoded_maps_within(&m, 191, 64).is_err(), "one texel under: the third map goes over");
+    }
+    /// Shared version-2/SBS parsing retains its behavior before duplicate decode filtering.
+    #[test]
+    fn shared_version_two_archive_keeps_sbs_and_decodes_repeated_usage_once() {
+        use std::io::Write;
+
+        let manifest = serde_json::json!({
+            "format": "craft-material", "version": 2, "name": "M", "graph": "Second", "size": [4, 4],
+            "maps": (0..64).map(|_| serde_json::json!({"usage": "baseColor", "file": "maps/base.png"})).collect::<Vec<_>>(),
+            "source": "source.sbs"
+        });
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in [("material.json", manifest.to_string().into_bytes()), ("maps/base.png", png(4)), ("source.sbs", b"source package".to_vec())] {
+            archive.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            archive.write_all(&bytes).unwrap();
+        }
+        let material = read_mcmat(&archive.finish().unwrap().into_inner()).unwrap();
+        assert_eq!(material.manifest.version, 2);
+        assert_eq!(material.manifest.graph, "Second");
+        assert_eq!(material.manifest.source, "source.sbs");
+        assert_eq!(material.source, b"source package");
+        let maps = decoded_maps(&material).unwrap();
+        assert_eq!(maps.len(), 1);
+        assert_eq!((maps[0].2.width, maps[0].2.height), (4, 4));
     }
 }
