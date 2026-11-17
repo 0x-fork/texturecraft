@@ -23,6 +23,8 @@ const INFO_WIDTH_POINTS: f32 = 28.0;
 const MIN_FIELD_WIDTH_POINTS: f32 = 60.0;
 /// Initial width of the configuration dialog.
 const DEFAULT_DIALOG_WIDTH_POINTS: f32 = 460.0;
+/// Leave space around the centered dialog on short viewports.
+const DIALOG_VIEWPORT_MARGIN_POINTS: f32 = 32.0;
 
 /// Opens the window on the current project, with nothing chosen yet.
 pub(crate) fn open(app: &mut TextureCraftApp) {
@@ -133,7 +135,12 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let mut open = true;
     let (mut ok, mut cancel, mut select) = (std::mem::take(&mut config.confirm), false, false);
 
-    crate::windows::dialog("project_config", tr("Project configuration"), &mut open).default_width(DEFAULT_DIALOG_WIDTH_POINTS).show(ctx, |ui| {
+    let dialog = crate::windows::dialog("project_config", tr("Project configuration"), &mut open)
+        .default_width(DEFAULT_DIALOG_WIDTH_POINTS)
+        .max_height((ctx.content_rect().height() - DIALOG_VIEWPORT_MARGIN_POINTS).max(0.0))
+        .vscroll(true);
+
+    dialog.show(ctx, |ui| {
         // Keep the project sections in the order users expect
         ui.label(caption(tr("3D MESH")));
         ui.add_space(4.0);

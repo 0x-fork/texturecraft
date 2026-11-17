@@ -99,6 +99,34 @@ fn the_menu_opens_the_window() {
 }
 
 #[test]
+fn many_texture_sets_keep_dialog_actions_reachable_in_a_short_viewport() {
+    let dir = temp_dir("many-tiles");
+    let mut h = app_on_a_quad(&dir);
+    let template = h.state().session.doc.project.texture_sets[0].clone();
+    h.state_mut().session.doc.project.texture_sets = (0..30)
+        .map(|index| {
+            let mut set = template.clone();
+            set.name = format!("Set {index}");
+            set.uv_tiles = vec![1001];
+            set
+        })
+        .collect();
+    h.set_size(egui::vec2(800.0, 480.0));
+
+    open_window(&mut h);
+    h.get_by_role_and_label(Role::Button, "Cancel").scroll_to_me();
+    h.run_steps(3);
+
+    let ok = h.get_by_role_and_label(Role::Button, "OK");
+    assert!(ok.rect().top() >= 0.0 && ok.rect().bottom() <= 480.0, "OK must be inside the viewport after scrolling: {:?}", ok.rect());
+    let cancel = h.get_by_role_and_label(Role::Button, "Cancel");
+    assert!(cancel.rect().top() >= 0.0 && cancel.rect().bottom() <= 480.0, "Cancel must be inside the viewport after scrolling: {:?}", cancel.rect());
+    cancel.click();
+    h.run_steps(3);
+    assert!(!window_is_open(&h));
+}
+
+#[test]
 fn every_setting_has_an_info_icon_and_the_window_ends_with_a_note() {
     let dir = temp_dir("info");
     let mut h = app_on_a_quad(&dir);
