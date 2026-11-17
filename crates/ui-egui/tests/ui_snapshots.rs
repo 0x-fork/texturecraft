@@ -558,16 +558,17 @@ fn mask_fill_image_snapshot() {
     };
 
     let Some(output_dir) = std::env::var_os("TC_UI_SNAPSHOTS").map(PathBuf::from) else { return };
+
     std::fs::create_dir_all(&output_dir).unwrap();
     let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
-    let mut png = Vec::new();
+    let mut png_bytes = Vec::new();
     image::RgbaImage::from_fn(16, 16, |x, y| {
         let value = if (x / 4 + y / 4) % 2 == 0 { 255 } else { 32 };
         image::Rgba([value, value, value, 255])
     })
-    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+    .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
     .unwrap();
-    let name = session.import_resource_bytes("Mask checker.png", png).unwrap();
+    let name = session.import_resource_bytes("Mask checker.png", png_bytes).unwrap();
     let layer = execute(&mut session, "layer.add.fill", &json!({"color": [0.8, 0.2, 0.1]})).unwrap()["layer"].as_u64().unwrap();
     execute(&mut session, "mask.add.black", &json!({})).unwrap();
     let effect = execute(&mut session, "effect.add.fill", &json!({"target": "mask", "value": 1.0})).unwrap()["effect"].as_u64().unwrap();
@@ -575,11 +576,14 @@ fn mask_fill_image_snapshot() {
     let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1100.0)).wgpu().build_eframe(|context| TextureCraftApp::new(context, session));
     harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(6);
+
     harness.get_by_value("Uniform value").click();
     harness.run_steps(3);
     save(&mut harness, &output_dir, "mask-fill-image-menu");
+
     harness.get_by_role_and_label(egui::Role::Button, &name).click();
     harness.run_steps(4);
+
     let EffectKind::Fill { source, .. } = &harness.state().session.doc.project.effect(LayerId(effect)).unwrap().1.kind else { panic!("fill effect") };
     assert_eq!(*source, Source::image(name));
     assert!(harness.query_by_label("Projection").is_some(), "image projection is editable");

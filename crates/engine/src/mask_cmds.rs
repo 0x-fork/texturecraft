@@ -284,53 +284,62 @@ pub(crate) fn anchor_source(s: &Session, cmd: &str, reader: LayerId, anchor: Lay
 
 /// A source reading image resource `name`, which must be imported and decoded: the compositor
 /// would otherwise fill with a flat gray without saying why
-fn image_source(s: &Session, cmd: &str, name: &str) -> Result<Source> {
-    if !s.images.contains_key(name) {
-        return Err(bad(cmd, format!("no image resource `{name}` (import it first)")));
+fn image_source(session: &Session, command: &str, name: &str) -> Result<Source> {
+    if !session.images.contains_key(name) {
+        return Err(bad(command, format!("no image resource `{name}` (import it first)")));
     }
 
     Ok(Source::image(name))
 }
 
-fn add_fill(s: &mut Session, p: &Value) -> Result<Value> {
-    let projection = projection_from(p, "effect.add.fill", None)?;
-    let blend = blend_param("effect.add.fill", p, "blend")?.unwrap_or(BlendMode::Normal);
-    let id = layer_param(s, "effect.add.fill", p)?;
-    if content_target(p, "effect.add.fill")? {
-        let mut fill = crate::layer_cmds::fill_from("effect.add.fill", p)?;
+fn add_fill(session: &mut Session, params: &Value) -> Result<Value> {
+    const CMD: &str = "effect.add.fill";
+    const MIN_PATTERN_SCALE: f32 = 0.001;
+    const MAX_PATTERN_SCALE: f32 = 1000.0;
+
+    let projection = projection_from(params, CMD, None)?;
+    let blend = blend_param(CMD, params, "blend")?.unwrap_or(BlendMode::Normal);
+    let layer = layer_param(session, CMD, params)?;
+
+    if content_target(params, CMD)? {
+        let mut fill = crate::layer_cmds::fill_from(CMD, params)?;
         if fill.sources.is_empty() {
-            fill.sources = s.doc.project.layer(id)?.channels.keys().map(|c| (*c, Source::uniform_of(*c))).collect();
+            fill.sources = session.doc.project.layer(layer)?.channels.keys().map(|channel| (*channel, Source::uniform_of(*channel))).collect();
         }
+
         fill.projection = projection;
-        return push_effect(s, p, EffectKind::Material(fill), blend);
+        return push_effect(session, params, EffectKind::Material(fill), blend);
     }
 
-    if let Some(a) = u64p(p, "anchor") {
-        let channel = channel_param("effect.add.fill", p, "anchorChannel")?.unwrap_or(Channel::Height);
-        let reader = s.doc.project.mask_owner(id);
-        let source = anchor_source(s, "effect.add.fill", reader, LayerId(a), channel)?;
-        return push_effect(s, p, EffectKind::Fill { source, projection }, blend);
-    }
-    if let Some(name) = strp(p, "image") {
-        let source = image_source(s, "effect.add.fill", name)?;
-        return push_effect(s, p, EffectKind::Fill { source, projection }, blend);
+    if let Some(anchor) = u64p(params, "anchor") {
+        let channel = channel_param(CMD, params, "anchorChannel")?.unwrap_or(Channel::Height);
+        let reader = session.doc.project.mask_owner(layer);
+        let source = anchor_source(session, CMD, reader, LayerId(anchor), channel)?;
+        return push_effect(session, params, EffectKind::Fill { source, projection }, blend);
     }
 
-    let source = match strp(p, "procedural") {
-        Some(k) => {
-            let kind = ProceduralKind::parse(k).ok_or_else(|| bad("effect.add.fill", format!("unknown procedural `{k}`")))?;
-            let mut pr = Procedural::new(kind);
-            if let Some(v) = f32p(p, "scale") {
-                pr.scale = v.clamp(0.001, 1000.0);
+    if let Some(name) = strp(params, "image") {
+        let source = image_source(session, CMD, name)?;
+        return push_effect(session, params, EffectKind::Fill { source, projection }, blend);
+    }
+
+    let source = match strp(params, "procedural") {
+        Some(name) => {
+            let kind = ProceduralKind::parse(name).ok_or_else(|| bad(CMD, format!("unknown procedural `{name}`")))?;
+            let mut pattern = Procedural::new(kind);
+            if let Some(scale) = f32p(params, "scale") {
+                pattern.scale = scale.clamp(MIN_PATTERN_SCALE, MAX_PATTERN_SCALE);
             }
-            if let Some(v) = u64p(p, "seed") {
-                pr.seed = v as u32;
+            if let Some(seed) = u64p(params, "seed") {
+                pattern.seed = seed as u32;
             }
-            Source::Procedural { pattern: pr, low: [0.0; 3], high: [1.0; 3] }
+
+            Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3] }
         }
-        None => Source::Uniform([f32p(p, "value").unwrap_or(1.0).clamp(0.0, 1.0); 3]),
+        None => Source::Uniform([f32p(params, "value").unwrap_or(1.0).clamp(0.0, 1.0); 3]),
     };
-    push_effect(s, p, EffectKind::Fill { source, projection }, blend)
+
+    push_effect(session, params, EffectKind::Fill { source, projection }, blend)
 }
 
 /// Apply `params` to `generator`, using `command` in errors
@@ -593,6 +602,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
         }
         _ => None,
     };
+
     let micro = match session.doc.project.effect(effect) {
         Some((owner, Effect { kind: EffectKind::Generator(generator), .. })) => micro_param(session, CMD, owner, params, generator.micro)?,
         _ if params.get("microAnchor").is_some() || params.get("microAmount").is_some() => {
@@ -686,8 +696,8 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
                 {
                     *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 }
-                // Projection params (projection kind and its transforms) keep the current values
-                // for any field not given, so this is a no-op when none are present.
+
+                // Preserve projection fields that the edit does not supply
                 *projection = projection_from(params, CMD, Some(&*projection))?;
             }
             EffectKind::ColorSelection { colors, tolerance } => crate::color_selection_cmds::apply_params(params, colors, tolerance)?,
@@ -698,8 +708,10 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
             }
             _ => {}
         }
+
         Ok(())
     })?;
+
     Ok(Value::Null)
 }
 

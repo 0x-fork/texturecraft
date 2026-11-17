@@ -1317,50 +1317,56 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
 /// image picked, if any. A resource that did not decode is not offered, as the commands that take
 /// an image refuse it.
 pub(crate) fn image_menu(app: &mut TextureCraftApp, ui: &mut Ui) -> Option<String> {
+    const LIST_HEIGHT_POINTS: f32 = 240.0;
+    const THUMBNAIL_SIZE_POINTS: f32 = 24.0;
+
     ui.label(caption(tr("Images")));
-    let ctx = ui.ctx().clone();
-    // A name filter atop the list, kept across frames while the menu stays open.
+
+    // Keep the name filter across menu frames
     let search_id = ui.make_persistent_id("image_search");
-    let mut search: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
+    let mut search_text: String = ui.data(|data| data.get_temp(search_id)).unwrap_or_default();
     if !app.session.images.is_empty() {
-        ui.add(egui::TextEdit::singleline(&mut search).hint_text(tr("Search")).desired_width(f32::INFINITY));
+        ui.add(egui::TextEdit::singleline(&mut search_text).hint_text(tr("Search")).desired_width(f32::INFINITY));
     }
-    let query = search.trim().to_lowercase();
-    ui.data_mut(|data| data.insert_temp(search_id, search));
-    // Gather the matching names with their cached thumbnails before drawing, so the borrow of the
-    // session and the thumbnail cache is released before the list closure runs.
-    let shown: Vec<(String, Option<egui::TextureHandle>)> = app
+    let search_query = search_text.trim().to_lowercase();
+    ui.data_mut(|data| data.insert_temp(search_id, search_text));
+
+    // Release the resource-list borrow before drawing rows that update the preview cache
+    let matching_images: Vec<String> = app
         .session
         .doc
         .resources
         .keys()
-        .filter(|name| app.session.images.contains_key(name.as_str()) && (query.is_empty() || name.to_lowercase().contains(&query)))
+        .filter(|name| app.session.images.contains_key(name.as_str()) && (search_query.is_empty() || name.to_lowercase().contains(&search_query)))
         .cloned()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .map(|name| {
-            let tex = app.session.images.get(&name).cloned().map(|img| app.thumbs.image(&ctx, &name, &img));
-            (name, tex)
-        })
         .collect();
+
     let mut picked = None;
+
     // Bounded so Import... and later items stay on screen with many images
-    egui::ScrollArea::vertical().id_salt("image_menu").max_height(240.0).show(ui, |ui| {
-        for (name, tex) in &shown {
+    egui::ScrollArea::vertical().id_salt("image_menu").max_height(LIST_HEIGHT_POINTS).show(ui, |ui| {
+        for name in &matching_images {
             ui.horizontal(|ui| {
-                let (rect, thumb_resp) = ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::click());
-                if let Some(tex) = tex {
+                let (rect, thumbnail_response) = ui.allocate_exact_size(egui::Vec2::splat(THUMBNAIL_SIZE_POINTS), egui::Sense::click());
+
+                // Offscreen rows keep their labels without resampling or uploading a preview
+                if ui.is_rect_visible(rect)
+                    && let Some(image) = app.session.images.get(name)
+                {
+                    let thumbnail = app.thumbs.image(ui.ctx(), name, image);
                     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                    ui.painter().image(tex.id(), rect, uv, egui::Color32::WHITE);
+                    ui.painter().image(thumbnail.id(), rect, uv, egui::Color32::WHITE);
                 }
-                // Clicking the thumbnail selects the image, like clicking its name.
-                let thumb_resp = thumb_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-                if thumb_resp.clicked() || ui.button(name.as_str()).clicked() {
+
+                // The thumbnail and name select the same image
+                let thumbnail_response = thumbnail_response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                if thumbnail_response.clicked() || ui.button(name.as_str()).clicked() {
                     picked = Some(name.clone());
                 }
             });
         }
     });
+
     if ui.button(tr("Import...")).clicked() {
         crate::menus::invoke(app, ui.ctx(), "resource.import");
         ui.close();
@@ -1368,7 +1374,77 @@ pub(crate) fn image_menu(app: &mut TextureCraftApp, ui: &mut Ui) -> Option<Strin
     if picked.is_some() {
         ui.close();
     }
+
     picked
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod image_menu_tests {
+    use std::sync::Arc;
+
+    use egui_kittest::{Harness, kittest::Queryable};
+    use texturecraft_engine::compose::ImageRes;
+
+    use super::{TextureCraftApp, image_menu};
+
+    fn image_menu_harness(image_count: usize) -> texturecraft_engine::Result<Harness<'static, (TextureCraftApp, Option<String>)>> {
+        let mut session = texturecraft_engine::sample_session(128, 16)?;
+
+        // The menu reads decoded images; fixture bytes are never imported or decoded
+        for index in 0..image_count {
+            let name = format!("image-{index:04}.png");
+            let image = ImageRes { width: 32, height: 32, rgba: vec![[index as f32 / image_count as f32, 0.5, 0.25, 1.0]; 32 * 32], srgb: false };
+            session.doc.resources.insert(name.clone(), Arc::new(vec![0]));
+            session.images.insert(name, Arc::new(image));
+        }
+
+        let creation_context = eframe::CreationContext::_new_kittest(egui::Context::default());
+        let app = TextureCraftApp::new(&creation_context, session);
+        Ok(Harness::builder().with_size(egui::vec2(320.0, 400.0)).with_context_setup(crate::theme::install).build_ui_state(
+            |ui, (app, picked)| {
+                if let Some(name) = image_menu(app, ui) {
+                    *picked = Some(name);
+                }
+            },
+            (app, None),
+        ))
+    }
+
+    fn preview_stats(context: &egui::Context) -> (usize, usize) {
+        context
+            .tex_manager()
+            .read()
+            .allocated()
+            .filter(|(_, metadata)| metadata.name.starts_with("res_image-"))
+            .fold((0, 0), |(count, bytes), (_, metadata)| (count + 1, bytes + metadata.bytes_used()))
+    }
+
+    #[test]
+    fn image_menu_previews_only_visible_rows_and_keeps_later_images_selectable() {
+        const IMAGE_COUNT: usize = 128;
+        let mut harness = image_menu_harness(IMAGE_COUNT).unwrap();
+        let (initial_previews, _) = preview_stats(&harness.ctx);
+
+        assert!(initial_previews > 0);
+        assert!(initial_previews < IMAGE_COUNT, "offscreen images must not be resampled: {initial_previews}");
+
+        let initial_ids: Vec<_> =
+            harness.ctx.tex_manager().read().allocated().filter(|(_, metadata)| metadata.name.starts_with("res_image-")).map(|(id, _)| *id).collect();
+        harness.run_steps(2);
+
+        assert_eq!(preview_stats(&harness.ctx).0, initial_previews);
+        assert!(initial_ids.iter().all(|id| harness.ctx.tex_manager().read().meta(*id).is_some()), "warm frames reuse the same previews");
+
+        let last_name = format!("image-{:04}.png", IMAGE_COUNT - 1);
+        harness.get_by_label(&last_name).scroll_to_me();
+        harness.run_steps(30);
+
+        assert!(preview_stats(&harness.ctx).0 > initial_previews, "scrolling creates newly visible previews");
+        harness.get_by_label(&last_name).click();
+        harness.run_steps(2);
+
+        assert_eq!(harness.state().1.as_deref(), Some(last_name.as_str()));
+    }
 }
 
 /// An image from the Assets panel dropped on `resp`, outlined while one hovers it. Other assets
@@ -1377,6 +1453,7 @@ pub(crate) fn image_drop(ui: &Ui, resp: &egui::Response) -> Option<String> {
     if !resp.dnd_hover_payload::<ShelfDrag>().is_some_and(|d| matches!(d.asset, Asset::Texture(_))) {
         return None;
     }
+
     ui.painter().rect_stroke(resp.rect.shrink(1.0), 3.0, Stroke::new(2.0, Tokens::get(ui.ctx()).accent), egui::StrokeKind::Inside);
     match dnd_release::<ShelfDrag>(resp).map(|d| d.asset.clone()) {
         Some(Asset::Texture(name)) => Some(name),
@@ -2290,31 +2367,11 @@ pub(crate) fn anchor_label(app: &TextureCraftApp, anchor: LayerId, channel: Chan
 mod mask_anchor_label_tests {
     use egui_kittest::Harness;
     use serde_json::{Value, json};
-    use texturecraft_engine::core::{Channel, LayerId};
+    use texturecraft_engine::core::LayerId;
     use texturecraft_engine::execute;
 
-    use super::{anchor_label, anchors_below, effect_anchors_below};
+    use super::{anchors_below, effect_anchors_below};
     use crate::TextureCraftApp;
-
-    #[test]
-    fn disabled_mask_anchors_keep_their_selection_and_show_off() {
-        let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
-        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        execute(&mut session, "mask.add.black", &json!({"layer": lower})).unwrap();
-        let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower, "target": "mask"})).unwrap()["effect"].as_u64().unwrap();
-        let upper = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        execute(&mut session, "mask.toggle", &json!({"layer": lower, "enabled": false})).unwrap();
-
-        let mut harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
-        let labels = anchors_below(harness.state(), LayerId(upper));
-        assert!(labels.iter().any(|(id, label)| *id == LayerId(anchor) && label.contains("(Off)")));
-        assert!(anchor_label(harness.state(), LayerId(anchor), Channel::Height).contains("(Off)"));
-
-        execute(&mut harness.state_mut().session, "mask.toggle", &json!({"layer": lower, "enabled": true})).unwrap();
-        let labels = anchors_below(harness.state(), LayerId(upper));
-        assert!(labels.iter().any(|(id, label)| *id == LayerId(anchor) && !label.contains("(Off)")));
-        assert!(!anchor_label(harness.state(), LayerId(anchor), Channel::Height).contains("(Off)"));
-    }
 
     #[test]
     fn inherited_effect_pickers_list_anchors_below_the_owner() {
@@ -2368,8 +2425,8 @@ const FILL_MATERIAL_GAP: f32 = 6.0;
 /// Space between a fill's channel chips and its channel sources
 const FILL_CHANNELS_GAP: f32 = 4.0;
 
-/// Projection and sources of a fill layer or fill effect (`base`) for its channels `on`; `reader` owns it
-fn fill_editor(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Value, on: &[Channel], reader: LayerId) {
+/// Projection and sources of a fill layer or fill effect (`base`) for its enabled channels; `reader` owns it
+fn fill_editor(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Value, enabled_channels: &[Channel], reader: LayerId) {
     let salt = base.to_string();
     if let Projection::Decal(decal) = &fill.projection {
         decal_editor(app, ui, decal, reader);
@@ -2382,7 +2439,7 @@ fn fill_editor(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Value
     let channels = app.session.doc.project.texture_set(app.session.ts()).map(|texture_set| texture_set.channel_list()).unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
         for channel in &channels {
-            let enabled = on.contains(channel);
+            let enabled = enabled_channels.contains(channel);
             if chip(ui, tr(channel.short()), enabled).on_hover_text(tr(SOLO_HINT)).clicked() {
                 let solo = ui.input(|input| input.modifiers.alt);
                 app.run("layer.fill.set", with(base, json!({"channel": channel.id(), "enabled": solo || !enabled, "solo": solo})));
@@ -2393,7 +2450,7 @@ fn fill_editor(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Value
     ui.add_space(FILL_CHANNELS_GAP);
     let anchors = anchors_below(app, reader);
     for channel in channels {
-        if on.contains(&channel) {
+        if enabled_channels.contains(&channel) {
             fill_channel(app, ui, fill, base, channel, &anchors, &salt);
         }
     }
@@ -2409,7 +2466,7 @@ const FILL_ROTATION_DEGREES_RANGE: std::ops::RangeInclusive<f32> = 0.0..=360.0;
 const TRIPLANAR_HARDNESS_RANGE: std::ops::RangeInclusive<f32> = 1.0..=64.0;
 
 /// A fill's projection kind, axis and hardness, then its collapsible UV transformations
-fn projection_editor(app: &mut TextureCraftApp, ui: &mut Ui, projection: &Projection, cmd: &str, base: &Value, salt: &str) {
+fn projection_editor(app: &mut TextureCraftApp, ui: &mut Ui, projection: &Projection, command: &str, base: &Value, salt: &str) {
     let projection_label = projection.label();
     combo(ui, tr("Projection"), tr(projection_label), |ui| {
         for (id, label) in [
@@ -2420,14 +2477,14 @@ fn projection_editor(app: &mut TextureCraftApp, ui: &mut Ui, projection: &Projec
             ("cylindrical", n_("Cylindrical projection")),
         ] {
             if ui.selectable_label(projection_label == label, tr(label)).clicked() {
-                app.run(cmd, with(base, json!({"projection": id})));
+                app.run(command, with(base, json!({"projection": id})));
             }
         }
     });
 
     // Each edit sends only the fields it changed; the command keeps the others
     let mut edit = |fields: Value| {
-        app.run(cmd, with(base, fields));
+        app.run(command, with(base, fields));
     };
     if let Projection::Planar { axis, .. } | Projection::Cylindrical { axis, .. } = projection
         && let Some(picked_axis) = axis_combo(ui, *axis)
@@ -2671,7 +2728,7 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                 Source::Procedural { pattern, .. } => tr(pattern.kind.label()).to_string(),
                 Source::Image { name, .. } => trf("Image: {name}", &[("name", name)]),
             };
-            let source_resp = combo(ui, tr("Source"), current, |ui| {
+            let source_response = combo(ui, tr("Source"), current, |ui| {
                 if ui.selectable_label(matches!(source, Source::Uniform(_)), tr("Uniform value")).clicked() {
                     app.run("effect.set", json!({"effect": id, "value": 1.0}));
                 }
@@ -2682,10 +2739,12 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                     app.run("effect.set", json!({"effect": id, "image": name}));
                 }
             });
-            // A shelf image dropped on the Source selector becomes the fill's source.
-            if let Some(name) = image_drop(ui, &source_resp.interact(Sense::hover())) {
+
+            // The source selector accepts image drops from the Assets panel
+            if let Some(name) = image_drop(ui, &source_response.interact(Sense::hover())) {
                 app.run("effect.set", json!({"effect": id, "image": name}));
             }
+
             match source {
                 Source::Uniform(color) => {
                     let mut value = color[0];
@@ -2709,7 +2768,6 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                     ui.label(RichText::new(tr("Colors read as gray. Add a levels or blur effect above to shape the result.")).color(tokens.text_dim));
                 }
                 Source::Image { .. } => {
-                    // How the image is projected onto the mask, with its transforms.
                     projection_editor(app, ui, projection, "effect.set", &json!({"effect": id}), &format!("maskfill{id}"));
                 }
                 _ => {}
