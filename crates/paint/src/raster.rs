@@ -117,7 +117,16 @@ fn ray_reaches_eye(context: &RasterCtx, depth: &EyeDepth, point: Vec3, geometric
     let direction = depth.orthographic_to_eye.unwrap_or(to_eye);
     let eye_distance = (context.eye - point).dot(direction);
     let lift = depth.bias * RAY_START_PER_BIAS;
-    if !eye_distance.is_finite() || lift >= eye_distance {
+    if !eye_distance.is_finite() {
+        return true;
+    }
+
+    // Orthographic points on or behind the eye plane cannot be visible
+    if eye_distance <= 0.0 {
+        return false;
+    }
+
+    if lift >= eye_distance {
         return true;
     }
 
@@ -456,6 +465,37 @@ mod tests {
         let to_eye = (camera.eye() - point).normalize();
 
         assert!(!ray_reaches_eye(&context, &depth, point, Vec3::Z, to_eye));
+    }
+
+    #[test]
+    fn orthographic_ray_rejects_points_on_or_behind_the_eye_plane() {
+        let mesh = primitives::plane(2.0, 8);
+        let camera = texturecraft_geom::OrbitCamera { ortho: true, ..Default::default() };
+        let bvh = Bvh::new(&mesh);
+        let gbuf = UvGBuffer::new(&mesh, 0, 4, 4);
+        let mut depth = EyeDepth::render(&mesh, &camera, 4, 4);
+        depth.dist.fill(0.1);
+        depth.dist[10] = f32::MAX;
+        let context = RasterCtx {
+            mesh: &mesh,
+            bvh: &bvh,
+            gbuf: &gbuf,
+            material: 0,
+            depth: Some(&depth),
+            eye: camera.eye(),
+            backface_culling: false,
+            angle_fade: (89.0, 90.0),
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+        };
+        let to_eye = -camera.forward();
+        let behind = context.eye + to_eye;
+        let near = context.eye - to_eye * (depth.bias * RAY_START_PER_BIAS * 0.5);
+
+        assert_eq!(depth.visibility(behind), (false, true), "the uncertain depth reaches the exact ray fallback");
+        assert!(!surface_visible(&context, &depth, behind, to_eye, to_eye, 0.0, 0.0));
+        assert!(!ray_reaches_eye(&context, &depth, context.eye, to_eye, to_eye));
+        assert!(ray_reaches_eye(&context, &depth, near, to_eye, to_eye), "the existing near-eye fallback remains accepted");
+        assert!(ray_reaches_eye(&context, &depth, Vec3::splat(f32::NAN), to_eye, to_eye), "nonfinite input retains its fallback");
     }
 
     #[test]
