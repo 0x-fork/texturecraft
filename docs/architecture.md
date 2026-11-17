@@ -97,9 +97,10 @@ construction and content, mask and stage rendering on a ten-layer 4096 set. Run
 
 `Session::edit` snapshots the `Document` (project + pixels + baked maps + resources) before a
 change and restores it if the change fails. Pixel images are copy-on-write at two levels: an
-image's tile table and each 64×64 tile are `Arc`-shared, so a snapshot costs one
-reference-count bump per image, and an undo step keeps only the tables and tiles the change
-wrote.
+image's tile table and each 64×64 tile are `Arc`-shared, so cloning an image costs one
+reference-count bump. Unchanged tables and tiles stay shared across undo steps; the
+first write to a cloned image copies its table. Mutable access to an existing shared tile also
+copies that tile's texels.
 
 ## Rendering
 
