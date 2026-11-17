@@ -1710,32 +1710,62 @@ pub(crate) fn brush_cursor(app: &TextureCraftApp, ui: &Ui, rect: Rect, position:
 /// events (tablets and phones); other pens come through as a mouse.
 /// shortcut: the windowing layer reports no pen tilt, so tilt can't drive the brush angle yet.
 pub fn pen_pressure(ui: &Ui) -> f32 {
-    let id = egui::Id::unique("pen_pressure");
-    let touch = ui.input(|i| {
-        i.raw.events.iter().rev().find_map(|e| match e {
-            egui::Event::Touch { phase, force, .. } => Some((*phase, force.filter(|f| f.is_finite()))),
+    let pressure_id = egui::Id::unique("pen_pressure");
+    let touch = ui.input(|input| {
+        let events = &input.raw.events;
+        events.iter().enumerate().rev().find_map(|(index, event)| match event {
+            egui::Event::Touch { device_id, id: touch_id, phase, force, .. } => {
+                let mut contact_force = force.filter(|pressure| pressure.is_finite());
+                let mut effective_phase = *phase;
+                if contact_force.is_none() && *phase == egui::TouchPhase::End {
+                    // Recover a same-frame pen sample or pressure-free touch start
+                    for previous_event in events[..index].iter().rev() {
+                        if let egui::Event::Touch { device_id: previous_device_id, id: previous_touch_id, phase: previous_phase, force: previous_force, .. } =
+                            previous_event
+                            && previous_device_id == device_id
+                            && previous_touch_id == touch_id
+                        {
+                            contact_force = previous_force.filter(|pressure| pressure.is_finite());
+                            if contact_force.is_none() && *previous_phase == egui::TouchPhase::Start {
+                                effective_phase = egui::TouchPhase::Start;
+                                break;
+                            }
+
+                            if contact_force.is_some() || matches!(previous_phase, egui::TouchPhase::End | egui::TouchPhase::Cancel) {
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Some((effective_phase, contact_force))
+            }
             _ => None,
         })
     });
+
     match touch {
-        Some((_, Some(f))) => {
-            let f = f.clamp(0.0, 1.0);
-            ui.data_mut(|d| d.insert_temp(id, f));
-            f
+        Some((_, Some(pressure))) => {
+            let pressure = pressure.clamp(0.0, 1.0);
+            ui.data_mut(|data| *data.get_temp_mut_or(pressure_id, pressure) = pressure);
+            pressure
         }
         // A pen lifts with no pressure, so keep its contact pressure for a tap
-        Some((egui::TouchPhase::End, None)) => ui.data(|d| d.get_temp(id)).unwrap_or(1.0),
-        // A touch without pressure (a finger) must not inherit an earlier pen's.
+        Some((egui::TouchPhase::End, None)) => ui.data(|data| data.get_temp(pressure_id)).unwrap_or(1.0),
+        // A touch without pressure must not inherit an earlier pen's pressure
         Some((egui::TouchPhase::Start | egui::TouchPhase::Cancel, None)) => {
-            ui.data_mut(|d| d.remove_temp::<f32>(id));
+            ui.data_mut(|data| data.remove_temp::<f32>(pressure_id));
             1.0
         }
         _ => {
-            let (primary_pressed, active) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down() || i.pointer.primary_released()));
-            if active && !primary_pressed {
-                ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(1.0)
+            let (primary_pressed, primary_active) =
+                ui.input(|input| (input.pointer.primary_pressed(), input.pointer.primary_down() || input.pointer.primary_released()));
+
+            // A fresh mouse press must not inherit the previous pen's pressure
+            if primary_active && !primary_pressed {
+                ui.data(|data| data.get_temp::<f32>(pressure_id)).unwrap_or(1.0)
             } else {
-                ui.data_mut(|d| d.remove_temp::<f32>(id));
+                ui.data_mut(|data| data.remove_temp::<f32>(pressure_id));
                 1.0
             }
         }
