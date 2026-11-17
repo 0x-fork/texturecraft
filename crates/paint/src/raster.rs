@@ -110,24 +110,33 @@ fn grazing_allowance(depth: &EyeDepth, point: Vec3, facing: f32, pixels_per_unit
 const RAY_START_PER_BIAS: f32 = 0.0025;
 
 /// Whether a ray from `point` (on a surface facing `facing` toward the eye along `to_eye`) reaches
-/// the eye without hitting the mesh, ignoring the first `skip` world units. The depth buffer is
-/// asked first; this exact test only checks the texels it calls hidden but can't rule out
-/// ([`EyeDepth::uncertain`]): its pixels are coarse, so on a surface turned far from the camera it
-/// hides texels the camera does see, and strokes painted at a steep angle came out in stripes and
-/// jagged gaps. Orthographic rays travel parallel to the view direction up to the eye plane.
-fn ray_reaches_eye(context: &RasterCtx, depth: &EyeDepth, point: Vec3, normal: Vec3, facing: f32, to_eye: Vec3, skip: f32) -> bool {
+/// the eye without hitting the mesh. The coarse depth buffer is checked first; this ray resolves
+/// uncertain texels and those made apparently visible only by the grazing allowance. Orthographic
+/// rays travel parallel to the view direction up to the eye plane.
+fn ray_reaches_eye(context: &RasterCtx, depth: &EyeDepth, point: Vec3, normal: Vec3, facing: f32, to_eye: Vec3) -> bool {
     let direction = depth.orthographic_to_eye.unwrap_or(to_eye);
     let eye_distance = (context.eye - point).dot(direction);
     let lift = depth.bias * RAY_START_PER_BIAS;
-    let start = skip.max(0.0) + lift;
-    if !eye_distance.is_finite() || start >= eye_distance {
+    if !eye_distance.is_finite() || lift >= eye_distance {
         return true;
     }
 
-    // Lift off the surface on the eye's side, so back faces (culling off) don't hit themselves
+    // Lift off the surface on the eye's side to avoid self-hits without skipping nearby occluders
     let side = if facing < 0.0 { -normal } else { normal };
-    let origin = point + side * lift + direction * start;
-    !context.bvh.occluded(origin, direction, eye_distance - start)
+    let origin = point + side * lift + direction * lift;
+    !context.bvh.occluded(origin, direction, eye_distance - lift)
+}
+
+/// Resolve coarse depth uncertainty without letting a grazing allowance hide nearby geometry
+fn surface_visible(context: &RasterCtx, depth: &EyeDepth, point: Vec3, normal: Vec3, facing: f32, to_eye: Vec3, skip: f32) -> bool {
+    let tested = point + to_eye * skip;
+    let (visible, uncertain) = depth.visibility(tested);
+    if visible {
+        // A shifted query can pass a sheet inside the allowance, so confirm at the surface
+        return (skip <= 0.0 || depth.visible(point)) || ray_reaches_eye(context, depth, point, normal, facing, to_eye);
+    }
+
+    uncertain && ray_reaches_eye(context, depth, point, normal, facing, to_eye)
 }
 
 /// What the rasterizer reads.
@@ -278,12 +287,7 @@ fn scan_triangle(
 
             if let Some(depth) = context.depth {
                 let skip = grazing_allowance(depth, seen, facing, pixels_per_unit) + off_surface;
-                let tested = seen + to_eye * skip;
-
-                // The exact test runs only where the buffer calls a texel hidden but can't be sure
-                let (visible, uncertain) = depth.visibility(tested);
-                let hidden = !visible && (!uncertain || !ray_reaches_eye(context, depth, seen, seen_normal, facing, to_eye, skip));
-                if hidden {
+                if !surface_visible(context, depth, seen, seen_normal, facing, to_eye, skip) {
                     continue;
                 }
             }
@@ -328,6 +332,37 @@ mod tests {
     use texturecraft_geom::primitives;
 
     #[test]
+    fn grazing_ray_detects_a_sheet_inside_the_depth_allowance() {
+        let positions = vec![Vec3::new(-0.2, -0.2, 0.005), Vec3::new(0.2, -0.2, 0.005), Vec3::new(0.0, 0.2, 0.005)];
+        let mesh = Mesh::from_parts(positions, None, vec![texturecraft_geom::glam::Vec2::ZERO; 3], vec![0, 1, 2], "thin sheet").unwrap();
+        let camera = looking_down(3.0);
+        let mesh_bvh = Bvh::new(&mesh);
+        let uv_buffer = UvGBuffer::new(&mesh, 0, 4, 4);
+        let depth = EyeDepth::render(&mesh, &camera, 480, 270);
+        let context = RasterCtx {
+            mesh: &mesh,
+            bvh: &mesh_bvh,
+            gbuf: &uv_buffer,
+            material: 0,
+            depth: Some(&depth),
+            eye: camera.eye(),
+            backface_culling: true,
+            angle_fade: (89.0, 90.0),
+            shape: Shape { alpha: crate::BrushAlpha::Round, image: None, library: None, level: 0 },
+        };
+        let point = Vec3::ZERO;
+        let to_eye = (camera.eye() - point).normalize();
+        let pixels_per_unit = depth.height as f32 * depth.view_proj.row(1).truncate().length();
+        let facing = Vec3::Y.dot(to_eye);
+        let skip = grazing_allowance(&depth, point, facing, pixels_per_unit);
+
+        assert!(skip > 0.005 / to_eye.z, "the sheet lies inside the allowance band");
+        assert_eq!(depth.visibility(point), (false, true));
+        assert!(depth.visible(point + to_eye * skip), "the allowance alone marks the hidden point visible");
+        assert!(!surface_visible(&context, &depth, point, Vec3::Y, facing, to_eye, skip));
+    }
+
+    #[test]
     fn orthographic_occlusion_ray_stays_above_an_off_axis_point() {
         let positions = vec![Vec3::new(0.9, -0.2, 1.0), Vec3::new(1.1, -0.2, 1.0), Vec3::new(1.0, 0.2, 1.0)];
         let mesh = Mesh::from_parts(positions, None, vec![texturecraft_geom::glam::Vec2::ZERO; 3], vec![0, 1, 2], "blocker").unwrap();
@@ -349,7 +384,7 @@ mod tests {
         let point = Vec3::new(1.0, 0.0, 0.0);
         let to_eye = (camera.eye() - point).normalize();
 
-        assert!(!ray_reaches_eye(&context, &depth, point, Vec3::Z, 1.0, to_eye, 0.0));
+        assert!(!ray_reaches_eye(&context, &depth, point, Vec3::Z, 1.0, to_eye));
     }
 
     #[test]

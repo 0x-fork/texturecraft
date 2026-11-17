@@ -198,7 +198,7 @@ impl EyeDepth {
         let Some((near, far, has_empty)) = self.neighbourhood(point) else { return (false, false) };
 
         let distance = point.distance(self.eye);
-        let visible = distance <= near + self.tolerance(near);
+        let visible = distance <= near + self.bias;
         let uncertain = has_empty || (far < f32::MAX && distance <= far + self.tolerance(far));
 
         (visible, uncertain)
@@ -252,6 +252,22 @@ impl EyeDepth {
 mod tests {
     use super::*;
     use texturecraft_geom::primitives;
+
+    #[test]
+    fn foreground_depth_outside_bias_needs_an_exact_test() {
+        let depth = EyeDepth {
+            width: 3,
+            height: 3,
+            view_proj: Mat4::IDENTITY,
+            eye: Vec3::new(0.0, 0.0, 10.0),
+            orthographic_to_eye: None,
+            dist: vec![9.985; 9],
+            triangle: Vec::new(),
+            bias: 0.005,
+        };
+
+        assert_eq!(depth.visibility(Vec3::ZERO), (false, true));
+    }
 
     #[test]
     fn front_of_sphere_is_visible_back_is_not() {
