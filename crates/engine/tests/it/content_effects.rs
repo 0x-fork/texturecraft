@@ -106,13 +106,14 @@ fn anchor_points_in_masks_record_the_mask_for_layers_above() {
     let layer = s.doc.project.layer(LayerId(low)).unwrap();
     assert!(layer.mask.as_ref().unwrap().effects.iter().any(|e| e.id.0 == anchor), "in the mask");
     assert!(layer.content_effects.is_empty(), "not on the content");
-    // Without a target (or with no params at all) it still goes on the content, as before.
+
+    // Without a target (or with no params at all) it still goes on the content, as before
     let content = id(execute(&mut s, "effect.add.anchor", &json!({"layer": low})).unwrap(), "effect");
     assert!(s.doc.project.layer(LayerId(low)).unwrap().content_effects.iter().any(|e| e.id.0 == content));
     let bare = id(execute(&mut s, "effect.add.anchor", &Value::Null).unwrap(), "effect");
     assert!(s.doc.project.layer(LayerId(low)).unwrap().content_effects.iter().any(|e| e.id.0 == bare));
 
-    // Folders take anchors in their masks only.
+    // Folders take anchors in their masks only
     let folder = id(execute(&mut s, "layer.add.group", &Value::Null).unwrap(), "layer");
     assert!(execute(&mut s, "effect.add.anchor", &json!({"layer": folder})).is_err(), "folder content");
     execute(&mut s, "effect.add.anchor", &json!({"layer": folder, "target": "mask"})).unwrap();
@@ -120,7 +121,8 @@ fn anchor_points_in_masks_record_the_mask_for_layers_above() {
     execute(&mut s, "layer.add.fill", &json!({"color": [1.0, 1.0, 1.0]})).unwrap();
     execute(&mut s, "mask.add.black", &Value::Null).unwrap();
     execute(&mut s, "effect.add.fill", &json!({"anchor": anchor})).unwrap();
-    // The low layer shows at 0.4 (black over the 0.5 default), the top one at the anchor's 0.4.
+
+    // The low layer shows at 0.4 (black over the 0.5 default), the top one at the anchor's 0.4
     let low_shown = 0.5 * 0.6;
     let expected = low_shown + (1.0 - low_shown) * 0.4;
     assert!(close(center(&mut s, Channel::BaseColor), [expected; 3]), "{:?}", center(&mut s, Channel::BaseColor));
@@ -133,7 +135,7 @@ fn generators_read_an_anchor_height_as_micro_detail() {
     let anchor = id(execute(&mut s, "effect.add.anchor", &Value::Null).unwrap(), "effect");
     let top = id(execute(&mut s, "layer.add.fill", &json!({"color": [1.0, 1.0, 1.0]})).unwrap(), "layer");
 
-    // The anchor must be below; `microAmount` needs an anchor; ids must be numbers.
+    // The anchor must be below; `microAmount` needs an anchor; ids must be numbers
     assert!(execute(&mut s, "effect.add.generator", &json!({"layer": low, "microAnchor": anchor})).is_err());
     assert!(execute(&mut s, "effect.add.generator", &json!({"microAmount": 0.5})).is_err());
     assert!(execute(&mut s, "effect.add.generator", &json!({"microAnchor": "x"})).is_err());
@@ -147,14 +149,14 @@ fn generators_read_an_anchor_height_as_micro_detail() {
     let inspect = execute(&mut s, "project.inspect", &Value::Null).unwrap();
     assert!(inspect.to_string().contains(&format!("\"micro\":{{\"amount\":1.0,\"anchor\":{anchor}}}")), "{inspect}");
 
-    // The amount alone keeps the anchor; null removes the micro detail.
+    // The amount alone keeps the anchor; null removes the micro detail
     execute(&mut s, "effect.set", &json!({"effect": generator, "microAmount": 0.0})).unwrap();
     assert!(close(center(&mut s, Channel::BaseColor), plain));
     execute(&mut s, "effect.set", &json!({"effect": generator, "microAnchor": null})).unwrap();
     assert!(s.doc.project.effect(LayerId(generator)).map(|(_, e)| matches!(&e.kind, EffectKind::Generator(g) if g.micro.is_none())).unwrap());
     assert!(execute(&mut s, "effect.set", &json!({"effect": anchor, "microAmount": 0.5})).is_err(), "generators only");
 
-    // A copied generator with micro detail needs the anchor below its new layer.
+    // A copied generator with micro detail needs the anchor below its new layer
     execute(&mut s, "effect.set", &json!({"effect": generator, "microAnchor": anchor})).unwrap();
     execute(&mut s, "layer.select", &json!({"layer": top, "target": generator})).unwrap();
     execute(&mut s, "effect.copy", &json!({"effect": generator})).unwrap();
@@ -162,6 +164,19 @@ fn generators_read_an_anchor_height_as_micro_detail() {
     assert!(execute(&mut s, "effect.paste", &json!({"target": "mask"})).is_err());
     let back = Session::from_project_bytes(&s.to_project_bytes().unwrap()).unwrap();
     assert_eq!(back.doc.project, s.doc.project);
+}
+
+#[test]
+fn anchor_effects_added_through_instance_validate_against_source() {
+    let mut session = session();
+    let source = id(execute(&mut session, "layer.add.fill", &json!({"height": 0.5})).unwrap(), "layer");
+    execute(&mut session, "layer.add.fill", &json!({"height": 0.5})).unwrap();
+    let anchor = id(execute(&mut session, "effect.add.anchor", &Value::Null).unwrap(), "effect");
+    let instance = id(execute(&mut session, "layer.instance", &json!({"layer": source})).unwrap(), "layer");
+
+    assert!(execute(&mut session, "effect.add.generator", &json!({"layer": instance, "microAnchor": anchor})).is_err());
+    assert!(execute(&mut session, "effect.add.fill", &json!({"layer": instance, "anchor": anchor})).is_err());
+    assert!(session.doc.project.layer(LayerId(source)).unwrap().mask.is_none());
 }
 
 #[test]
