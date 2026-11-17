@@ -44,6 +44,8 @@ mod preview_image;
 mod preview_request;
 mod preview_worker;
 pub mod profile;
+#[cfg(not(target_arch = "wasm32"))]
+mod project_config;
 pub mod properties_popup;
 mod rail_popup;
 pub mod render_mode;

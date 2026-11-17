@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use texturecraft_compose::{BakedMaps, BelowCache, Composite, PaintTarget, PixelStore, StackKey, StrokePreview, covered_tiles, pad_tiles};
+use texturecraft_compose::{
+    BakedMaps, BelowCache, Composite, PaintTarget, PixelStore, StackKey, StrokePreview, covered_tiles, pad_tiles, stack_reads_neighbours,
+};
 use texturecraft_core::{Channel, Layer, LayerId, LayerKind, Project, TextureSet};
 use texturecraft_geom::glam::Vec2;
 use texturecraft_geom::{Bvh, Mesh, OrbitCamera, UvGBuffer};
@@ -601,7 +603,6 @@ impl Session {
                     })
                 })
         };
-
         let (empty_baked_maps, empty_images) = (BakedMaps::default(), Default::default());
         let stack_key = |document: &Document, texture_set_index: usize| {
             let stack = document.project.texture_sets.get(texture_set_index).map(|set| set.stack.as_slice()).unwrap_or_default();
@@ -615,12 +616,40 @@ impl Session {
             )
         };
         for texture_set_index in 0..self.caches.len() {
-            if (removed_or_replaced_resource
-                || stack_key(previous_document, texture_set_index) != stack_key(&self.doc, texture_set_index)
-                || uses_added_resource(texture_set_index))
-                && let Some(cache) = self.caches.get_mut(texture_set_index)
-            {
+            let before = stack_key(previous_document, texture_set_index);
+            let after = stack_key(&self.doc, texture_set_index);
+            let resource_changed = removed_or_replaced_resource || uses_added_resource(texture_set_index);
+            let Some(cache) = self.caches.get_mut(texture_set_index) else {
+                continue;
+            };
+
+            if resource_changed {
                 cache.invalidate_all();
+                continue;
+            }
+
+            if before == after {
+                continue;
+            }
+
+            // Neighbourhood readers require a full recomposite after painted pixels change
+            let changed_tiles = match (&before, &after) {
+                (Some(before), Some(after))
+                    if !stack_reads_neighbours(&self.doc.project, texture_set_index)
+                        && !stack_reads_neighbours(&previous_document.project, texture_set_index) =>
+                {
+                    before.changed_tiles(after)
+                }
+                _ => None,
+            };
+            match changed_tiles {
+                Some(changed_tiles) => {
+                    // covered_tiles is emitted in row order
+                    cache
+                        .dirty
+                        .extend(changed_tiles.into_iter().filter(|tile| cache.covered_tiles.binary_search_by_key(&(tile.1, tile.0), |&(x, y)| (y, x)).is_ok()));
+                }
+                None => cache.invalidate_all(),
             }
         }
     }
