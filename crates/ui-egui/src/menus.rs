@@ -48,6 +48,8 @@ pub const CATALOG: &[Item] = &[
     sep("File"),
     it("File", "Import resources...", "resource.import", None),
     it("File", "Import MaterialX material...", "file.importMaterialX", None),
+    #[cfg(not(target_arch = "wasm32"))]
+    it("File", "Import PBR texture folder...", "file.importPbrFolder", None),
     it("File", "Import material...", "material.load", None),
     it("File", "Export Textures...", "ui.export", Some("Ctrl+Shift+E")),
     it("File", "Export Mesh...", "file.exportMesh", None),

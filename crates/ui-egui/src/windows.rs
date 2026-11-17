@@ -29,6 +29,7 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     crate::windows::export(app, ctx);
     #[cfg(target_arch = "wasm32")]
     export_mesh(app, ctx);
+    crate::pbr_import::window(app, ctx);
     unsaved(app, ctx);
 }
 
@@ -921,6 +922,7 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
                 if paths.is_empty() {
                     return;
                 }
+
                 for p in paths {
                     if let Some(r) = app.run("resource.import", json!({"path": p.display().to_string()})) {
                         let name = r.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string();
@@ -944,6 +946,10 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
                     app.ui.dock.focus(crate::docking::Panel::Layers);
                 }
             });
+            true
+        }
+        "file.importPbrFolder" => {
+            crate::pbr_import::pick(app);
             true
         }
         "file.exportMesh" => {

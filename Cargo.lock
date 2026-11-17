@@ -4459,6 +4459,7 @@ dependencies = [
  "epaint_default_fonts",
  "image",
  "rayon",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "texturecraft-bake",
