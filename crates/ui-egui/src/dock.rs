@@ -1748,6 +1748,34 @@ fn path_section(app: &mut TextureCraftApp, ui: &mut Ui) {
     ui.label(RichText::new(hint).size(10.5).color(tk.text_dim));
 }
 
+/// Popover for built-in and saved brush presets
+fn brush_presets_popover(app: &mut TextureCraftApp, ui: &mut Ui) {
+    let response = ui.button(format!("{}  {}", ic::PAINT_BRUSH_BROAD, tr("Brush presets")));
+    let popup_id = ui.make_persistent_id("brush_presets_popup");
+    if response.clicked() {
+        egui::Popup::toggle_id(ui.ctx(), popup_id);
+    }
+
+    egui::Popup::from_response(&response).id(popup_id).open_memory(None).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+        ui.set_min_width(230.0);
+        egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+            let mut category = "";
+            for preset in texturecraft_engine::paint::presets::PRESETS.iter() {
+                if preset.category != category {
+                    category = preset.category;
+                    ui.label(caption(category));
+                }
+                if ui.selectable_label(false, preset.label).on_hover_text(tr("Use this brush (keeps its size)")).clicked() {
+                    app.run("brush.preset.apply", json!({"preset": preset.id}));
+                }
+            }
+
+            ui.separator();
+            crate::shelf::user_brushes(app, ui, "");
+        });
+    });
+}
+
 /// Width of the label column in polygon fill's properties
 const POLYGON_FILL_LABEL_WIDTH: f32 = 108.0;
 
@@ -1850,9 +1878,13 @@ fn polygon_fill_paints_mask(app: &TextureCraftApp) -> Result<bool, String> {
 const HINT_TEXT_SIZE: f32 = 10.5;
 
 fn brush_section(app: &mut TextureCraftApp, ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.label(caption(tr("Brush")));
+        brush_presets_popover(app, ui);
+    });
+
     let brush = &mut app.session.tool.brush;
     let defaults = BrushSettings::default();
-    ui.label(caption(tr("Brush")));
     let hint = tr("Ctrl+right-drag in a view sets the size and hardness, Ctrl+left-drag the flow and angle.");
     ui.label(RichText::new(hint).size(HINT_TEXT_SIZE).color(Tokens::get(ui.ctx()).text_dim));
 
@@ -1970,10 +2002,6 @@ fn brush_section(app: &mut TextureCraftApp, ui: &mut Ui) {
     }
 
     *brush = brush.sanitized();
-
-    // Presets are files, which the browser doesn't have
-    #[cfg(not(target_arch = "wasm32"))]
-    section(ui, "sec_brush_preset", tr("Preset"), false, |ui| crate::brush_preset_save::row(app, ui));
 }
 
 /// One alpha in the picker: a 52×64 tile with the shape drawn by `paint` and a label.

@@ -308,6 +308,18 @@ File access follows `--read-root` / `--write-root` as for MCP.
 | `textures.export` | `{dir, preset?, ts?, format?, padding?, size?, bitDepth?, dilation?, normalFormat?}` |
 | `render` | `{view?, width?, height?, yaw?, pitch?}` → `{width, height, png}` |
 
+Brush preset operations are engine commands. Send each through `command.run` with the shown
+`id` and `params`, for example `{"id":1,"method":"command.run","params":{"id":"brush.preset.list","params":{}}}`.
+
+| `command.run` id | `params` and result |
+|---|---|
+| `brush.preset.list` | `{}` → `[{id, label, category, builtin}]`: the built-in brush presets, then the user's |
+| `brush.preset.apply` | `{preset}`: a built-in sets the stroke and keeps the size; a user preset sets the whole brush (size too) and the painted channels |
+| `brush.preset.store` | `{name, overwrite?}`: saves the current brush and painted channels as a user preset (desktop and trusted local CLI: a `.tcbrush` file in the data folder's `brushes` folder; browser and untrusted headless MCP/RPC: current session only); an existing name needs `overwrite: true`, built-in names are read-only |
+| `brush.preset.rename` | `{name, to}` |
+| `brush.preset.delete` | `{name}` |
+| `brush.preset.save` / `brush.preset.load` | `{path}`: save the brush as a loose `.tcbrush` file; load a loose or named preset's stroke, keeping the current size and painted channels |
+
 ```sh
 printf '%s\n' '{"id":1,"method":"command.run","params":{"id":"project.new","params":{"mesh":"torus"}}}' \
               '{"id":2,"method":"render","params":{"width":512,"height":512}}' | texturecraft-cli serve

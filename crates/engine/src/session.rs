@@ -379,6 +379,8 @@ pub struct Session {
     pub(crate) polygon_fill_drag: Option<crate::polygon_fill_drag::PolygonFillDrag>,
     /// The user's export presets (kept when another project opens).
     pub export_presets: crate::preset_cmds::UserPresets,
+    /// The user's brush presets (kept when another project opens).
+    pub brush_presets: crate::brush_preset_cmds::UserBrushes,
     /// The user's project templates (kept when another project opens).
     pub templates: crate::template_cmds::UserTemplates,
 }
@@ -386,15 +388,17 @@ pub struct Session {
 impl Session {
     /// A session for `project` on `mesh` (its sets must reference mesh materials), with UV-tiled sets' UVs mapped into their atlas ([`Session::source_mesh`])
     pub fn new(doc: Document, mesh: Mesh, mesh_source: Option<(String, Vec<u8>)>) -> Result<Session> {
-        mesh.validate().map_err(|e| EngineError::Other(e.to_string()))?;
+        mesh.validate().map_err(|error| EngineError::Other(error.to_string()))?;
+
         let source = Arc::new(mesh);
         let mesh = tiled_mesh(&source, &doc.project);
         let bvh = Bvh::new(&mesh);
         let mut camera = OrbitCamera { yaw: 0.6, pitch: 0.25, ..OrbitCamera::default() };
-        let (lo, hi) = mesh.bounds();
-        camera.frame(lo, hi);
-        let caches = doc.project.texture_sets.iter().map(|ts| SetCache::new(&mesh, ts)).collect();
-        let selected = doc.project.texture_sets.iter().enumerate().filter_map(|(i, ts)| ts.stack.last().map(|id| (i, *id))).collect();
+        let (bounds_min, bounds_max) = mesh.bounds();
+        camera.frame(bounds_min, bounds_max);
+        let caches = doc.project.texture_sets.iter().map(|texture_set| SetCache::new(&mesh, texture_set)).collect();
+        let selected = doc.project.texture_sets.iter().enumerate().filter_map(|(index, texture_set)| texture_set.stack.last().map(|id| (index, *id))).collect();
+
         Ok(Session {
             doc,
             mesh_id: next_mesh_id(),
@@ -432,6 +436,7 @@ impl Session {
             depth_cache: None,
             polygon_fill_drag: None,
             export_presets: Default::default(),
+            brush_presets: Default::default(),
             templates: Default::default(),
         })
     }
@@ -445,13 +450,14 @@ impl Session {
     }
 
     /// Replace this session with `next` (another project), keeping the viewport size and the
-    /// user's export presets and project templates.
+    /// user's brush presets, export presets and project templates.
     pub fn switch_to(&mut self, mut next: Session) {
         // Invalidate caches even when both projects were loaded with the same revision
         next.revision = self.revision.wrapping_add(1);
 
         next.viewport = self.viewport;
         next.export_presets = std::mem::take(&mut self.export_presets);
+        next.brush_presets = std::mem::take(&mut self.brush_presets);
         next.templates = std::mem::take(&mut self.templates);
         *self = next;
     }
