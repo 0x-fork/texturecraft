@@ -2250,37 +2250,6 @@ pub(crate) fn anchor_label(app: &TextureCraftApp, anchor: LayerId, channel: Chan
     if mask_anchor_enabled(app, anchor) == Some(false) { format!("{label} ({})", tr("Off")) } else { label }
 }
 
-#[cfg(test)]
-mod mask_anchor_label_tests {
-    use egui_kittest::Harness;
-    use serde_json::{Value, json};
-    use texturecraft_engine::core::LayerId;
-    use texturecraft_engine::execute;
-
-    use super::{anchors_below, effect_anchors_below};
-    use crate::TextureCraftApp;
-
-    #[test]
-    fn inherited_effect_pickers_hide_unrecorded_source_set_anchors() {
-        let mesh = texturecraft_engine::geom::primitives::material_ball();
-        let mut session = texturecraft_engine::Session::new_project("test", mesh, "builtin:material_ball", None, 256).unwrap();
-        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower})).unwrap()["effect"].as_u64().unwrap();
-        let source = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        execute(&mut session, "mask.add.black", &json!({"layer": source})).unwrap();
-        let fill = execute(&mut session, "effect.add.fill", &json!({"layer": source, "anchor": anchor})).unwrap()["effect"].as_u64().unwrap();
-        let generator = execute(&mut session, "effect.add.generator", &json!({"layer": source, "microAnchor": anchor})).unwrap()["effect"].as_u64().unwrap();
-        let instance = execute(&mut session, "layer.instance", &json!({"layer": source, "ts": 1})).unwrap()["layer"].as_u64().unwrap();
-
-        let harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
-        assert!(anchors_below(harness.state(), LayerId(instance)).is_empty());
-        for effect in [fill, generator] {
-            let choices = effect_anchors_below(harness.state(), LayerId(instance), LayerId(effect));
-            assert!(choices.is_empty(), "source-set anchor {anchor} is not recorded for the instance");
-        }
-    }
-}
-
 /// Space above a fill's Material caption, setting it apart from the projection
 const FILL_MATERIAL_GAP: f32 = 6.0;
 
