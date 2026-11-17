@@ -25,6 +25,8 @@ pub mod gpu;
 mod grid_tile;
 pub mod i18n;
 pub mod id_color_pick;
+#[cfg(not(target_arch = "wasm32"))]
+mod import_resources;
 pub mod keymap;
 pub mod layer_panel;
 mod levels_editor;

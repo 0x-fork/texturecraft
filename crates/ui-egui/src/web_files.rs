@@ -114,7 +114,7 @@ pub fn import_environment(app: &mut TextureCraftApp, _ctx: &egui::Context) {
 }
 
 /// Make image resource `name` the environment.
-fn use_environment(app: &mut TextureCraftApp, name: &str) {
+pub(crate) fn use_environment(app: &mut TextureCraftApp, name: &str) {
     let env = format!("{}{name}", texturecraft_engine::core::project::ENV_RESOURCE_PREFIX);
     if app.run("display.set", serde_json::json!({ "environment": env })).is_some() {
         app.toast(trf("Environment: {name}", &[("name", &name)]), false);

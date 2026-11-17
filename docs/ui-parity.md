@@ -59,6 +59,15 @@ The relevant implementations are [layer rows, menus and fill/brush editors](../c
 | UI-12 | Generator depth and property coverage | **UI + source.** The picker contains seven kinds. Switching to Position, changing Global balance and duplicating the effect worked. Shared global adjustments, resolution and input slots already exist; that does not establish the richer generator/control inventory in [#374](https://github.com/storytold/texturecraft/issues/374) | Audit each generator's inputs, micro-detail behavior and controls against the reference; do not count seven shared implementations as equivalent to its whole catalog |
 | UI-13 | Narrow workspace readability | **UI.** At 1280 × 800 the app rendered, both views stayed visible and the toolbar exposed scroll arrows. Layer names/types became heavily truncated, the layer toolbar wrapped, and Properties needed scrolling. This was not an input-failure or docking-persistence test | Repeat the editing tasks at smaller sizes, widen/rearrange panels, check full-name tooltips and keyboard access, and retain the layout after restart |
 
+File > Import resources (#638) is a window like the reference's: add files, an optional
+name prefix and a usage per file, a filter by usage, Remove selected resources, and Import or
+Cancel. Usages `texture` and `undefined` import an image resource, `environment` also lights the
+scene with it, `alpha` also makes it the brush alpha. `colorlut` and `postfx` have no feature
+behind them and are listed disabled, as is the target "library 'Your assets'" (that library holds
+smart materials and brush presets, not images). The prefix goes in front of the resource's name,
+because resources have no folders. Materials (`.tcmat`, `.mcmat`, `.mcraft`) can be added too and
+load as smart materials. The browser build still imports images straight from its file picker.
+
 Broader properties/filter work remains tracked in
 [#433](https://github.com/storytold/texturecraft/issues/433). Its individual rows need checking
 against current code; an open issue is not proof that every control it lists is still missing.
