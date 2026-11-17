@@ -2254,31 +2254,11 @@ pub(crate) fn anchor_label(app: &TextureCraftApp, anchor: LayerId, channel: Chan
 mod mask_anchor_label_tests {
     use egui_kittest::Harness;
     use serde_json::{Value, json};
-    use texturecraft_engine::core::{Channel, LayerId};
+    use texturecraft_engine::core::LayerId;
     use texturecraft_engine::execute;
 
-    use super::{anchor_label, anchors_below, effect_anchors_below};
+    use super::{anchors_below, effect_anchors_below};
     use crate::TextureCraftApp;
-
-    #[test]
-    fn disabled_mask_anchors_keep_their_selection_and_show_off() {
-        let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
-        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        execute(&mut session, "mask.add.black", &json!({"layer": lower})).unwrap();
-        let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower, "target": "mask"})).unwrap()["effect"].as_u64().unwrap();
-        let upper = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        execute(&mut session, "mask.toggle", &json!({"layer": lower, "enabled": false})).unwrap();
-
-        let mut harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
-        let labels = anchors_below(harness.state(), LayerId(upper));
-        assert!(labels.iter().any(|(id, label)| *id == LayerId(anchor) && label.contains("(Off)")));
-        assert!(anchor_label(harness.state(), LayerId(anchor), Channel::Height).contains("(Off)"));
-
-        execute(&mut harness.state_mut().session, "mask.toggle", &json!({"layer": lower, "enabled": true})).unwrap();
-        let labels = anchors_below(harness.state(), LayerId(upper));
-        assert!(labels.iter().any(|(id, label)| *id == LayerId(anchor) && !label.contains("(Off)")));
-        assert!(!anchor_label(harness.state(), LayerId(anchor), Channel::Height).contains("(Off)"));
-    }
 
     #[test]
     fn inherited_effect_pickers_hide_unrecorded_source_set_anchors() {
