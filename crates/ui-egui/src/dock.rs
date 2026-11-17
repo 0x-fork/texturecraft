@@ -230,7 +230,7 @@ fn effect_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
     let target = if content { "content" } else { "mask" };
     ui.label(caption(if content { tr("Add to the layer content") } else { tr("Add to the mask") }));
 
-    // Generators and compare masks always go to the mask, anchor points to the content
+    // Generators and compare masks always go to the mask; anchor points go where the others do
     let items = [
         (tr("Add generator"), "effect.add.generator", json!({})),
         (tr("Add paint"), "effect.add.paint", json!({"target": target})),
@@ -238,11 +238,10 @@ fn effect_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
         (tr("Add levels"), "effect.add.levels", json!({"target": target})),
         (tr("Add compare mask"), "effect.add.compare", json!({})),
         (tr("Add filter"), "effect.add.filter", json!({"target": target, "filter": NEW_FILTER})),
-        (tr("Add anchor point"), "effect.add.anchor", json!({})),
+        (tr("Add anchor point"), "effect.add.anchor", json!({"target": target})),
     ];
     for (label, command, params) in items {
-        let enabled = command != "effect.add.anchor" || !layer.is_group();
-        if !ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
+        if !ui.button(label).clicked() {
             continue;
         }
 
@@ -251,6 +250,7 @@ fn effect_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
         }
 
         let added = app.run(command, with(&params, json!({"layer": layer.id.0})));
+
         // The neutral filter is a placeholder: its slot opens the picker to choose the real one
         if command == "effect.add.filter"
             && let Some(effect) = added.as_ref().and_then(|result| result["effect"].as_u64())
@@ -298,6 +298,8 @@ const MIN_NAME_WIDTH: f32 = 20.0;
 /// Font sizes in an effect row: the eye, the name, the blend mode and its caret.
 const EYE_FONT_SIZE: f32 = 12.0;
 const EFFECT_NAME_FONT_SIZE: f32 = 11.5;
+/// Height available to an effect name while it is edited.
+const EFFECT_NAME_EDIT_HEIGHT: f32 = 20.0;
 const ROW_SMALL_FONT_SIZE: f32 = 11.0;
 const CARET_FONT_SIZE: f32 = 8.0;
 /// Room for the caret at the right of the blend mode's name.
@@ -402,7 +404,7 @@ fn layer_tree(app: &mut TextureCraftApp, ui: &mut Ui, id: LayerId, depth: usize,
         effect_group(app, ui, &layer, depth, true, false);
     }
 
-    // A line under the layer and its effects separates it from the next layer
+    // A line under the layer and its effects separates it from the next layer.
     let tokens = Tokens::get(ui.ctx());
     let available = ui.available_rect_before_wrap();
     ui.painter().hline(available.x_range(), available.top() - 0.5, Stroke::new(1.0, tokens.separator));
@@ -422,7 +424,7 @@ fn thumb_box(ui: &Ui, app: &mut TextureCraftApp, rect: Rect, target: ThumbTarget
     let painter = ui.painter();
     painter.rect_filled(rect, THUMBNAIL_ROUNDING, tokens.field);
 
-    // A checkerboard shows through where the layer has nothing (transparent texels)
+    // A checkerboard shows through where the layer has nothing (transparent texels).
     let cell_size = rect.width() / THUMB_CHECKER_CELLS as f32;
     let check = tokens.field.lerp_to_gamma(tokens.row_hover, 0.6);
     for y in 0..THUMB_CHECKER_CELLS {
@@ -431,7 +433,7 @@ fn thumb_box(ui: &Ui, app: &mut TextureCraftApp, rect: Rect, target: ThumbTarget
         }
     }
 
-    // Only rows on screen ask for a picture
+    // Only rows on screen ask for a picture.
     if ui.is_rect_visible(rect)
         && let Some(texture) = app.layer_panel.texture(ui.ctx(), &app.session, target)
     {
@@ -519,7 +521,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         x += FOLDER_CARET_SIZE;
     }
 
-    // Content thumbnail: the layer's own result in the displayed channel
+    // Content thumbnail: the layer's own result in the displayed channel.
     let channel = app.ui.layer_channel;
     let thumbnail = Rect::from_min_size(pos2(x, rect.center().y - thumbnail_size * 0.5), vec2(thumbnail_size, thumbnail_size));
     if !thumb_box(ui, app, thumbnail, ThumbTarget::Content { layer: layer.id, channel }, !layer.visible) {
@@ -532,7 +534,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     }
     x = thumbnail.right() + THUMBNAIL_SPACING;
 
-    // An instance draws its source's content, blending and (unless it has its own) mask
+    // An instance draws its source's content, blending and (unless it has its own) mask.
     let project = &app.session.doc.project;
     let source = layer.instance_source().map(|source| {
         let set = project.locate(source).and_then(|(set, _, _)| project.texture_sets.get(set)).map(|set| set.name.as_str()).unwrap_or("?");
@@ -541,7 +543,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     let mask = project.layers.get(&project.mask_owner(layer.id)).and_then(|owner| owner.mask.clone());
     let blend = project.content_layer(layer.id).and_then(|content| content.blend(channel));
 
-    // Mask thumbnail, selectable on its own; or the slot that adds one
+    // Mask thumbnail, selectable on its own; or the slot that adds one.
     let mask_rect;
     if let Some(mask) = &mask {
         let mask_target = selected && !targets_content(app);
@@ -577,7 +579,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
             );
         }
     } else {
-        // The empty slot adds a mask to this layer
+        // The empty slot adds a mask to this layer.
         let slot_size = thumbnail_size.min(MASK_SLOT_SIZE);
         mask_rect = Rect::from_min_size(pos2(x, rect.center().y - slot_size * 0.5), vec2(slot_size, slot_size));
         let slot = ui.interact(mask_rect, ui.scope_id().with(("mask_slot", layer.id.0)), Sense::click()).on_hover_text(tr("Add mask"));
@@ -590,7 +592,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     }
     x = mask_rect.right() + THUMBNAIL_GAP;
 
-    // Name (or rename editor) with the quieter subtitle under it
+    // Name (or rename editor) with the quieter subtitle under it.
     let (name_rect, show_blend) = layer_name_layout(rect, x);
     let show_name = name_rect.width() >= MIN_NAME_WIDTH;
     if !show_name {
@@ -603,13 +605,13 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     if renaming {
         let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(name_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
         if let Some((_, text)) = app.ui.rename.as_mut() {
-            // Escape reaches us instead of just unfocusing the field, so it can cancel
+            // Escape reaches us instead of just unfocusing the field, so it can cancel.
             let filter = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() };
             let editor = editor_ui.add(egui::TextEdit::singleline(text).desired_width(name_rect.width()).event_filter(filter));
             if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                 app.ui.rename = None;
             } else if editor.lost_focus() {
-                // Enter or a click elsewhere
+                // Enter or a click elsewhere.
                 let name = text.trim().to_string();
                 app.ui.rename = None;
                 if !name.is_empty() && name != layer.name {
@@ -641,7 +643,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         painter.galley(pos2(name_rect.left(), rect.center().y + NAME_LINE_GAP), subtitle, tokens.text_dim);
     }
 
-    // Blend mode and opacity of the displayed channel, stacked at the right
+    // Blend mode and opacity of the displayed channel, stacked at the right.
     let mode_rect = Rect::from_min_size(
         pos2(rect.right() - RIGHT_COLUMN - ROW_CONTROL_GAP, rect.center().y - ROW_CONTROL_HEIGHT - ROW_STACK_GAP),
         vec2(RIGHT_COLUMN, ROW_CONTROL_HEIGHT),
@@ -667,7 +669,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         painter.text(mode_rect.right_center(), egui::Align2::RIGHT_CENTER, tr("off"), egui::FontId::proportional(ROW_SMALL_FONT_SIZE), tokens.text_dim);
     }
 
-    // Interaction: select, rename, drag & drop, context menu
+    // Interaction: select, rename, drag & drop, context menu.
     let on_control = eye_response.clicked() || content_response.clicked();
     if row.clicked() && !on_control && !renaming {
         app.run("layer.select", json!({"layer": layer.id.0}));
@@ -950,8 +952,15 @@ fn effect_row(
     let show_blend = controls_left - ROW_CONTROL_GAP - name_left >= MIN_NAME_WIDTH;
     let name_right = if show_blend { controls_left - ROW_CONTROL_GAP } else { rect.right() - ROW_RIGHT_PADDING };
     let name_color = if visible { tokens.text } else { tokens.text_dim };
-    let galley = elided(&painter, effect.name.clone(), EFFECT_NAME_FONT_SIZE, name_color, (name_right - name_left).max(MIN_NAME_WIDTH));
-    painter.galley(pos2(name_left, rect.center().y - galley.size().y * 0.5), galley, tokens.text);
+    let renaming = app.ui.rename.as_ref().is_some_and(|(id, _)| *id == effect_id.0);
+    if renaming {
+        let half_height = EFFECT_NAME_EDIT_HEIGHT * 0.5;
+        let name_rect = Rect::from_min_max(pos2(name_left, rect.center().y - half_height), pos2(name_right, rect.center().y + half_height));
+        effect_rename_editor(app, ui, name_rect, effect);
+    } else {
+        let galley = elided(&painter, effect.name.clone(), EFFECT_NAME_FONT_SIZE, name_color, (name_right - name_left).max(MIN_NAME_WIDTH));
+        painter.galley(pos2(name_left, rect.center().y - galley.size().y * 0.5), galley, tokens.text);
+    }
     if show_blend {
         let mode_width = EFFECT_BLEND_WIDTH - ROW_CONTROL_GAP - EFFECT_OPACITY_WIDTH;
         let mode_rect = Rect::from_center_size(pos2(controls_left + mode_width * 0.5, rect.center().y), vec2(mode_width, ROW_CONTROL_HEIGHT));
@@ -970,6 +979,8 @@ fn effect_row(
 
     if eye_response.clicked() {
         app.run("effect.set", json!({"effect": effect_id.0, "visible": !visible}));
+    } else if row.double_clicked() && !renaming {
+        app.ui.rename = Some((effect_id.0, effect.name.clone()));
     } else if row.clicked() {
         app.run("layer.select", json!({"layer": layer.id.0, "target": effect_id.0}));
     }
@@ -998,9 +1009,15 @@ fn effect_row(
     }
 
     row.context_menu(|ui| {
+        if ui.button(tr("Rename effect")).clicked() {
+            app.ui.rename = Some((effect_id.0, effect.name.clone()));
+            ui.close();
+        }
         let keymap = app.ui.keymap.clone();
+
         // The row is selected before the paste runs, so a copied effect is all it needs
         let paste = texturecraft_engine::effect_clipboard::clipboard_effect(&app.session).is_some();
+
         // The clipboard items show the layer clipboard's shortcuts, which act on a selected effect
         for (label, command, keys, enabled) in [
             (tr("Copy effect"), "effect.copy", Some("layer.copy"), true),
@@ -1021,6 +1038,29 @@ fn effect_row(
             }
         }
     });
+}
+
+/// The name editor of `effect` in `rect`: Enter or a click elsewhere renames, Escape cancels.
+fn effect_rename_editor(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, effect: &Effect) {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let Some((_, name_buffer)) = app.ui.rename.as_mut() else { return };
+
+    // Escape reaches us instead of just unfocusing the field, so it can cancel
+    let filter = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() };
+    let response = child
+        .add(egui::TextEdit::singleline(name_buffer).desired_width(rect.width()).font(egui::FontId::proportional(EFFECT_NAME_FONT_SIZE)).event_filter(filter));
+    if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
+        app.ui.rename = None;
+    } else if response.lost_focus() {
+        let name = name_buffer.trim().to_string();
+        app.ui.rename = None;
+        if !name.is_empty() && name != effect.name {
+            app.run("effect.set", json!({"effect": effect.id.0, "name": name}));
+        }
+    } else if !response.has_focus() {
+        // Only until the field has focus (see the layer rename editor)
+        response.request_focus();
+    }
 }
 
 /// The Geometry mask tool: what a click does, and the selected layer's parts.
@@ -1170,7 +1210,7 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
                 app.run("textureSet.uvTiles", json!({"ts": ts, "enabled": tiled}));
             }
             ui.end_row();
-            // Each tile's own size (per-tile resolution)
+            // Each tile's own size (per-tile resolution).
             for &udim in &set.uv_tiles {
                 let r = set.tile_resolution(udim);
                 ui.label(RichText::new(format!("   {udim}")).color(tk.text_dim));
@@ -1250,7 +1290,7 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
                             .color(tk.text_dim),
                     );
                 });
-                // An image resource instead of a bake, or no map
+                // An image resource instead of a bake, or no map.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.menu_button(RichText::new(ic::DOTS_THREE).size(13.0), |ui| {
                         if let Some(name) = image_menu(app, ui) {
@@ -1264,7 +1304,7 @@ pub(crate) fn texture_set_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
                     });
                 });
             });
-            // A shelf image dropped on the row becomes this mesh map
+            // A shelf image dropped on the row becomes this mesh map.
             let resp = row.response.interact(Sense::hover()).on_hover_text(tr("Drop an image from the Assets panel here to use it as this mesh map"));
             if let Some(name) = image_drop(ui, &resp) {
                 app.run("textureSet.meshMap.set", json!({"ts": ts, "map": m.id(), "image": name}));
@@ -2160,20 +2200,158 @@ fn with(base: &Value, extra: Value) -> Value {
 
 /// Anchor points below layer `reader` in its texture set: (effect id, "layer / anchor" label).
 pub(crate) fn anchors_below(app: &TextureCraftApp, reader: LayerId) -> Vec<(LayerId, String)> {
-    let p = &app.session.doc.project;
-    let Some((ts, _, _)) = p.locate(reader) else { return Vec::new() };
-    p.walk(ts)
+    let project = &app.session.doc.project;
+    let Some((texture_set, _, _)) = project.locate(reader) else { return Vec::new() };
+    project
+        .walk(texture_set)
         .into_iter()
         .map(|(id, _)| id)
         .take_while(|id| *id != reader)
-        .filter_map(|id| p.layers.get(&id))
-        .flat_map(|l| l.content_effects.iter().filter(|e| matches!(e.kind, EffectKind::Anchor)).map(move |e| (e.id, format!("{} / {}", l.name, e.name))))
+        .filter_map(|id| project.layers.get(&id))
+        .flat_map(|layer| {
+            let mask = layer.mask.iter().flat_map(|mask| {
+                mask.effects.iter().filter(|effect| matches!(effect.kind, EffectKind::Anchor)).map(move |effect| {
+                    let label = trf("{layer} / mask / {name}", &[("layer", &layer.name), ("name", &effect.name)]);
+                    (effect.id, if mask.enabled { label } else { format!("{label} ({})", tr("Off")) })
+                })
+            });
+            let content = layer
+                .content_effects
+                .iter()
+                .filter(|effect| matches!(effect.kind, EffectKind::Anchor))
+                .map(|effect| (effect.id, format!("{} / {}", layer.name, effect.name)));
+            content.chain(mask).collect::<Vec<_>>()
+        })
         .collect()
+}
+
+/// Anchor choices for an effect, valid for its owner and recorded below the displayed instance
+pub(crate) fn effect_anchors_below(app: &TextureCraftApp, layer: LayerId, effect: LayerId) -> Vec<(LayerId, String)> {
+    let owner = app.session.doc.project.effect(effect).map_or(layer, |(owner, _)| owner);
+    let owner_anchors = anchors_below(app, owner);
+    if owner == layer {
+        return owner_anchors;
+    }
+
+    let displayed_anchors = anchors_below(app, layer);
+    owner_anchors.into_iter().filter(|(id, _)| displayed_anchors.iter().any(|(displayed, _)| id == displayed)).collect()
+}
+
+/// Whether anchor point `anchor` sits in a mask (it then records the mask's gray, whatever the channel).
+fn anchor_in_mask(app: &TextureCraftApp, anchor: LayerId) -> bool {
+    let project = &app.session.doc.project;
+    project
+        .effect(anchor)
+        .and_then(|(owner, _)| project.layers.get(&owner))
+        .is_some_and(|layer| layer.mask.iter().flat_map(|m| m.effects.iter()).any(|effect| effect.id == anchor))
+}
+
+/// Whether this mask anchor currently records a value
+fn mask_anchor_enabled(app: &TextureCraftApp, anchor: LayerId) -> Option<bool> {
+    let project = &app.session.doc.project;
+    let (owner, _) = project.effect(anchor)?;
+    let mask = project.layers.get(&owner)?.mask.as_ref()?;
+    mask.effects.iter().any(|effect| effect.id == anchor).then_some(mask.enabled)
+}
+
+/// The anchor points of `anchors` as menu entries under their own heading (a note when there
+/// are none); returns the one clicked.
+pub(crate) fn anchor_entries(ui: &mut Ui, anchors: &[(LayerId, String)], current: Option<LayerId>) -> Option<LayerId> {
+    ui.separator();
+    ui.label(caption(tr("Anchor points")));
+    if anchors.is_empty() {
+        ui.label(RichText::new(tr("No anchor point below this layer")).color(Tokens::get(ui.ctx()).text_dim));
+    }
+
+    let mut picked = None;
+    for (anchor, label) in anchors {
+        if ui.selectable_label(current == Some(*anchor), trf("Anchor: {name}", &[("name", label)])).clicked() {
+            picked = Some(*anchor);
+        }
+    }
+    picked
 }
 
 pub(crate) fn anchor_label(app: &TextureCraftApp, anchor: LayerId, channel: Channel) -> String {
     let name = app.session.doc.project.effect(anchor).map(|(_, e)| e.name.clone()).unwrap_or_else(|| tr("missing").into());
-    trf("Anchor: {name} ({channel})", &[("name", &name), ("channel", &tr(channel.label()))])
+    let label = trf("Anchor: {name} ({channel})", &[("name", &name), ("channel", &tr(channel.label()))]);
+    if mask_anchor_enabled(app, anchor) == Some(false) { format!("{label} ({})", tr("Off")) } else { label }
+}
+
+#[cfg(test)]
+mod mask_anchor_label_tests {
+    use egui_kittest::Harness;
+    use serde_json::{Value, json};
+    use texturecraft_engine::core::{Channel, LayerId};
+    use texturecraft_engine::execute;
+
+    use super::{anchor_label, anchors_below, effect_anchors_below};
+    use crate::TextureCraftApp;
+
+    #[test]
+    fn disabled_mask_anchors_keep_their_selection_and_show_off() {
+        let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
+        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        execute(&mut session, "mask.add.black", &json!({"layer": lower})).unwrap();
+        let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower, "target": "mask"})).unwrap()["effect"].as_u64().unwrap();
+        let upper = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        execute(&mut session, "mask.toggle", &json!({"layer": lower, "enabled": false})).unwrap();
+
+        let mut harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
+        let labels = anchors_below(harness.state(), LayerId(upper));
+        assert!(labels.iter().any(|(id, label)| *id == LayerId(anchor) && label.contains("(Off)")));
+        assert!(anchor_label(harness.state(), LayerId(anchor), Channel::Height).contains("(Off)"));
+
+        execute(&mut harness.state_mut().session, "mask.toggle", &json!({"layer": lower, "enabled": true})).unwrap();
+        let labels = anchors_below(harness.state(), LayerId(upper));
+        assert!(labels.iter().any(|(id, label)| *id == LayerId(anchor) && !label.contains("(Off)")));
+        assert!(!anchor_label(harness.state(), LayerId(anchor), Channel::Height).contains("(Off)"));
+    }
+
+    #[test]
+    fn inherited_effect_pickers_list_anchors_below_the_owner() {
+        let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
+        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        let valid = execute(&mut session, "effect.add.anchor", &json!({"layer": lower})).unwrap()["effect"].as_u64().unwrap();
+        let source = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        execute(&mut session, "mask.add.black", &json!({"layer": source})).unwrap();
+        let fill = execute(&mut session, "effect.add.fill", &json!({"layer": source})).unwrap()["effect"].as_u64().unwrap();
+        let generator = execute(&mut session, "effect.add.generator", &json!({"layer": source})).unwrap()["effect"].as_u64().unwrap();
+        let middle = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        let invalid = execute(&mut session, "effect.add.anchor", &json!({"layer": middle})).unwrap()["effect"].as_u64().unwrap();
+        let instance = execute(&mut session, "layer.instance", &json!({"layer": source})).unwrap()["layer"].as_u64().unwrap();
+
+        assert!(execute(&mut session, "effect.set", &json!({"effect": fill, "anchor": invalid})).is_err());
+        assert!(execute(&mut session, "effect.set", &json!({"effect": generator, "microAnchor": invalid})).is_err());
+
+        let harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
+        assert!(anchors_below(harness.state(), LayerId(instance)).iter().any(|(id, _)| *id == LayerId(invalid)));
+        for effect in [fill, generator] {
+            let choices = effect_anchors_below(harness.state(), LayerId(instance), LayerId(effect));
+            assert!(choices.iter().any(|(id, _)| *id == LayerId(valid)));
+            assert!(!choices.iter().any(|(id, _)| *id == LayerId(invalid)));
+        }
+    }
+
+    #[test]
+    fn inherited_effect_pickers_hide_unrecorded_source_set_anchors() {
+        let mesh = texturecraft_engine::geom::primitives::material_ball();
+        let mut session = texturecraft_engine::Session::new_project("test", mesh, "builtin:material_ball", None, 256).unwrap();
+        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower})).unwrap()["effect"].as_u64().unwrap();
+        let source = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        execute(&mut session, "mask.add.black", &json!({"layer": source})).unwrap();
+        let fill = execute(&mut session, "effect.add.fill", &json!({"layer": source, "anchor": anchor})).unwrap()["effect"].as_u64().unwrap();
+        let generator = execute(&mut session, "effect.add.generator", &json!({"layer": source, "microAnchor": anchor})).unwrap()["effect"].as_u64().unwrap();
+        let instance = execute(&mut session, "layer.instance", &json!({"layer": source, "ts": 1})).unwrap()["layer"].as_u64().unwrap();
+
+        let harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
+        assert!(anchors_below(harness.state(), LayerId(instance)).is_empty());
+        for effect in [fill, generator] {
+            let choices = effect_anchors_below(harness.state(), LayerId(instance), LayerId(effect));
+            assert!(choices.is_empty(), "source-set anchor {anchor} is not recorded for the instance");
+        }
+    }
 }
 
 /// Space above a fill's Material caption, setting it apart from the projection
@@ -2381,14 +2559,9 @@ fn fill_channel(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Valu
                         if let Some(name) = image_menu(app, ui) {
                             app.run("layer.fill.set", set(json!({"image": name})));
                         }
-                        if !anchors.is_empty() {
-                            ui.separator();
-                        }
-                        for (a, label) in anchors {
-                            if ui.button(trf("Anchor: {name}", &[("name", label)])).clicked() {
-                                app.run("layer.fill.set", set(json!({"anchor": a.0})));
-                                ui.close();
-                            }
+                        if let Some(a) = anchor_entries(ui, anchors, fill.source(c).anchor()) {
+                            app.run("layer.fill.set", set(json!({"anchor": a.0})));
+                            ui.close();
                         }
                     })
                     .response
@@ -2463,6 +2636,7 @@ fn fill_channel(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Valu
                 }
             }
         });
+
         // A shelf image dropped on the channel becomes its source
         if let Some(name) = image_drop(ui, &group.response.interact(Sense::hover())) {
             app.run("layer.fill.set", set(json!({"image": name})));
@@ -2482,7 +2656,7 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
         EffectKind::Levels(levels) => crate::levels_properties::levels_properties(app, ui, layer, effect_id, levels),
         EffectKind::Fill { source, .. } => {
             ui.label(caption(tr("Fill")));
-            let anchors = anchors_below(app, layer.id);
+            let anchors = effect_anchors_below(app, layer.id, effect_id);
             let current = match source {
                 Source::Anchor { anchor, channel } => anchor_label(app, *anchor, *channel),
                 Source::Uniform(_) => tr("Uniform value").to_string(),
@@ -2493,10 +2667,8 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                 if ui.selectable_label(matches!(source, Source::Uniform(_)), tr("Uniform value")).clicked() {
                     app.run("effect.set", json!({"effect": id, "value": 1.0}));
                 }
-                for (anchor, label) in &anchors {
-                    if ui.selectable_label(source.anchor() == Some(*anchor), trf("Anchor: {name}", &[("name", label)])).clicked() {
-                        app.run("effect.set", json!({"effect": id, "anchor": anchor.0}));
-                    }
+                if let Some(anchor) = anchor_entries(ui, &anchors, source.anchor()) {
+                    app.run("effect.set", json!({"effect": id, "anchor": anchor.0}));
                 }
             });
             match source {
@@ -2505,6 +2677,10 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                     if let Some(merge) = slider_edit(ui, tr("Value"), &mut value, 0.0..=1.0, 2) {
                         app.run("effect.set", json!({"effect": id, "value": value, "merge": merge}));
                     }
+                }
+                Source::Anchor { anchor, .. } if anchor_in_mask(app, *anchor) => {
+                    let note = if mask_anchor_enabled(app, *anchor) == Some(false) { tr("Off") } else { tr("A mask anchor reads as its mask's gray.") };
+                    ui.label(RichText::new(note).color(tokens.text_dim));
                 }
                 Source::Anchor { channel, .. } => {
                     let channels = app.session.doc.project.texture_set(app.session.ts()).map(|set| set.channel_list()).unwrap_or_default();
@@ -2530,10 +2706,12 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
         }
         EffectKind::Anchor => {
             ui.label(caption(tr("Anchor point")));
-            ui.label(
-                RichText::new(tr("Records the stack up to this layer. Fill effects in masks (and fill layers) above can read it as a source."))
-                    .color(tokens.text_dim),
-            );
+            let text = if anchor_in_mask(app, effect_id) {
+                tr("Records the mask value at this point. Fill effects and generators in masks above can read it.")
+            } else {
+                tr("Records the stack up to this layer. Fill effects in masks (and fill layers) above can read it as a source.")
+            };
+            ui.label(RichText::new(text).color(tokens.text_dim));
         }
         EffectKind::Paint => {
             let hint = if layer.content_effects.iter().any(|content| content.id == effect_id) {
