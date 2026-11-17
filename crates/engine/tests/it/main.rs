@@ -27,6 +27,7 @@ mod polygon_fill;
 mod project_recovery;
 mod sample;
 mod thumbs;
+mod tile_generator;
 mod tool_availability;
 mod tools;
 mod udim;
