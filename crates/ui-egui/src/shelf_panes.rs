@@ -5,7 +5,7 @@ use egui_phosphor::regular as ic;
 use serde::{Deserialize, Serialize};
 
 use crate::TextureCraftApp;
-use crate::i18n::tr;
+use crate::i18n::{n_, tr};
 use crate::saved_search::SavedSearch;
 use crate::shelf::TABS;
 use crate::theme::Tokens;
@@ -14,8 +14,16 @@ use crate::widgets::icon_button;
 /// The panes' column width as a fraction of the panel, and its least width in points
 const COLUMN_FRACTION: f32 = 0.45;
 const COLUMN_MIN_WIDTH: f32 = 110.0;
-/// Maximum share of the column used by saved searches while both panes are open
-const SAVED_SEARCHES_HEIGHT_FRACTION: f32 = 0.45;
+/// The splitter's height between the two panes in points
+const SPLITTER_HEIGHT: f32 = 6.0;
+/// The least height either pane keeps while the splitter moves, in points
+const PANE_MIN_HEIGHT: f32 = 40.0;
+/// The hint on rows whose function TextureCraft lacks
+pub(crate) const NOT_AVAILABLE: &str = n_("Not available yet");
+/// The reference's built-in saved searches after "All", shown greyed until they work
+const BUILT_IN_SEARCHES: [&str; 3] = [n_("Favorites"), n_("3D Assets"), n_("Flattened layers")];
+/// The reference's font libraries after the asset libraries, shown greyed until they work
+const FONT_LIBRARIES: [&str; 2] = [n_("System fonts"), n_("User fonts")];
 /// The pane header's caption size in points
 const HEADER_SIZE: f32 = 10.0;
 
@@ -45,20 +53,60 @@ pub(crate) fn column_width(app: &TextureCraftApp, width: f32) -> Option<f32> {
     (panes.saved_searches || panes.filter_by_path).then(|| (width * COLUMN_FRACTION).max(COLUMN_MIN_WIDTH).min(width))
 }
 
-/// The open panes, top to bottom; the tree shows `paths`, or `applicable` while it hides folders with nothing matching
+/// The open panes, top to bottom, with a splitter between them; the tree shows `paths`, or `applicable` while it hides folders with nothing matching
 pub(crate) fn column(app: &mut TextureCraftApp, ui: &mut Ui, paths: &[Vec<String>], applicable: &[Vec<String>]) {
     // Names past the narrow column end in "…" rather than breaking mid-word
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-    if app.ui.shelf_panes.saved_searches {
-        saved_searches(app, ui);
-    }
-    if app.ui.shelf_panes.filter_by_path {
-        if app.ui.shelf_panes.saved_searches {
-            ui.separator();
+    let shown = if app.ui.shelf_panes.hide_non_applicable { applicable } else { paths };
+    let panes = &app.ui.shelf_panes;
+    if !(panes.saved_searches && panes.filter_by_path) {
+        // One pane open takes the whole column
+        if panes.saved_searches {
+            saved_searches(app, ui);
+        } else if panes.filter_by_path {
+            filter_by_path(app, ui, shown);
         }
-        let shown = if app.ui.shelf_panes.hide_non_applicable { applicable } else { paths };
-        filter_by_path(app, ui, shown);
+        return;
     }
+
+    let rect = ui.available_rect_before_wrap();
+    let splitter = splitter(app, ui, rect);
+    let top = egui::Rect::from_min_max(rect.min, egui::pos2(rect.right(), splitter.top()));
+    let bottom = egui::Rect::from_min_max(egui::pos2(rect.left(), splitter.bottom()), rect.max);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(top), |ui| {
+        ui.set_clip_rect(top.intersect(ui.clip_rect()));
+        saved_searches(app, ui);
+    });
+    ui.scope_builder(egui::UiBuilder::new().max_rect(bottom), |ui| {
+        ui.set_clip_rect(bottom.intersect(ui.clip_rect()));
+        filter_by_path(app, ui, shown);
+    });
+    ui.allocate_rect(rect, egui::Sense::hover());
+}
+
+/// The splitter between the panes in `rect`: a drag moves it and keeps both panes at least [`PANE_MIN_HEIGHT`] high
+fn splitter(app: &mut TextureCraftApp, ui: &mut Ui, rect: egui::Rect) -> egui::Rect {
+    let usable = (rect.height() - SPLITTER_HEIGHT).max(0.0);
+    let clamp = |share: f32| {
+        let least = (PANE_MIN_HEIGHT / usable.max(1.0)).min(0.5);
+        share.clamp(least, 1.0 - least)
+    };
+    let top_of = |share: f32| rect.top() + usable * clamp(share);
+    let handle = egui::Rect::from_min_size(egui::pos2(rect.left(), top_of(app.ui.shelf_panes_split)), egui::vec2(rect.width(), SPLITTER_HEIGHT));
+
+    let response = ui.interact(handle, ui.scope_id().with("shelf_panes_splitter"), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
+    if response.dragged()
+        && let Some(pointer) = response.interact_pointer_pos()
+        && usable > 0.0
+    {
+        app.ui.shelf_panes_split = clamp((pointer.y - SPLITTER_HEIGHT / 2.0 - rect.top()) / usable);
+    }
+
+    let handle = handle.translate(egui::vec2(0.0, top_of(app.ui.shelf_panes_split) - handle.top()));
+    let visuals = ui.visuals();
+    let stroke = if response.hovered() || response.dragged() { visuals.widgets.hovered.fg_stroke } else { visuals.widgets.noninteractive.bg_stroke };
+    ui.painter().hline(handle.x_range(), handle.center().y, stroke);
+    handle
 }
 
 /// "All libraries", then each library's folders as a tree; a click shows that folder
@@ -77,6 +125,12 @@ fn filter_by_path(app: &mut TextureCraftApp, ui: &mut Ui, paths: &[Vec<String>])
             picked = Some(Vec::new());
         }
         folders(ui, paths, &[], &app.ui.shelf_path, &mut picked);
+        // Nothing is ever in them yet, so hiding non-applicable folders hides them too
+        if !app.ui.shelf_panes.hide_non_applicable {
+            for library in FONT_LIBRARIES {
+                ui.add_enabled(false, egui::Button::selectable(false, tr(library))).on_disabled_hover_text(tr(NOT_AVAILABLE));
+            }
+        }
     });
     if let Some(path) = picked {
         app.ui.shelf_path = path;
@@ -130,16 +184,25 @@ fn saved_searches(app: &mut TextureCraftApp, ui: &mut Ui) {
     });
 
     let everything = current.filter.is_empty() && current.path.is_empty() && current.tab == crate::shelf_tabs::NO_TYPE;
-    if ui.selectable_label(everything, tr("All")).clicked() {
-        crate::shelf_toolbar::reset_query(app);
-    }
-
+    // "All" and the built-in searches come first, in the list so a short pane scrolls them too
+    let fixed_rows = 1 + BUILT_IN_SEARCHES.len();
     let mut deleted = None;
-    let max_height = if app.ui.shelf_panes.filter_by_path { ui.available_height() * SAVED_SEARCHES_HEIGHT_FRACTION } else { ui.available_height() };
     let row_height = ui.spacing().interact_size.y;
-    let total_rows = app.ui.shelf_saved_searches.len();
-    egui::ScrollArea::vertical().id_salt("shelf_saved_searches").max_height(max_height).show_rows(ui, row_height, total_rows, |ui, visible_rows| {
-        for i in visible_rows {
+    let total_rows = fixed_rows + app.ui.shelf_saved_searches.len();
+    egui::ScrollArea::vertical().id_salt("shelf_saved_searches").auto_shrink([false, true]).show_rows(ui, row_height, total_rows, |ui, visible_rows| {
+        for row in visible_rows {
+            if row == 0 {
+                if ui.selectable_label(everything, tr("All")).clicked() {
+                    crate::shelf_toolbar::reset_query(app);
+                }
+                continue;
+            }
+            if let Some(name) = BUILT_IN_SEARCHES.get(row - 1) {
+                ui.add_enabled(false, egui::Button::selectable(false, tr(name))).on_disabled_hover_text(tr(NOT_AVAILABLE));
+                continue;
+            }
+
+            let i = row - fixed_rows;
             let Some(saved) = app.ui.shelf_saved_searches.get(i) else { continue };
 
             let same = saved.filter == current.filter && saved.tab == current.tab && saved.path == current.path;

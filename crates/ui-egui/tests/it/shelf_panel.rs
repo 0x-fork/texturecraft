@@ -348,3 +348,110 @@ fn procedurals_are_in_the_textures_type() {
 
     assert!(harness.query_by_label(ProceduralKind::ALL[0].label()).is_some());
 }
+
+/// The reference's type dropdown, top to bottom
+const TYPE_DROPDOWN: [&str; 10] =
+    ["Materials", "Smart materials", "Smart masks", "Filters", "Brushes", "Alphas", "Textures", "Environments", "Fonts", "Show all"];
+
+/// The node labelled `label` added last (a popup's entry is newer than any other with its label)
+fn newest<'a>(harness: &'a Harness<'_, TextureCraftApp>, label: &'a str) -> egui_kittest::Node<'a> {
+    harness.get_all_by_label(label).last().unwrap_or_else(|| panic!("no {label}"))
+}
+
+/// Hover `label` long enough for its tooltip and tell whether the "Not available yet" hint shows
+fn shows_not_available(harness: &mut Harness<'_, TextureCraftApp>, label: &str) -> bool {
+    let center = newest(harness, label).rect().center();
+    harness.hover_at(center);
+    harness.run_steps(30);
+    harness.query_by_label("Not available yet").is_some()
+}
+
+#[test]
+fn the_type_dropdown_lists_the_reference_entries_in_order() {
+    let mut harness = shelf(NARROW_WINDOW);
+    button(&harness, "Filter by type").click();
+    harness.run_steps(3);
+
+    let tops: Vec<f32> = TYPE_DROPDOWN.iter().map(|label| newest(&harness, label).rect().top()).collect();
+    assert!(tops.windows(2).all(|pair| pair[0] < pair[1]), "the entries run top to bottom in the reference order: {tops:?}");
+    for label in TYPE_DROPDOWN {
+        let disabled = newest(&harness, label).accesskit_node().is_disabled();
+        assert_eq!(disabled, label == "Fonts", "only Fonts is greyed: {label}");
+    }
+    assert!(shows_not_available(&mut harness, "Fonts"), "Fonts explains why it is greyed");
+}
+
+#[test]
+fn show_all_unpicks_the_type() {
+    let mut harness = shelf(NARROW_WINDOW);
+    button(&harness, "Filter by type").click();
+    harness.run_steps(3);
+
+    newest(&harness, "Show all").click();
+    harness.run_steps(3);
+
+    assert_eq!(harness.state().ui.shelf_tab, TYPE_DROPDOWN.len() - 2, "no type is picked");
+}
+
+#[test]
+fn the_panes_list_the_reference_rows_and_grey_the_missing_ones() {
+    let mut harness = shelf(REFERENCE_WINDOW);
+    harness.state_mut().ui.shelf_panes.saved_searches = true;
+    harness.state_mut().ui.shelf_panes.filter_by_path = true;
+    harness.run_steps(3);
+
+    let saved = ["SAVED SEARCHES", "All", "Favorites", "3D Assets", "Flattened layers"];
+    let paths = ["FILTER BY PATH", "All libraries", "Project", "Starter assets", "Your assets", "System fonts", "User fonts"];
+    for rows in [&saved[..], &paths[..]] {
+        let tops: Vec<f32> = rows.iter().map(|label| newest(&harness, label).rect().top()).collect();
+        assert!(tops.windows(2).all(|pair| pair[0] < pair[1]), "{rows:?} run top to bottom: {tops:?}");
+    }
+    for label in ["Favorites", "3D Assets", "Flattened layers", "System fonts", "User fonts"] {
+        assert!(newest(&harness, label).accesskit_node().is_disabled(), "{label} is greyed");
+    }
+    for label in ["All", "All libraries", "Project", "Starter assets", "Your assets"] {
+        assert!(!newest(&harness, label).accesskit_node().is_disabled(), "{label} works");
+    }
+    assert!(shows_not_available(&mut harness, "Flattened layers"), "a greyed saved search explains itself");
+    assert!(shows_not_available(&mut harness, "User fonts"), "a greyed library explains itself");
+}
+
+#[test]
+fn the_splitter_resizes_both_panes_and_the_split_is_saved() {
+    let mut harness = shelf(REFERENCE_WINDOW);
+    harness.state_mut().ui.shelf_panes.saved_searches = true;
+    harness.state_mut().ui.shelf_panes.filter_by_path = true;
+    harness.run_steps(3);
+    let split = harness.state().ui.shelf_panes_split;
+    let heading = harness.get_by_label("FILTER BY PATH").rect();
+    let save_button = harness.get_by_label("Save the current search").rect().top();
+    assert!(heading.top() > save_button, "the path pane sits below the saved searches");
+
+    // The splitter is the strip right above the path pane's heading
+    let from = egui::pos2(heading.left() + 20.0, heading.top() - 8.0);
+    let to = from + egui::vec2(0.0, 120.0);
+    harness.hover_at(from);
+    harness.run_steps(1);
+    harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    harness.run_steps(2);
+    for step in 1..=4 {
+        harness.hover_at(from + (to - from) * (step as f32 / 4.0));
+        harness.run_steps(1);
+    }
+    harness.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    harness.run_steps(3);
+
+    let moved = harness.get_by_label("FILTER BY PATH").rect();
+    assert!((moved.top() - heading.top() - 120.0).abs() < 2.0, "the path pane starts 120 points lower: {heading:?} to {moved:?}");
+    assert!(harness.state().ui.shelf_panes_split > split, "saved searches take a larger share");
+    assert!(harness.query_by_label("User fonts").is_some(), "the shorter path pane still lists its rows");
+
+    // The split is part of the saved UI state, and a state saved before the splitter loads the default
+    let saved = serde_json::to_value(&harness.state().ui).unwrap();
+    let restored: texturecraft_ui_egui::state::UiState = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(restored.shelf_panes_split, harness.state().ui.shelf_panes_split);
+    let mut older = saved;
+    assert!(older.as_object_mut().unwrap().remove("shelf_panes_split").is_some(), "the saved state names the split");
+    let restored: texturecraft_ui_egui::state::UiState = serde_json::from_value(older).unwrap();
+    assert_eq!(restored.shelf_panes_split, split);
+}

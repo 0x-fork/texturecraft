@@ -3,7 +3,7 @@
 use egui::{Ui, vec2};
 
 use crate::TextureCraftApp;
-use crate::i18n::tr;
+use crate::i18n::{n_, tr};
 use crate::shelf::{TABS, Tab};
 use crate::widgets::{icon_button, icon_dropdown_button};
 
@@ -11,6 +11,11 @@ use crate::widgets::{icon_button, icon_dropdown_button};
 const ICON_GAP: f32 = 2.0;
 /// The size of the dot that marks the collapsed row's dropdown while a type is picked, in points
 const FILTER_DOT_RADIUS: f32 = 2.5;
+
+/// The dropdown's entry after the types, greyed until fonts are assets
+const FONTS: &str = n_("Fonts");
+/// The dropdown's last entry: no type picked
+const SHOW_ALL: &str = n_("Show all");
 
 /// `app.ui.shelf_tab` while no type is picked: every type shows
 pub(crate) const NO_TYPE: usize = TABS.len();
@@ -56,12 +61,19 @@ fn collapsed(ui: &mut Ui, picked: &mut usize, counts: &[usize], size: f32) {
     }
 
     egui::Popup::menu(&response).show(|ui| {
-        for (i, (_, icon, label)) in TABS.iter().enumerate() {
+        for (i, (_, _, label)) in TABS.iter().enumerate() {
             let empty = i != *picked && counts.get(i).is_none_or(|count| *count == 0);
-            if ui.add_enabled(!empty, egui::Button::selectable(i == *picked, format!("{icon}  {}", tr(label)))).clicked() {
+            if ui.add_enabled(!empty, egui::Button::selectable(i == *picked, tr(label))).clicked() {
                 *picked = if i == *picked { NO_TYPE } else { i };
                 ui.close();
             }
+        }
+        // The reference also lists fonts, which TextureCraft has no assets for yet
+        ui.add_enabled(false, egui::Button::selectable(false, tr(FONTS))).on_disabled_hover_text(tr(crate::shelf_panes::NOT_AVAILABLE));
+        ui.separator();
+        if ui.button(tr(SHOW_ALL)).clicked() {
+            *picked = NO_TYPE;
+            ui.close();
         }
     });
 }
