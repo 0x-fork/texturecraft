@@ -303,6 +303,10 @@ impl TextureCraftApp {
                 if matches!(id, "file.open" | "file.close" | "project.new" | "project.sample") {
                     self.pbr_import = None;
                 }
+                // The empty state has no baking or rendering to show
+                if id == "file.close" {
+                    self.ui.mode = state::Mode::Painting;
+                }
                 if let Some(from) = glide_from.filter(|f| *f != self.session.camera) {
                     self.camera_glide = Some(CameraGlide { from, to: self.session.camera, start: self.last_time });
                     self.session.camera = from;
@@ -760,6 +764,10 @@ impl eframe::App for TextureCraftApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let t0 = now_ms();
+        // Baking and rendering need a project (a saved layout may start in one of them)
+        if !self.session.project_open {
+            self.ui.mode = state::Mode::Painting;
+        }
         if !self.ui.hide_ui {
             titlebar::show(self, ui);
             banner(self, ui);

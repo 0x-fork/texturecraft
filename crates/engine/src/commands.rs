@@ -88,6 +88,38 @@ pub fn command_specs() -> &'static [CommandSpec] {
     })
 }
 
+/// Commands that run in the empty state (no project open): they open or create a project, or
+/// only read the libraries and the user's presets.
+fn works_without_project(id: &str) -> bool {
+    matches!(
+        id,
+        "file.open"
+            | "file.new"
+            | "project.new"
+            | "project.sample"
+            | "project.inspect"
+            | "project.templates"
+            | "export.presets"
+            | "export.preset.get"
+            | "export.preset.save"
+            | "export.preset.remove"
+            | "brush.preset.list"
+            | "alpha.list"
+            | "filter.list"
+            | "material.list"
+            | "mask.smart.list"
+            | "text.fonts"
+    )
+}
+
+/// Whether `spec` can run on `s`: no project open refuses everything but [`works_without_project`]
+pub fn check_enabled(spec: &CommandSpec, s: &Session) -> std::result::Result<(), String> {
+    if !s.project_open && !works_without_project(spec.id) {
+        return Err("no project is open".into());
+    }
+    (spec.enabled)(s)
+}
+
 pub fn find(id: &str) -> Option<&'static CommandSpec> {
     command_specs().iter().find(|c| c.id == id)
 }
@@ -96,7 +128,7 @@ pub fn find(id: &str) -> Option<&'static CommandSpec> {
 /// `merge: true` its edits continue the previous undo step of the same label (drags).
 pub fn execute(s: &mut Session, id: &str, params: &Value) -> Result<Value> {
     let spec = find(id).ok_or_else(|| EngineError::UnknownCommand(id.to_string()))?;
-    (spec.enabled)(s).map_err(|why| EngineError::Disabled { cmd: id.to_string(), why })?;
+    check_enabled(spec, s).map_err(|why| EngineError::Disabled { cmd: id.to_string(), why })?;
     let outer = std::mem::replace(&mut s.merge_edits, boolp(params, "merge").unwrap_or(false));
     let result = (spec.run)(s, params);
     s.merge_edits = outer;
@@ -116,7 +148,7 @@ pub fn list(s: &Session, filter: Option<&str>) -> Value {
                 "menu": c.menu,
                 "shortcut": c.shortcut,
                 "params": c.params,
-                "enabled": (c.enabled)(s).is_ok(),
+                "enabled": check_enabled(c, s).is_ok(),
             })
         })
         .collect();

@@ -466,7 +466,11 @@ pub fn rail(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
         card(ui, &tokens, egui::Margin { left: 0, right: GUTTER, top: GUTTER, bottom: GUTTER }, RAIL_CARD_PADDING, |ui| {
             ui.spacing_mut().item_spacing.y = RAIL_ICON_GAP;
             crate::rail_popup::begin_rail(ui.ctx(), ui.max_rect());
-            if icon_button(ui, ic::EXPORT, &tip(&app.ui.keymap, tr("Export textures"), "ui.export"), app.ui.windows.export, RAIL_ICON_SIZE).clicked() {
+            let export_on = crate::menus::enabled(app, "ui.export");
+            let export = ui.add_enabled_ui(export_on, |ui| {
+                icon_button(ui, ic::EXPORT, &tip(&app.ui.keymap, tr("Export textures"), "ui.export"), app.ui.windows.export, RAIL_ICON_SIZE)
+            });
+            if export.inner.clicked() {
                 app.ui.windows.export = !app.ui.windows.export;
             }
 
@@ -515,23 +519,6 @@ pub fn status_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
                             .size(11.0)
                             .color(tk.text_dim),
                     );
-                    ui.separator();
-                    let m = app.session.memory();
-                    let mb = |b: usize| b as f64 / (1024.0 * 1024.0);
-                    let total = mb(m.total());
-                    let decimals = if total < 10.0 { 1 } else { 0 };
-                    let mb1 = |b: usize| format!("{:.1}", mb(b));
-                    ui.label(RichText::new(trf("Layer memory: {mb} MB", &[("mb", &format!("{total:.decimals$}"))])).size(11.0).color(tk.text_dim)).on_hover_ui(
-                        |ui| {
-                            ui.label(trf(
-                                "Painted layer pixels {pixels} MB, composited channels {composites} MB, compositing cache {cache} MB",
-                                &[("pixels", &mb1(m.pixels)), ("composites", &mb1(m.composites)), ("cache", &mb1(m.cache))],
-                            ));
-                        },
-                    );
-                    ui.separator();
-                    ui.label(RichText::new(trf("UI {ms} ms", &[("ms", &format!("{:.1}", app.ui_ms))])).size(11.0).color(tk.text_dim));
-                    ui.add_space(vec2(0.0, 0.0).x);
                 });
             });
         });

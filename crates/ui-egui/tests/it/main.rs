@@ -37,7 +37,7 @@ mod shift_lines_2d;
 mod shortcut_keys;
 mod skew_paint;
 mod split_divider;
-mod start_window;
+mod empty_start;
 mod tool_availability;
 mod toolbar;
 

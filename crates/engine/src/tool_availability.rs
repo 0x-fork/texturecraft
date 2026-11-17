@@ -7,6 +7,9 @@ use crate::{Session, StackTarget, Tool};
 impl Session {
     /// Whether `tool` can act on the selection (or on the quick mask while it is being edited)
     pub fn tool_usable(&self, tool: Tool) -> bool {
+        if !self.project_open {
+            return false;
+        }
         match tool {
             // The picker reads the composite under the cursor, whatever is selected
             Tool::ColorPicker => return true,

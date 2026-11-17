@@ -41,6 +41,10 @@ const TAG_COLORS: [Color32; 8] = [
 ];
 
 pub(crate) fn texture_set_list(app: &mut TextureCraftApp, ui: &mut Ui) {
+    // The empty state lists nothing
+    if !app.session.project_open {
+        return;
+    }
     let tk = Tokens::get(ui.ctx());
     let sets: Vec<(String, String, bool)> = app
         .session
@@ -143,7 +147,8 @@ pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tk = Tokens::get(ui.ctx());
 
     // Wrap in a narrow column so rows stay within the panel
-    ui.horizontal_wrapped(|ui| {
+    let project_open = app.session.project_open;
+    ui.add_enabled_ui(project_open, |ui| ui.horizontal_wrapped(|ui| {
         // Keep menu buttons as compact as the adjacent icon buttons
         ui.spacing_mut().button_padding.x = 4.0;
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -175,7 +180,11 @@ pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
         if icon_button(ui, ic::TRASH, &crate::keymap::tip(&app.ui.keymap, tr("Remove layer"), "layer.remove"), false, 22.0).clicked() {
             app.run("layer.remove", Value::Null);
         }
-    });
+    }));
+    // The empty state has no layers: the toolbar stays, greyed
+    if !project_open {
+        return;
+    }
     ui.add_space(2.0);
     let ts = app.session.ts();
     let stack: Vec<LayerId> = app.session.doc.project.texture_sets.get(ts).map(|t| t.stack.iter().rev().copied().collect()).unwrap_or_default();
@@ -1481,6 +1490,9 @@ pub(crate) fn mesh_map_color(map: BakedMap) -> Color32 {
 
 /// The Properties tab title: what the panel edits
 pub(crate) fn properties_title(app: &TextureCraftApp) -> String {
+    if !app.session.project_open {
+        return tr("Properties").to_string();
+    }
     let project = &app.session.doc.project;
     let tool = app.session.tool.tool;
     let tool_usable = app.session.tool_usable(tool);
@@ -1507,6 +1519,10 @@ pub(crate) fn properties(app: &mut TextureCraftApp, ui: &mut Ui) {
 /// What the Properties panel edits: polygon fill's own settings, the selected effect, fill, folder, instance or mask, else the tool (or a hint to select a layer when it can't act)
 pub(crate) fn properties_contents(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tokens = Tokens::get(ui.ctx());
+    if !app.session.project_open {
+        ui.label(RichText::new(tr("No properties found")).color(tokens.text_dim));
+        return;
+    }
     let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id).cloned());
     let tool = app.session.tool.tool;
     let tool_usable = app.session.tool_usable(tool);

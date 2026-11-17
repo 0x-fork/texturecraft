@@ -363,6 +363,10 @@ pub struct Session {
     /// Point changes of the path being edited: (earlier states for undo, undone states for redo)
     pub(crate) path_steps: (Vec<crate::path_tool::PathState>, Vec<crate::path_tool::PathState>),
     pub path: Option<String>,
+    /// False in the empty state (the app at start, or after File > Close): the document is a
+    /// tiny placeholder that panels do not show, and only the commands that open or create a
+    /// project run (see [`crate::commands::check_enabled`]).
+    pub project_open: bool,
     pub modified: bool,
     /// Bumps on every document change.
     pub revision: u64,
@@ -421,6 +425,7 @@ impl Session {
             path_draft: None,
             path_steps: Default::default(),
             path: None,
+            project_open: true,
             modified: false,
             revision: 1,
             log: Vec::new(),
@@ -429,6 +434,14 @@ impl Session {
             export_presets: Default::default(),
             templates: Default::default(),
         })
+    }
+
+    /// The empty state: no project is open. Holds a tiny placeholder document that the UI never
+    /// shows; every command except opening or creating a project is refused.
+    pub fn closed() -> Session {
+        let mut session = Session::new_project("", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, 128).expect("the placeholder project is valid");
+        session.project_open = false;
+        session
     }
 
     /// Replace this session with `next` (another project), keeping the viewport size and the

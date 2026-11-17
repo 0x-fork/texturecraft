@@ -480,6 +480,11 @@ const PANEL_BODY_MARGIN: Margin = Margin::symmetric(8, 4);
 
 /// The body of every panel except the viewport, in the dock or on the rail
 pub(crate) fn panel_body(app: &mut TextureCraftApp, ui: &mut Ui, panel: Panel) {
+    // No project open: the library and the log work, the other panels about a project stay empty
+    let works_empty = matches!(panel, Panel::Assets | Panel::Log | Panel::Layers | Panel::TextureSetList | Panel::Properties);
+    if !app.session.project_open && !works_empty {
+        return;
+    }
     egui::Frame::new().inner_margin(PANEL_BODY_MARGIN).show(ui, |ui| match panel {
         Panel::MeshMapSettings => crate::bake_mode::mesh_map_settings_panel(app, ui),
         Panel::Assets => crate::shelf::body(app, ui),

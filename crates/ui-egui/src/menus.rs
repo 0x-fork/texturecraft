@@ -113,6 +113,11 @@ fn is_ui(id: &str) -> bool {
     id.starts_with("ui.")
 }
 
+/// Shell items that act on the open project: greyed while none is open
+fn ui_needs_project(id: &str) -> bool {
+    matches!(id, "ui.export" | "ui.projectConfig" | "ui.uvChecker" | "ui.mode.bake" | "ui.mode.render")
+}
+
 /// Whether an item can run now
 pub fn enabled(app: &TextureCraftApp, id: &str) -> bool {
     if let Some(panel) = crate::docking::view_panel(id) {
@@ -124,7 +129,7 @@ pub fn enabled(app: &TextureCraftApp, id: &str) -> bool {
     }
 
     if is_ui(id) {
-        return true;
+        return app.session.project_open || !ui_needs_project(id);
     }
 
     // Scripts may pick any tool, but the shelf and its shortcuts offer only those that can act
@@ -133,7 +138,7 @@ pub fn enabled(app: &TextureCraftApp, id: &str) -> bool {
         return false;
     }
 
-    texturecraft_engine::find(id).is_some_and(|command| (command.enabled)(&app.session).is_ok())
+    texturecraft_engine::find(id).is_some_and(|command| texturecraft_engine::check_enabled(command, &app.session).is_ok())
 }
 
 /// Whether an id is implemented at all (parity report).

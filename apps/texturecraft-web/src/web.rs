@@ -41,8 +41,9 @@ pub fn start() {
 
 async fn run(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
     // The WebAssembly has downloaded and compiled when this runs.
-    step(0.5, "Preparing the sample project…").await;
-    let session = initial_session()?;
+    step(0.5, "Preparing the app…").await;
+    // The app starts with no project, like File > Close
+    let session = Session::closed();
     step(0.8, "Starting the renderer…").await;
     let mut options = eframe::WebOptions::default();
     if query().contains("webgl")
@@ -56,7 +57,6 @@ async fn run(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
             options,
             Box::new(|cc| {
                 let mut app = TextureCraftApp::new(cc, session);
-                app.ui.windows.start = app.ui.prefs.start_window;
                 if let Some(rs) = &cc.wgpu_render_state {
                     let backend = rs.adapter.get_info().backend;
                     log::info!("TextureCraft: wgpu backend {backend:?}");
@@ -135,18 +135,6 @@ fn guard_unsaved_changes() {
         log::warn!("couldn't guard unsaved changes on close: {e:?}");
     }
     on_unload.forget();
-}
-
-/// The baked sample project, or an empty material ball if that fails. Texture and bake sizes are
-/// kept small: the web build composites and bakes on one thread (bake 256 took ~12 s to start on a
-/// fast desktop CPU, 128 ~7.5 s).
-fn initial_session() -> Result<Session, String> {
-    texturecraft_engine::sample_session(1024, 128)
-        .or_else(|e| {
-            log::warn!("sample project failed: {e}");
-            Session::new_project("Untitled", texturecraft_engine::geom::primitives::material_ball(), "builtin:material_ball", None, 1024)
-        })
-        .map_err(|e| e.to_string())
 }
 
 fn query() -> String {

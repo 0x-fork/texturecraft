@@ -60,6 +60,15 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
         crate::toolbar::paint_bar(app, ui);
     }
 
+    // No project open: empty views with only their view-mode picker
+    if !app.session.project_open {
+        if app.render.is_active() {
+            crate::render_mode::stop(app);
+        }
+        empty_views(app, ui);
+        return;
+    }
+
     let stroke_end = ui.scope_id().with("paint_2d_stroke_end");
     // A cancelled stroke can leave a pending 2D endpoint; do not attach it to a later gesture.
     let pending_2d_endpoint = if !app.session.stroke_active() || !tool_acts(app) {
@@ -130,6 +139,27 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
         });
     if app.session.stroke_active() || accumulating {
         ui.ctx().request_repaint();
+    }
+}
+
+/// The views while no project is open: no mesh, no texture, each with its view-mode picker
+fn empty_views(app: &mut TextureCraftApp, ui: &mut Ui) {
+    let tokens = Tokens::get(ui.ctx());
+    let full = ui.available_rect_before_wrap();
+    let regions: Vec<(Rect, &str)> = match app.ui.layout {
+        ViewLayout::Only3D => vec![(full, "v3d")],
+        ViewLayout::Only2D => vec![(full, "v2d")],
+        ViewLayout::Split => {
+            let middle = (full.left() + full.width() * 0.5).round();
+            vec![
+                (Rect::from_min_max(full.min, pos2(middle - SPLIT_LINE_HALF_WIDTH, full.max.y)), "v3d"),
+                (Rect::from_min_max(pos2(middle + SPLIT_LINE_HALF_WIDTH, full.min.y), full.max), "v2d"),
+            ]
+        }
+    };
+    for (rect, id) in regions {
+        ui.painter().rect_filled(rect, 0.0, tokens.viewport);
+        view_header(app, ui, rect, id);
     }
 }
 
@@ -425,10 +455,13 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
     let Some(header) = view_header_rect(rect) else { return };
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(header).layout(egui::Layout::left_to_right(egui::Align::Center)));
 
+    // With no project open there is no camera to pick: the view keeps only its view-mode picker
+    let project_open = app.session.project_open;
     let current = texturecraft_engine::camera_cmds::current(&app.session);
     let names: Vec<String> = app.session.doc.project.cameras.iter().map(|camera| camera.name.clone()).collect();
     let shown = current.and_then(|index| names.get(index)).map_or(tr(DEFAULT_CAMERA), String::as_str);
-    egui::ComboBox::from_id_salt(format!("{id}_cam")).width(VIEW_PICKER_WIDTH).selected_text(shown).show_ui(&mut child, |ui| {
+    if project_open {
+        egui::ComboBox::from_id_salt(format!("{id}_cam")).width(VIEW_PICKER_WIDTH).selected_text(shown).show_ui(&mut child, |ui| {
         if ui.selectable_label(current.is_none(), tr(DEFAULT_CAMERA)).clicked() {
             app.run("camera.select", json!({}));
         }
@@ -441,7 +474,8 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
         if ui.selectable_label(false, tr("Save view as camera")).clicked() {
             app.run("camera.add", json!({}));
         }
-    });
+        });
+    }
 
     // Bake mode lights the project mesh with the neutral material unless the painted one is asked for
     let baking = app.ui.mode == crate::state::Mode::Baking;
@@ -457,10 +491,14 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
             app.ui.bake_visualization.neutral_shown = true;
             app.run("viewport.view", json!({"mode": "material"}));
         }
-        if ui.selectable_label(app.session.view == ViewMode::Material && !neutral, tr("Material")).clicked() {
+        if ui.selectable_label(app.session.view == ViewMode::Material && !neutral, tr("Material")).clicked() && project_open {
             // Only bake mode's pick turns the neutral material off; painting mode's Material leaves bake mode's choice alone
             app.ui.bake_visualization.neutral_shown &= !baking;
             app.run("viewport.view", json!({"mode": "material"}));
+        }
+        // Nothing else to show without a project
+        if !project_open {
+            return;
         }
         ui.separator();
         if baking {
