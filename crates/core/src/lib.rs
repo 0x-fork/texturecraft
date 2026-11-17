@@ -30,7 +30,7 @@ pub use layer::{
 };
 pub use project::{
     AoMixing, BlockScales, Camera, DepthOfField, DisplaySettings, FORMAT_VERSION, MAX_RESOLUTION, MIN_RESOLUTION, NormalFormat, NormalMixing, Project,
-    TextureSet, TileGrid, ToneMapping, UDIM_RANGE, udim_at,
+    TANGENT_BENT_NORMAL_VERSION, TextureSet, TileGrid, ToneMapping, UDIM_RANGE, udim_at,
 };
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]

@@ -434,6 +434,9 @@ impl Session {
     /// Replace this session with `next` (another project), keeping the viewport size and the
     /// user's export presets and project templates.
     pub fn switch_to(&mut self, mut next: Session) {
+        // Invalidate caches even when both projects were loaded with the same revision
+        next.revision = self.revision.wrapping_add(1);
+
         next.viewport = self.viewport;
         next.export_presets = std::mem::take(&mut self.export_presets);
         next.templates = std::mem::take(&mut self.templates);
