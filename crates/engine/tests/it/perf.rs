@@ -9,42 +9,45 @@ use texturecraft_engine::geom::glam::Vec2;
 use texturecraft_engine::geom::primitives;
 use texturecraft_engine::{Session, execute};
 
-/// A ~10 layer stack: procedural fills, generators, a blurred mask, a folder and painted layers.
-fn stack(res: u32) -> Session {
-    let mut s = Session::new_project("perf", primitives::sphere(1.0, 64, 32), "builtin:sphere", None, res).unwrap();
-    s.viewport = Vec2::new(800.0, 800.0);
-    let run = |s: &mut Session, id: &str, p: Value| execute(s, id, &p).unwrap();
-    run(&mut s, "layer.add.fill", json!({"color": [0.6, 0.5, 0.4], "roughness": 0.6}));
-    run(&mut s, "layer.fill.set", json!({"channel": "baseColor", "procedural": "clouds", "low": [0.2, 0.2, 0.2], "high": [0.8, 0.7, 0.6]}));
-    run(&mut s, "layer.fill.set", json!({"channel": "height", "procedural": "cells", "low": [-0.2, -0.2, -0.2], "high": [0.2, 0.2, 0.2]}));
-    run(&mut s, "layer.add.fill", json!({"color": [0.1, 0.3, 0.6]}));
-    run(&mut s, "layer.fill.set", json!({"channel": "roughness", "procedural": "grunge"}));
-    run(&mut s, "mask.add.black", Value::Null);
-    run(&mut s, "effect.add.generator", json!({"generator": "position", "level": 0.5}));
-    run(&mut s, "effect.add.filter", json!({"filter": "blur", "radius": 8}));
-    run(&mut s, "layer.add.fill", json!({"roughness": 0.3}));
-    run(&mut s, "layer.fill.set", json!({"channel": "baseColor", "procedural": "wood"}));
-    run(&mut s, "layer.fill.projection", json!({"projection": "triplanar", "scale": 2}));
-    run(&mut s, "mask.add.black", Value::Null);
-    run(&mut s, "effect.add.fill", json!({"procedural": "scratches", "scale": 6}));
-    run(&mut s, "layer.add.fill", json!({"color": [0.2, 0.2, 0.2], "metallic": 1.0}));
-    run(&mut s, "mask.add.black", Value::Null);
-    run(&mut s, "effect.add.generator", json!({"generator": "dirt"}));
-    run(&mut s, "layer.add.fill", json!({"roughness": 0.8}));
-    run(&mut s, "layer.fill.set", json!({"channel": "roughness", "procedural": "marble"}));
-    run(&mut s, "layer.add.group", Value::Null);
-    run(&mut s, "layer.add.fill", json!({"color": [0.9, 0.9, 0.2]}));
-    run(&mut s, "mask.add.black", Value::Null);
-    run(&mut s, "effect.add.generator", json!({"generator": "direction"}));
-    run(&mut s, "effect.add.levels", json!({"inLow": 0.3, "inHigh": 0.7}));
-    let top = s.doc.project.texture_sets[0].stack.last().copied().unwrap();
-    run(&mut s, "layer.select", json!({"layer": top.0}));
-    run(&mut s, "layer.add.paint", Value::Null);
-    run(&mut s, "tool.brush", json!({"size": 6, "hardness": 80}));
-    run(&mut s, "tool.stroke", json!({"points": [[200, 300], [600, 500]]}));
-    run(&mut s, "layer.add.paint", Value::Null);
-    s.update();
-    s
+// Exercise procedural fills, generators, a blurred mask, a folder and painted layers
+fn stack(resolution: u32) -> Session {
+    let mut session = Session::new_project("perf", primitives::sphere(1.0, 64, 32), "builtin:sphere", None, resolution).unwrap();
+    session.viewport = Vec2::new(800.0, 800.0);
+
+    let run = |session: &mut Session, id: &str, params: Value| execute(session, id, &params).unwrap();
+    run(&mut session, "layer.add.fill", json!({"color": [0.6, 0.5, 0.4], "roughness": 0.6}));
+    run(&mut session, "layer.fill.set", json!({"channel": "baseColor", "procedural": "clouds", "low": [0.2, 0.2, 0.2], "high": [0.8, 0.7, 0.6]}));
+    run(&mut session, "layer.fill.set", json!({"channel": "height", "procedural": "cells", "low": [-0.2, -0.2, -0.2], "high": [0.2, 0.2, 0.2]}));
+    run(&mut session, "layer.add.fill", json!({"color": [0.1, 0.3, 0.6]}));
+    run(&mut session, "layer.fill.set", json!({"channel": "roughness", "procedural": "grunge"}));
+    run(&mut session, "mask.add.black", Value::Null);
+    run(&mut session, "effect.add.generator", json!({"generator": "position", "level": 0.5}));
+    run(&mut session, "effect.add.filter", json!({"filter": "blur", "radius": 8}));
+    run(&mut session, "layer.add.fill", json!({"roughness": 0.3}));
+    run(&mut session, "layer.fill.set", json!({"channel": "baseColor", "procedural": "wood"}));
+    run(&mut session, "layer.fill.projection", json!({"projection": "triplanar", "scale": 2}));
+    run(&mut session, "mask.add.black", Value::Null);
+    run(&mut session, "effect.add.fill", json!({"procedural": "scratches", "scale": 6}));
+    run(&mut session, "layer.add.fill", json!({"color": [0.2, 0.2, 0.2], "metallic": 1.0}));
+    run(&mut session, "mask.add.black", Value::Null);
+    run(&mut session, "effect.add.generator", json!({"generator": "dirt"}));
+    run(&mut session, "layer.add.fill", json!({"roughness": 0.8}));
+    run(&mut session, "layer.fill.set", json!({"channel": "roughness", "procedural": "marble"}));
+    run(&mut session, "layer.add.group", Value::Null);
+    run(&mut session, "layer.add.fill", json!({"color": [0.9, 0.9, 0.2]}));
+    run(&mut session, "mask.add.black", Value::Null);
+    run(&mut session, "effect.add.generator", json!({"generator": "direction"}));
+    run(&mut session, "effect.add.levels", json!({"inLow": 0.3, "inHigh": 0.7}));
+
+    let top_layer = session.doc.project.texture_sets[0].stack.last().copied().unwrap();
+    run(&mut session, "layer.select", json!({"layer": top_layer.0}));
+    run(&mut session, "layer.add.paint", Value::Null);
+    run(&mut session, "tool.brush", json!({"size": 6, "hardness": 80}));
+    run(&mut session, "tool.stroke", json!({"points": [[200, 300], [600, 500]]}));
+    run(&mut session, "layer.add.paint", Value::Null);
+
+    session.update();
+    session
 }
 
 fn upload_bytes(s: &mut Session) -> usize {
@@ -319,36 +322,44 @@ fn bench_8k_stroke_end() {
     }
 }
 
-/// What undo history costs: cloning a many-layer document, and a run of small strokes that each
-/// make one undo step.
+// Benchmark document clones and 100 undo-producing strokes
 #[test]
 #[ignore]
 fn bench_history() {
-    let res = 4096;
-    let t = Instant::now();
-    let mut s = stack(res);
+    let resolution = 4096;
+    let setup_started = Instant::now();
+    let mut session = stack(resolution);
     for _ in 0..20 {
-        execute(&mut s, "layer.add.paint", &Value::Null).unwrap();
-        execute(&mut s, "tool.stroke", &json!({"points": [[200, 300], [260, 320]]})).unwrap();
+        execute(&mut session, "layer.add.paint", &Value::Null).unwrap();
+        execute(&mut session, "tool.stroke", &json!({"points": [[200, 300], [260, 320]]})).unwrap();
     }
-    println!("[{res}²] history setup {:.2?}", t.elapsed());
-    let t = Instant::now();
+    println!("[{resolution}²] history setup {:.2?}", setup_started.elapsed());
+
+    let clone_started = Instant::now();
     for _ in 0..100 {
-        drop(std::hint::black_box(s.doc.clone()));
+        drop(std::hint::black_box(session.doc.clone()));
     }
-    println!("[{res}²] document clone {:.2?} average over 100", t.elapsed() / 100);
-    let steps = s.history_labels().len();
-    let t = Instant::now();
-    for i in 0..100 {
-        // Rows 300..490 of the 800-pixel viewport, across the framed sphere.
-        let y = 300 + (i % 20) * 10;
-        execute(&mut s, "tool.stroke", &json!({"points": [[300, y], [360, y + 20]]})).unwrap();
+    println!("[{resolution}²] document clone {:.2?} average over 100", clone_started.elapsed() / 100);
+
+    let initial_history_depth = session.history_labels().len();
+    let strokes_started = Instant::now();
+    for stroke_index in 0..100 {
+        // Keep strokes on the framed sphere within the 800-pixel viewport
+        let row_y = 300 + (stroke_index % 20) * 10;
+        execute(&mut session, "tool.stroke", &json!({"points": [[300, row_y], [360, row_y + 20]]})).unwrap();
     }
-    let total = t.elapsed();
-    assert_eq!(s.history_labels().len(), steps + 100, "every stroke paints the mesh and makes an undo step");
-    println!("[{res}²] 100 strokes {total:.2?} ({:.2?} per stroke)", total / 100);
-    let m = s.memory();
-    println!("[{res}²] memory: layer pixels {:.1} MB, composites {:.1} MB, hot-layer cache {:.1} MB", mb(m.pixels), mb(m.composites), mb(m.cache));
+    let stroke_duration = strokes_started.elapsed();
+
+    assert_eq!(session.history_labels().len(), initial_history_depth + 100, "every stroke paints the mesh and makes an undo step");
+    println!("[{resolution}²] 100 strokes {stroke_duration:.2?} ({:.2?} per stroke)", stroke_duration / 100);
+
+    let memory = session.memory();
+    println!(
+        "[{resolution}²] memory: layer pixels {:.1} MB, composites {:.1} MB, hot-layer cache {:.1} MB",
+        mb(memory.pixels),
+        mb(memory.composites),
+        mb(memory.cache)
+    );
 }
 
 /// Drain the pending tiles with `Session::update`, returning how long that took.
