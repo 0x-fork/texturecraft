@@ -327,6 +327,22 @@ fn neighbourhood_filters(effects: &[Effect], res: u32) -> impl Iterator<Item = (
     })
 }
 
+/// Whether any mask or content effect in a texture set reads neighbouring texels. Includes
+/// filters, blurred generators and reduced-resolution generators. Hidden layers and disabled
+/// masks count too, so partial invalidation remains conservative.
+pub fn stack_reads_neighbours(project: &Project, texture_set_index: usize) -> bool {
+    const NEIGHBOUR_PROBE_RESOLUTION: u32 = 2048;
+
+    let Some(set) = project.texture_sets.get(texture_set_index) else {
+        return false;
+    };
+
+    project.render_tree(&set.stack).iter().filter_map(|id| project.layers.get(id)).any(|layer| {
+        neighbourhood(&layer.content_effects, NEIGHBOUR_PROBE_RESOLUTION).is_some()
+            || layer.mask.as_ref().is_some_and(|mask| neighbourhood(&mask.effects, NEIGHBOUR_PROBE_RESOLUTION).is_some())
+    })
+}
+
 /// Unit texel-space vector of `angle` degrees. Texel rows run down: positive angles turn
 /// counterclockwise on screen.
 fn direction(angle: f32) -> [f32; 2] {
@@ -3192,6 +3208,22 @@ mod tests {
 
         let values = assert_sparse_mask_matches_image(&fixture, layer, &[(32, 32)]).unwrap();
         assert!(values.iter().all(|value| (value - 0.5).abs() < 0.01), "flat curvature is mid gray in raw mode, not black: {values:?}");
+    }
+
+    #[test]
+    fn stack_reads_neighbours_sees_blurs_in_masks_and_content() {
+        let mut f = fixture();
+        let id = fill_layer(&mut f.project, [1.0; 3], 1.0);
+        assert!(!stack_reads_neighbours(&f.project, 0));
+        let mut mask = Mask::new(MaskBackground::White);
+        let eid = f.project.alloc_id();
+        mask.effects.push(Effect::new(eid, EffectKind::Filter(Filter::Blur { radius: 8.0 })));
+        f.project.layer_mut(id).unwrap().mask = Some(mask);
+        assert!(stack_reads_neighbours(&f.project, 0));
+        f.project.layer_mut(id).unwrap().mask = None;
+        assert!(!stack_reads_neighbours(&f.project, 0));
+        content_fx(&mut f, id, EffectKind::Filter(Filter::Mosaic { size: 8.0 }));
+        assert!(stack_reads_neighbours(&f.project, 0));
     }
 
     #[test]
