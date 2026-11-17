@@ -2197,10 +2197,16 @@ pub(crate) fn anchors_below(app: &TextureCraftApp, reader: LayerId) -> Vec<(Laye
         .collect()
 }
 
-/// Anchor choices for an effect, validated against its owner even when shown through an instance
+/// Anchor choices for an effect, valid for its owner and recorded below the displayed instance
 pub(crate) fn effect_anchors_below(app: &TextureCraftApp, layer: LayerId, effect: LayerId) -> Vec<(LayerId, String)> {
     let owner = app.session.doc.project.effect(effect).map_or(layer, |(owner, _)| owner);
-    anchors_below(app, owner)
+    let owner_anchors = anchors_below(app, owner);
+    if owner == layer {
+        return owner_anchors;
+    }
+
+    let displayed_anchors = anchors_below(app, layer);
+    owner_anchors.into_iter().filter(|(id, _)| displayed_anchors.iter().any(|(displayed, _)| id == displayed)).collect()
 }
 
 /// Whether anchor point `anchor` sits in a mask (it then records the mask's gray, whatever the channel).
@@ -2296,6 +2302,26 @@ mod mask_anchor_label_tests {
             let choices = effect_anchors_below(harness.state(), LayerId(instance), LayerId(effect));
             assert!(choices.iter().any(|(id, _)| *id == LayerId(valid)));
             assert!(!choices.iter().any(|(id, _)| *id == LayerId(invalid)));
+        }
+    }
+
+    #[test]
+    fn inherited_effect_pickers_hide_unrecorded_source_set_anchors() {
+        let mesh = texturecraft_engine::geom::primitives::material_ball();
+        let mut session = texturecraft_engine::Session::new_project("test", mesh, "builtin:material_ball", None, 256).unwrap();
+        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        let anchor = execute(&mut session, "effect.add.anchor", &json!({"layer": lower})).unwrap()["effect"].as_u64().unwrap();
+        let source = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        execute(&mut session, "mask.add.black", &json!({"layer": source})).unwrap();
+        let fill = execute(&mut session, "effect.add.fill", &json!({"layer": source, "anchor": anchor})).unwrap()["effect"].as_u64().unwrap();
+        let generator = execute(&mut session, "effect.add.generator", &json!({"layer": source, "microAnchor": anchor})).unwrap()["effect"].as_u64().unwrap();
+        let instance = execute(&mut session, "layer.instance", &json!({"layer": source, "ts": 1})).unwrap()["layer"].as_u64().unwrap();
+
+        let harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
+        assert!(anchors_below(harness.state(), LayerId(instance)).is_empty());
+        for effect in [fill, generator] {
+            let choices = effect_anchors_below(harness.state(), LayerId(instance), LayerId(effect));
+            assert!(choices.is_empty(), "source-set anchor {anchor} is not recorded for the instance");
         }
     }
 }
