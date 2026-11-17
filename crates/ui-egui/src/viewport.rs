@@ -1717,21 +1717,27 @@ pub fn pen_pressure(ui: &Ui) -> f32 {
             egui::Event::Touch { device_id, id: touch_id, phase, force, .. } => {
                 let mut contact_force = force.filter(|pressure| pressure.is_finite());
                 let mut effective_phase = *phase;
-                if contact_force.is_none() && *phase == egui::TouchPhase::End {
-                    // Recover a same-frame pen sample or pressure-free touch start
+                if contact_force.is_none() && matches!(*phase, egui::TouchPhase::Move | egui::TouchPhase::End) {
+                    // Recover pressure only from this contact, including an unforced press-frame move
                     for previous_event in events[..index].iter().rev() {
                         if let egui::Event::Touch { device_id: previous_device_id, id: previous_touch_id, phase: previous_phase, force: previous_force, .. } =
                             previous_event
                             && previous_device_id == device_id
                             && previous_touch_id == touch_id
                         {
+                            // A completed contact cannot supply pressure to a reused touch ID
+                            if matches!(previous_phase, egui::TouchPhase::End | egui::TouchPhase::Cancel) {
+                                effective_phase = egui::TouchPhase::Cancel;
+                                break;
+                            }
+
                             contact_force = previous_force.filter(|pressure| pressure.is_finite());
                             if contact_force.is_none() && *previous_phase == egui::TouchPhase::Start {
                                 effective_phase = egui::TouchPhase::Start;
                                 break;
                             }
 
-                            if contact_force.is_some() || matches!(previous_phase, egui::TouchPhase::End | egui::TouchPhase::Cancel) {
+                            if contact_force.is_some() {
                                 break;
                             }
                         }

@@ -165,6 +165,47 @@ fn touch_start_and_unforced_end_in_one_frame_keep_contact_pressure() {
 }
 
 #[test]
+fn unforced_move_on_press_frame_keeps_same_contact_pressure() {
+    let context = egui::Context::default();
+    let position = pos2(100.0, 100.0);
+    let mut press_input = egui::RawInput::default();
+    press_input.events.push(Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Start, pos: position, force: Some(0.2) });
+    press_input.events.push(Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Move, pos: position, force: None });
+    press_input.events.push(Event::PointerButton { pos: position, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+
+    context
+        .run_ui(press_input, |ui| {
+            let pressure = texturecraft_ui_egui::viewport::pen_pressure(ui);
+            assert!((pressure - 0.2).abs() < 1e-4, "press frame keeps the same contact's pressure: {pressure}");
+        })
+        .drop_without_applying_deltas();
+
+    context
+        .run_ui(egui::RawInput::default(), |ui| {
+            let pressure = texturecraft_ui_egui::viewport::pen_pressure(ui);
+            assert!((pressure - 0.2).abs() < 1e-4, "touch-free frame keeps the recovered pressure: {pressure}");
+        })
+        .drop_without_applying_deltas();
+}
+
+#[test]
+fn unforced_move_does_not_recover_a_completed_contact() {
+    let context = egui::Context::default();
+    let position = pos2(100.0, 100.0);
+    let mut input = egui::RawInput::default();
+    input.events.push(Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::End, pos: position, force: Some(0.2) });
+    input.events.push(Event::Touch { device_id: TouchDeviceId(1), id: TouchId(1), phase: TouchPhase::Move, pos: position, force: None });
+    input.events.push(Event::PointerButton { pos: position, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+
+    context
+        .run_ui(input, |ui| {
+            let pressure = texturecraft_ui_egui::viewport::pen_pressure(ui);
+            assert!((pressure - 1.0).abs() < 1e-4, "a completed contact cannot supply pressure to the later move: {pressure}");
+        })
+        .drop_without_applying_deltas();
+}
+
+#[test]
 fn unforced_touch_start_and_end_in_one_frame_clear_old_pen_pressure() {
     let context = egui::Context::default();
     let position = pos2(100.0, 100.0);
