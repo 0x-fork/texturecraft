@@ -4,6 +4,11 @@ use texturecraft_core::{Decal, Procedural, ProceduralKind, Projection};
 use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_texel::noise;
 
+use crate::pattern_context::PatternContext;
+
+/// Smaller pattern scales are read as this: a pattern stretched over ten thousand repeats of its projection
+const MIN_PATTERN_SCALE: f32 = 1e-4;
+
 /// Where a texel is, for pattern evaluation.
 #[derive(Clone, Copy, Debug)]
 pub struct Coords {
@@ -143,7 +148,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             let (g1, _, _) = noise::cellular((p * 2.7 + Vec3::splat(13.0)).to_array(), seed ^ 0x6B);
             smoothstep(0.08, 0.16, f1).min(smoothstep(0.06, 0.12, g1))
         }
-        ProceduralKind::TileGenerator => crate::tile_pattern::value(&crate::tile_pattern::DEFAULT, p.truncate(), seed),
+        ProceduralKind::TileGenerator => crate::tile_pattern::value(&crate::tile_pattern::DEFAULT, p.truncate(), seed, None),
         ProceduralKind::Chips => {
             let (f1, _, _) = noise::cellular((p * 2.0).to_array(), seed ^ 0x45);
             let n = noise::fbm(a, 5, seed, noise::perlin) + (f1 - 0.5) * 0.25;
@@ -201,16 +206,15 @@ fn shape(pr: &Procedural, v: f32) -> f32 {
     if pr.invert { 1.0 - v } else { v }
 }
 
-/// Evaluate a procedural through a projection, at full resolution
+/// Evaluate a procedural through a projection, at full resolution and without images
 pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords) -> f32 {
-    procedural_sized(pattern, projection, coords, None)
+    procedural_in(pattern, projection, coords, &PatternContext::default())
 }
 
-/// Evaluate a procedural through a projection, drawn as an image of `pixels` texels per side over one repeat of the projection (read back bilinearly) when its resolution asks for one: see [`pattern_pixels`]. `None` evaluates it exactly
-pub fn procedural_sized(pattern: &Procedural, projection: &Projection, coords: &Coords, pixels: Option<u32>) -> f32 {
-    let pattern_scale = pattern.scale.max(1e-4);
-    let cells = pixels.map(|pixels| pixels as f32 / pattern_scale);
-    let sample = |point: Vec3| plane_value(pattern, point, cells);
+/// Evaluate a procedural through a projection with what `context` gives it: its resolution and the images it reads
+pub fn procedural_in(pattern: &Procedural, projection: &Projection, coords: &Coords, context: &PatternContext) -> f32 {
+    let pattern_scale = pattern.scale.max(MIN_PATTERN_SCALE);
+    let sample = |point: Vec3| plane_value(pattern, point, context);
     let value = match projection {
         Projection::Uv { scale, rotation, offset } => {
             let (sn, cs) = rotation.to_radians().sin_cos();
@@ -269,23 +273,25 @@ pub fn pattern_pixels(pattern: &Procedural, uv_tile: u32, texture_set: u32) -> O
     (size < uv_tile).then_some(size)
 }
 
-/// The pattern at `point` of its plane, read from an image of `cells` texels per unit (bilinear) when given
-fn plane_value(pr: &Procedural, point: Vec3, cells: Option<f32>) -> f32 {
-    let Some(cells) = cells.filter(|cells| cells.is_finite() && *cells > 0.0) else { return pattern_value(pr, point) };
+/// The pattern at `point` of its plane, read from an image of `context.pixels` texels per repeat (bilinear) when given
+fn plane_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f32 {
+    let cells = context.pixels.map(|pixels| pixels as f32 / pattern.scale.max(MIN_PATTERN_SCALE)).filter(|cells| cells.is_finite() && *cells > 0.0);
+    let Some(cells) = cells else { return pattern_value(pattern, point, context) };
+
     let grid = point.truncate() * cells - 0.5;
     let base = grid.floor();
     let fraction = grid - base;
-    let at = |dx: f32, dy: f32| pattern_value(pr, ((base + Vec2::new(dx, dy) + 0.5) / cells).extend(point.z));
+    let at = |dx: f32, dy: f32| pattern_value(pattern, ((base + Vec2::new(dx, dy) + 0.5) / cells).extend(point.z), context);
     let top = at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * fraction.x;
     let bottom = at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * fraction.x;
     top + (bottom - top) * fraction.y
 }
 
 /// The pattern at `point` of its plane, exactly
-fn pattern_value(pr: &Procedural, point: Vec3) -> f32 {
-    match (&pr.tile, pr.kind) {
-        (Some(tile), ProceduralKind::TileGenerator) => crate::tile_pattern::value(tile, point.truncate(), pr.seed),
-        _ => raw(pr.kind, point, pr.seed),
+fn pattern_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f32 {
+    match (&pattern.tile, pattern.kind) {
+        (Some(tile), ProceduralKind::TileGenerator) => crate::tile_pattern::value(tile, point.truncate(), pattern.seed, context.images),
+        _ => raw(pattern.kind, point, pattern.seed),
     }
 }
 
@@ -382,6 +388,31 @@ pub fn world_noise(pos: Vec3, scale: f32, seed: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use texturecraft_core::{OutputResolution, ResolutionMode};
+
+    #[test]
+    fn a_pattern_is_drawn_coarser_only_below_the_uv_tiles_resolution() {
+        let with = |resolution: OutputResolution| pattern_pixels(&Procedural { resolution, ..Procedural::new(ProceduralKind::Clouds) }, 1024, 2048);
+        assert_eq!(with(OutputResolution::default()), None, "by default a pattern is evaluated per texel");
+        assert_eq!(with(OutputResolution { factor: -1, ..OutputResolution::default() }), Some(512));
+        assert_eq!(with(OutputResolution { mode: ResolutionMode::Custom, custom: 256, factor: 0 }), Some(256));
+        assert_eq!(with(OutputResolution { mode: ResolutionMode::Custom, custom: 2048, factor: 0 }), None, "a finer image than the UV tile changes nothing");
+    }
+
+    #[test]
+    fn a_coarser_pattern_reads_its_cells_bilinearly() {
+        let pattern = Procedural { scale: 1.0, ..Procedural::new(ProceduralKind::Clouds) };
+        let coarse = PatternContext { pixels: Some(4), ..PatternContext::default() };
+        let at = |x: f32, context: &PatternContext| {
+            procedural_in(&pattern, &Projection::default(), &Coords { uv: Vec2::new(x, 0.375), pos: Vec3::ZERO, nrm: Vec3::Y }, context)
+        };
+        let exact = PatternContext::default();
+        // Cell centres of a 4-texel image sit at 0.125, 0.375…: there the coarse pattern is exact, between them it blends them
+        assert!((at(0.375, &coarse) - at(0.375, &exact)).abs() < 1e-5);
+        let blended = (at(0.125, &exact) + at(0.375, &exact)) * 0.5;
+        assert!((at(0.25, &coarse) - blended).abs() < 1e-5, "{} vs {blended}", at(0.25, &coarse));
+        assert!((at(0.25, &exact) - blended).abs() > 1e-3, "the exact pattern is not the blend, so the coarse read shows");
+    }
 
     #[test]
     fn every_pattern_and_projection_stays_in_range() {

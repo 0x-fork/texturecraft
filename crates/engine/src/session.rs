@@ -589,7 +589,7 @@ impl Session {
         let uses_added_resource = |texture_set_index: usize| {
             use texturecraft_core::{EffectKind, Fill, Source};
 
-            let uses_source = |source: &Source| matches!(source, Source::Image { name, .. } if added_resource_names.contains(name));
+            let uses_source = |source: &Source| source.images().into_iter().any(|name| added_resource_names.iter().any(|added| added.as_str() == name));
             let uses_fill =
                 |fill: &Fill| fill.sources.values().any(uses_source) || fill.link.as_ref().is_some_and(|link| added_resource_names.contains(&link.package));
             let project = &self.doc.project;
