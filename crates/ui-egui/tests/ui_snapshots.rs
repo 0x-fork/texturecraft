@@ -42,12 +42,15 @@ fn brush_presets_popover_snapshot() {
     let mut harness =
         Harness::builder().with_size(egui::vec2(1280.0, 800.0)).with_pixels_per_point(1.0).build_eframe(|context| TextureCraftApp::new(context, session));
     let brush = harness.state().session.tool.brush.clone();
+    harness.state_mut().session.brush_presets.list.clear();
+    harness.state_mut().ui.prefs.language = "en".into();
     harness.state_mut().session.brush_presets.list.push(texturecraft_engine::brush_preset_cmds::UserBrush {
         name: "Snapshot brush".into(),
         brush,
         channels: None,
         file: None,
     });
+    assert_eq!(harness.state().session.brush_presets.list.len(), 1);
     harness.run_steps(6);
     harness.get_by_label_contains("Brush presets").click();
     save(&mut harness, &output_dir, "brush-presets-popover-with-user");
