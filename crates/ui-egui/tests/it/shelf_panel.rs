@@ -282,6 +282,42 @@ fn a_saved_brush_is_a_tile_that_loads_the_preset() {
 }
 
 #[test]
+fn brush_management_follows_the_shelf_type_folder_and_search() {
+    let mut harness = shelf(REFERENCE_WINDOW);
+    harness.state_mut().session.brush_presets.list.push(UserBrush { name: "Session brush".into(), brush: Default::default(), channels: None, file: None });
+    harness.state_mut().ui.shelf_tab = BRUSHES_TYPE;
+    harness.run_steps(3);
+
+    assert!(harness.query_by_label("Save current brush").is_some());
+    assert!(harness.query_by_label("My brushes").is_some());
+    let save_rect = harness.get_by_label("Save current brush").rect();
+    assert!(save_rect.right() <= button(&harness, "Thumbnail size").rect().right(), "the controls stay inside the Assets panel: {save_rect:?}");
+    if let Some(dir) = std::env::var_os("TC_UI_SNAPSHOTS") {
+        std::fs::create_dir_all(&dir).unwrap();
+        harness.get_by_label("Save current brush").scroll_to_me();
+        harness.run_steps(2);
+        harness.render().unwrap().save(std::path::PathBuf::from(dir).join("brush-management-shelf.png")).unwrap();
+    }
+
+    harness.state_mut().ui.shelf_filter = "no matching brush".into();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Save current brush").is_none());
+
+    harness.state_mut().ui.shelf_filter.clear();
+    harness.state_mut().ui.shelf_path = vec!["starter".into(), "Brushes".into()];
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Save current brush").is_none());
+
+    harness.state_mut().ui.shelf_path = vec!["user".into(), "Brushes".into()];
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Save current brush").is_some());
+
+    harness.state_mut().ui.shelf_tab = MATERIALS_TYPE;
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Save current brush").is_none());
+}
+
+#[test]
 fn saved_smart_materials_keep_their_type_pickable_in_your_assets() {
     let mut harness = shelf(REFERENCE_WINDOW);
     harness.state_mut().library = Some(vec![std::path::PathBuf::from("Mine.tcmat")]);

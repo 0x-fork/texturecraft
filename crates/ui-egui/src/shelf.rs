@@ -266,6 +266,9 @@ pub fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
 
     let tab = app.ui.shelf_tab;
     let shown_tab = TABS.get(tab).map(|(shown, _, _)| *shown);
+    let show_user_brushes = crate::shelf_tabs::shows(tab, Tab::Brushes)
+        && folder.len() <= 2
+        && folder.iter().zip([crate::shelf_entry::USER, "Brushes"]).all(|(selected, part)| selected == part);
     let mut entries: Vec<ShelfEntry> = matching.into_iter().filter(|entry| crate::shelf_tabs::shows(tab, entry.tab())).collect();
     entries.sort_by_cached_key(|entry| entry.label().to_lowercase());
 
@@ -285,14 +288,15 @@ pub fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
 
         // Saved smart materials are files in the user's library, without folders of their own
         let saved_materials = in_user_library && shown_tab.is_none_or(|shown| shown == Tab::Smart);
-        grid(app, ui, &ctx, &entries, grid_rect.height(), saved_materials, &filter);
+        grid(app, ui, &entries, grid_rect.height(), saved_materials, show_user_brushes, &filter);
     });
     ui.scope_builder(egui::UiBuilder::new().max_rect(toolbar_rect), |ui| crate::shelf_toolbar::show(app, ui));
     drag_preview(&ctx);
 }
 
-/// The tiles of `entries` in a scroll area `height` high, then the saved smart materials when `saved_materials`
-fn grid(app: &mut TextureCraftApp, ui: &mut Ui, ctx: &egui::Context, entries: &[ShelfEntry], height: f32, saved_materials: bool, filter: &str) {
+/// The tiles of `entries` in a scroll area `height` high, then user assets when selected
+fn grid(app: &mut TextureCraftApp, ui: &mut Ui, entries: &[ShelfEntry], height: f32, saved_materials: bool, show_user_brushes: bool, filter: &str) {
+    let ctx = ui.ctx().clone();
     let view = app.ui.shelf_view;
     let selected: Option<(String, String)> = ctx.data(|data| data.get_temp(egui::Id::unique(SELECTED_TILE)));
     egui::ScrollArea::vertical()
@@ -301,15 +305,20 @@ fn grid(app: &mut TextureCraftApp, ui: &mut Ui, ctx: &egui::Context, entries: &[
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .max_height(height)
         .show(ui, |ui| {
-            tiles(ui, |ui| {
-                for entry in entries {
-                    let is_selected = selected.as_ref().is_some_and(|(kind, id)| entry.identity() == (kind.as_str(), id.as_str()));
-                    entry_tile(app, ui, ctx, entry, view, is_selected);
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                tiles(ui, |ui| {
+                    for entry in entries {
+                        let is_selected = selected.as_ref().is_some_and(|(kind, id)| entry.identity() == (kind.as_str(), id.as_str()));
+                        entry_tile(app, ui, &ctx, entry, view, is_selected);
+                    }
+                });
+                if show_user_brushes {
+                    user_brushes(app, ui, filter);
+                }
+                if saved_materials {
+                    library(app, ui, filter);
                 }
             });
-            if saved_materials {
-                library(app, ui, filter);
-            }
         });
 }
 
