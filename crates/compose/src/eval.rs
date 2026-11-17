@@ -1450,12 +1450,13 @@ impl<'a, 'b> Texel<'a, 'b> {
 
     fn generator_ramp(&mut self, generator: &Generator, curvature_sizes: Option<&CurvatureSizes>) -> f32 {
         let coords = self.coords();
+        let micro = generator.micro.map_or(0.0, |micro| self.micro_detail(generator.kind, micro));
         let signal = match (generator.kind, &generator.detail) {
             (GeneratorKind::Curvature | GeneratorKind::EdgeWear, Some(detail)) => {
                 // Detail sizes are blurred copies of the mesh map, so a replaced curvature input reads at its own size only
                 let sizes = if generator.inputs.contains_key(&BakedMap::Curvature) { None } else { curvature_sizes };
                 let curvature = self.generator_input(generator, BakedMap::Curvature);
-                self.curvature_detail(detail, sizes, curvature)
+                self.curvature_detail(detail, sizes, curvature, micro)
             }
             (GeneratorKind::EdgeWear, None) => (self.generator_input(generator, BakedMap::Curvature).unwrap_or(0.5) - 0.5) * 2.0,
             (GeneratorKind::Curvature, None) => self.generator_input(generator, BakedMap::Curvature).unwrap_or(0.5),
@@ -1465,10 +1466,8 @@ impl<'a, 'b> Texel<'a, 'b> {
             (GeneratorKind::Position, _) => coords.pos.dot(Vec3::from(generator.direction).try_normalize().unwrap_or(Vec3::Y)) * 0.5 + 0.5,
             (GeneratorKind::Direction, _) => coords.nrm.dot(Vec3::from(generator.direction).try_normalize().unwrap_or(Vec3::Y)) * 0.5 + 0.5,
         };
-        let signal = match generator.micro {
-            Some(micro) => signal + self.micro_detail(generator.kind, micro),
-            None => signal,
-        };
+        let signal =
+            if matches!(generator.kind, GeneratorKind::Curvature | GeneratorKind::EdgeWear) && generator.detail.is_some() { signal } else { signal + micro };
         let signal = if generator.noise_amount > 0.0 {
             let noise = world_noise(coords.pos, generator.noise_scale, generator.seed);
             if let (GeneratorKind::Curvature | GeneratorKind::EdgeWear, Some(detail)) = (generator.kind, &generator.detail) {
@@ -1520,15 +1519,19 @@ impl<'a, 'b> Texel<'a, 'b> {
     }
 
     /// The curvature of `detail`'s mode at this texel from `curvature` (None: nothing to read), with its blurred detail sizes when given.
-    fn curvature_detail(&self, detail: &CurvatureDetail, curvature_sizes: Option<&CurvatureSizes>, curvature: Option<f32>) -> f32 {
-        let combine = |edges: f32, cavities: f32| match detail.mode {
-            CurvatureMode::Edges => edges,
-            CurvatureMode::Cavities => cavities,
-            CurvatureMode::Both => 1.0 - (1.0 - edges) * (1.0 - cavities),
-            CurvatureMode::Raw => 0.5 + 0.5 * (edges - cavities),
+    fn curvature_detail(&self, detail: &CurvatureDetail, curvature_sizes: Option<&CurvatureSizes>, curvature: Option<f32>, micro: f32) -> f32 {
+        let combine = |edges: f32, cavities: f32| {
+            let edges = 1.0 - (1.0 - edges) * (1.0 - micro.max(0.0));
+            let cavities = 1.0 - (1.0 - cavities) * (1.0 + micro.min(0.0));
+            match detail.mode {
+                CurvatureMode::Edges => edges,
+                CurvatureMode::Cavities => cavities,
+                CurvatureMode::Both => 1.0 - (1.0 - edges) * (1.0 - cavities),
+                CurvatureMode::Raw => 0.5 + 0.5 * (edges - cavities),
+            }
         };
 
-        // Without curvature to read the texel is flat: no edges or cavities
+        // Without baked curvature, only painted micro height supplies edges or cavities
         let Some(curvature) = curvature else { return combine(0.0, 0.0) };
 
         let working_size = (self.res, self.inp.gbuf.height);
@@ -3584,6 +3587,49 @@ soft {soft:?}"
         // A hostile amount does nothing
         generator.micro = Some(MicroDetail { anchor, amount: f32::NAN });
         assert!((with(&mut fixture, &generator) - flat).abs() < 0.02);
+    }
+
+    #[test]
+    fn curvature_modes_classify_raised_and_recessed_micro_height() {
+        let mut fixture = fixture();
+        fixture.baked = BakedMaps { resolution: 64, maps: [(BakedMap::Curvature, Arc::new(vec![0.5; 64 * 64]))].into() };
+        let lower = fixture.project.alloc_id();
+        let mut fill = Fill::default();
+        fill.sources.insert(Channel::Height, Source::Uniform([0.5; 3]));
+        fixture.project.insert_layer(0, Layer::new(lower, "Bumps", LayerKind::Fill(fill), &[Channel::Height]), None, false).unwrap();
+        let anchor = content_fx(&mut fixture, lower, EffectKind::Anchor);
+        let top = fill_layer(&mut fixture.project, [1.0; 3], 0.5);
+
+        for kind in [GeneratorKind::Curvature, GeneratorKind::EdgeWear] {
+            for (height, mode, responds) in [
+                (0.5, CurvatureMode::Edges, true),
+                (-0.5, CurvatureMode::Edges, false),
+                (0.5, CurvatureMode::Cavities, false),
+                (-0.5, CurvatureMode::Cavities, true),
+                (0.5, CurvatureMode::Both, true),
+                (-0.5, CurvatureMode::Both, true),
+            ] {
+                if let LayerKind::Fill(fill) = &mut fixture.project.layer_mut(lower).unwrap().kind {
+                    fill.sources.insert(Channel::Height, Source::Uniform([height; 3]));
+                }
+                let detail = CurvatureDetail { mode, weights: [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0] };
+                let generator = Generator {
+                    level: 0.5,
+                    softness: 0.5,
+                    noise_amount: 0.0,
+                    detail: Some(detail),
+                    micro: Some(MicroDetail { anchor, amount: 1.0 }),
+                    ..Generator::new(kind)
+                };
+                let mut mask = Mask::new(MaskBackground::Black);
+                mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Generator(generator)));
+                fixture.project.layer_mut(top).unwrap().mask = Some(mask);
+
+                let value = run(&fixture, None).value(Channel::BaseColor, 5, 5)[0];
+                let expected = if responds { 0.75 } else { 0.5 };
+                assert!((value - expected).abs() < 0.02, "{kind:?} {mode:?} height {height}: {value}");
+            }
+        }
     }
 
     #[test]

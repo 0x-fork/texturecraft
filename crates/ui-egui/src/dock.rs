@@ -2197,6 +2197,12 @@ pub(crate) fn anchors_below(app: &TextureCraftApp, reader: LayerId) -> Vec<(Laye
         .collect()
 }
 
+/// Anchor choices for an effect, validated against its owner even when shown through an instance
+pub(crate) fn effect_anchors_below(app: &TextureCraftApp, layer: LayerId, effect: LayerId) -> Vec<(LayerId, String)> {
+    let owner = app.session.doc.project.effect(effect).map_or(layer, |(owner, _)| owner);
+    anchors_below(app, owner)
+}
+
 /// Whether anchor point `anchor` sits in a mask (it then records the mask's gray, whatever the channel).
 fn anchor_in_mask(app: &TextureCraftApp, anchor: LayerId) -> bool {
     let project = &app.session.doc.project;
@@ -2245,7 +2251,7 @@ mod mask_anchor_label_tests {
     use texturecraft_engine::core::{Channel, LayerId};
     use texturecraft_engine::execute;
 
-    use super::{anchor_label, anchors_below};
+    use super::{anchor_label, anchors_below, effect_anchors_below};
     use crate::TextureCraftApp;
 
     #[test]
@@ -2266,6 +2272,31 @@ mod mask_anchor_label_tests {
         let labels = anchors_below(harness.state(), LayerId(upper));
         assert!(labels.iter().any(|(id, label)| *id == LayerId(anchor) && !label.contains("(Off)")));
         assert!(!anchor_label(harness.state(), LayerId(anchor), Channel::Height).contains("(Off)"));
+    }
+
+    #[test]
+    fn inherited_effect_pickers_list_anchors_below_the_owner() {
+        let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
+        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        let valid = execute(&mut session, "effect.add.anchor", &json!({"layer": lower})).unwrap()["effect"].as_u64().unwrap();
+        let source = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        execute(&mut session, "mask.add.black", &json!({"layer": source})).unwrap();
+        let fill = execute(&mut session, "effect.add.fill", &json!({"layer": source})).unwrap()["effect"].as_u64().unwrap();
+        let generator = execute(&mut session, "effect.add.generator", &json!({"layer": source})).unwrap()["effect"].as_u64().unwrap();
+        let middle = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+        let invalid = execute(&mut session, "effect.add.anchor", &json!({"layer": middle})).unwrap()["effect"].as_u64().unwrap();
+        let instance = execute(&mut session, "layer.instance", &json!({"layer": source})).unwrap()["layer"].as_u64().unwrap();
+
+        assert!(execute(&mut session, "effect.set", &json!({"effect": fill, "anchor": invalid})).is_err());
+        assert!(execute(&mut session, "effect.set", &json!({"effect": generator, "microAnchor": invalid})).is_err());
+
+        let harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
+        assert!(anchors_below(harness.state(), LayerId(instance)).iter().any(|(id, _)| *id == LayerId(invalid)));
+        for effect in [fill, generator] {
+            let choices = effect_anchors_below(harness.state(), LayerId(instance), LayerId(effect));
+            assert!(choices.iter().any(|(id, _)| *id == LayerId(valid)));
+            assert!(!choices.iter().any(|(id, _)| *id == LayerId(invalid)));
+        }
     }
 }
 
@@ -2571,7 +2602,7 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
         EffectKind::Levels(levels) => crate::levels_properties::levels_properties(app, ui, layer, effect_id, levels),
         EffectKind::Fill { source, .. } => {
             ui.label(caption(tr("Fill")));
-            let anchors = anchors_below(app, layer.id);
+            let anchors = effect_anchors_below(app, layer.id, effect_id);
             let current = match source {
                 Source::Anchor { anchor, channel } => anchor_label(app, *anchor, *channel),
                 Source::Uniform(_) => tr("Uniform value").to_string(),

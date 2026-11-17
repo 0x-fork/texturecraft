@@ -8,7 +8,7 @@ use texturecraft_engine::core::{
 };
 
 use crate::TextureCraftApp;
-use crate::dock::{anchor_entries, anchor_label, anchors_below, image_drop, image_menu, mesh_map_color};
+use crate::dock::{anchor_entries, anchor_label, anchors_below, effect_anchors_below, image_drop, image_menu, mesh_map_color};
 use crate::i18n::{baked_map_label, tr, trf};
 use crate::theme::{Tokens, caption};
 use crate::widgets::{combo, section, slider_edit};
@@ -79,7 +79,7 @@ fn micro_detail_properties(app: &mut TextureCraftApp, ui: &mut Ui, id: u64, micr
     let tokens = Tokens::get(ui.ctx());
     ui.label(caption(tr("Micro detail")))
         .on_hover_text(tr("Painted height from an anchor point below: raised areas read as edges, recessed ones as cavities."));
-    let anchors = anchors_below(app, layer);
+    let anchors = effect_anchors_below(app, layer, LayerId(id));
     let current = match micro {
         Some(detail) => anchors.iter().find(|(anchor, _)| *anchor == detail.anchor).map_or_else(|| tr("missing").to_string(), |(_, label)| label.clone()),
         None => tr("None").to_string(),
