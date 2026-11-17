@@ -1799,7 +1799,7 @@ fn property_row(ui: &mut Ui, label: &str, info: &str, controls: impl FnOnce(&mut
 }
 
 /// A dim info icon explaining a setting on hover
-fn info_icon(ui: &mut Ui, text: &str) {
+pub(crate) fn info_icon(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(ic::INFO).color(Tokens::get(ui.ctx()).text_dim)).on_hover_text(text);
 }
 

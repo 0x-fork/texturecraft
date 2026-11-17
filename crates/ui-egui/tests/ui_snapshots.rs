@@ -179,6 +179,11 @@ fn window_snapshots() {
     save(&mut harness, &output_dir, "window-settings");
     harness.state_mut().ui.windows.settings = false;
 
+    let context = harness.ctx.clone();
+    texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, "ui.projectConfig");
+    save(&mut harness, &output_dir, "window-project-configuration");
+    harness.state_mut().ui.windows.project_config = None;
+
     // A taller window exposes every mesh-map slot
     harness.state_mut().ui.dock.focus(Panel::TextureSetSettings);
     harness.set_size(egui::vec2(1600.0, 1800.0));
@@ -196,6 +201,7 @@ fn window_snapshots() {
         texturecraft_engine::execute(session, id, &params).unwrap();
     }
     save(&mut harness, &output_dir, "properties-levels");
+
     // Show the Layers panel thumbnails with a hidden content effect, a folder and a mask
     let session = &mut harness.state_mut().session;
     for (id, params) in [
@@ -230,6 +236,7 @@ fn window_snapshots() {
     }
     save(&mut harness, &output_dir, "panel-layers");
     harness.set_size(egui::vec2(1600.0, 960.0));
+
     // Show the second path selected in Properties
     let session = &mut harness.state_mut().session;
     for (id, params) in [
