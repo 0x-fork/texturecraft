@@ -26,6 +26,7 @@ impl Readback {
         if level >= texture.mip_level_count() {
             return None;
         }
+
         let (width, height) = ((texture.width() >> level).max(1), (texture.height() >> level).max(1));
         Some(Readback::encode(device, encoder, texture, level, width, height))
     }
@@ -126,6 +127,7 @@ mod tests {
             eprintln!("skipping: no GPU adapter");
             return;
         };
+
         let tex = levelled(&h);
         let plain = Readback::blocking(&h.device, &h.queue, &tex).unwrap();
         assert_eq!(Readback::blocking_level(&h.device, &h.queue, &tex, 0), Some(plain.clone()));
@@ -138,6 +140,7 @@ mod tests {
             eprintln!("skipping: no GPU adapter");
             return;
         };
+
         let tex = levelled(&h);
         assert_eq!(Readback::blocking_level(&h.device, &h.queue, &tex, 1), Some((4, 2, [60, 60, 60, 255].repeat(8))));
         assert_eq!(Readback::blocking_level(&h.device, &h.queue, &tex, 3), Some((1, 1, vec![160, 160, 160, 255])));
@@ -149,6 +152,7 @@ mod tests {
             eprintln!("skipping: no GPU adapter");
             return;
         };
+
         let tex = levelled(&h);
         assert_eq!(Readback::blocking_level(&h.device, &h.queue, &tex, 4), None);
         assert_eq!(Readback::blocking_level(&h.device, &h.queue, &tex, 40), None);
