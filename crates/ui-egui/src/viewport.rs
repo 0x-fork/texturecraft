@@ -65,6 +65,13 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
         if app.render.is_active() {
             crate::render_mode::stop(app);
         }
+        // The closed project's last frames must not stay readable (`viewport.screenshot`)
+        if let Some(render_state) = app.render_state.as_ref()
+            && let Some(gpu) = render_state.renderer.write().callback_resources.get_mut::<crate::gpu::GpuState>()
+        {
+            gpu.renderer.drop_view(VIEW_3D);
+            gpu.renderer.drop_view(VIEW_2D);
+        }
         empty_views(app, ui);
         return;
     }

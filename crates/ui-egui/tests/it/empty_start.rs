@@ -8,6 +8,8 @@ use texturecraft_ui_egui::{TextureCraftApp, menus};
 
 fn harness(session: Session) -> Harness<'static, TextureCraftApp> {
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
+    // The exact-text checks below need English, whatever the OS language is
+    h.state_mut().ui.prefs.language = "en".into();
     h.run_steps(4);
     h
 }
@@ -159,4 +161,18 @@ fn using_every_panel_and_menu_item_in_the_empty_state_does_not_panic() {
     }
     assert!(!h.state().session.project_open, "none of these opened a project");
     assert!(!h.state().session.can_undo(), "and none changed it");
+}
+
+#[test]
+fn close_drops_the_pending_resize_and_the_viewport_images() {
+    let mut h = open_project();
+    h.state_mut().start_resize(0, 128);
+    assert!(h.state().resize.is_some(), "a resize is running");
+    let had_image = texturecraft_ui_egui::control::screenshot(h.state(), texturecraft_ui_egui::viewport::VIEW_3D).is_some();
+    invoke(&mut h, "file.close");
+    assert!(h.state().resize.is_none(), "Close drops the resize of the closed project");
+    assert!(!h.state().session.modified, "a late resize result does not mark the empty project modified");
+    if had_image {
+        assert!(texturecraft_ui_egui::control::screenshot(h.state(), texturecraft_ui_egui::viewport::VIEW_3D).is_none(), "no image of the closed project");
+    }
 }

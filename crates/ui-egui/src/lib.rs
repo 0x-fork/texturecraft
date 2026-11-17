@@ -310,6 +310,8 @@ impl TextureCraftApp {
                 // A pending dialog must not import its old source into the replacement project
                 if matches!(id, "file.open" | "file.close" | "project.new" | "project.sample") {
                     self.pbr_import = None;
+                    // A resize started on the old project must not be redone on its replacement
+                    self.resize = None;
                 }
 
                 // The empty state has no baking or rendering to show
@@ -542,6 +544,11 @@ impl TextureCraftApp {
     /// Apply a finished resize (after any stroke in progress ends).
     fn poll_resize(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.resize else { return };
+        // Nothing to resize without a project (a result that arrives after Close is dropped)
+        if !self.session.project_open {
+            self.resize = None;
+            return;
+        }
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
         if self.session.stroke_active() {
             return;
