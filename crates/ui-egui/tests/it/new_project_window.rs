@@ -62,7 +62,7 @@ fn the_sections_follow_the_reference_order() {
         "Normal map format",
         "Compute tangent space per fragment",
         "UV Tile settings (UDIMs)",
-        "You won't be able to change UV Tile settings after creating the project.",
+        "You can change UV tiles later in Texture Set Settings.",
         "Use UV Tile workflow",
         "Preserve UV Tile layout per material and enable painting across tiles",
         "Convert UV Tiles into individual Texture Sets (legacy)",

@@ -169,7 +169,7 @@ fn the_window_follows_the_reference_layout() {
         "PROJECT SETTINGS",
         "Compute tangent space per fragment",
         "UV Tile settings (UDIMs)",
-        "You can't change UV Tile settings once a project has been created.",
+        "Change UV tiles in Texture Set Settings.",
         "Use UV Tile workflow",
         "Convert UV Tiles into individual Texture Sets (legacy)",
         "Import settings",
@@ -627,7 +627,7 @@ fn uv_tiles_are_shown_read_only() {
 
     assert!(h.query_by_label("UV Tile settings (UDIMs)").is_some());
     assert!(h.query_by_label("No UV tiles").is_some(), "a project without UV tiles");
-    assert!(h.query_by_label("Change them in Texture Set Settings").is_some());
+    assert!(h.query_by_label("Change UV tiles in Texture Set Settings.").is_some());
 
     click(&mut h, Role::Button, "Cancel");
 

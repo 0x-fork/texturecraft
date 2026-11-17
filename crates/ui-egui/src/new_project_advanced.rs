@@ -193,7 +193,7 @@ fn advanced_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
 
         ui.add_space(4.0);
         sub_title(ui, tr("UV Tile settings (UDIMs)"), Some(tr("Paint meshes whose UVs span several UV tiles (UDIMs)")));
-        note(ui, tr("You won't be able to change UV Tile settings after creating the project."));
+        note(ui, tr("You can change UV tiles later in Texture Set Settings."));
         let new_project = &mut app.ui.new_project;
         let mut uv_tiles = new_project.uv_tiles == Some(true);
         if check_row(ui, None, |ui| ui.checkbox(&mut uv_tiles, tr("Use UV Tile workflow")), |_| {}).changed() {

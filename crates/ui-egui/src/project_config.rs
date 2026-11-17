@@ -226,7 +226,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             // Texture Set Settings owns UV tile changes
             ui.add_space(4.0);
             sub_title(ui, tr("UV Tile settings (UDIMs)"), Some(tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings.")));
-            note(ui, tr("You can't change UV Tile settings once a project has been created."));
+            note(ui, tr("Change UV tiles in Texture Set Settings."));
             let has_tiles = texture_set_tiles.iter().any(|(_, tile_text)| tile_text.is_some());
             let tiles_hint = tr("Change the UV tiles of a texture set in Texture Set Settings");
             check_row(ui, None, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut has_tiles.clone(), tr("Use UV Tile workflow"))), |_| {}).on_disabled_hover_text(tiles_hint);
@@ -246,7 +246,6 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                         .weak(),
                     );
                 }
-                ui.label(egui::RichText::new(tr("Change them in Texture Set Settings")).small().weak());
             });
 
             ui.add_space(4.0);
