@@ -169,7 +169,7 @@ fn the_window_follows_the_reference_layout() {
         "PROJECT SETTINGS",
         "Compute tangent space per fragment",
         "UV Tile settings (UDIMs)",
-        "Change UV tiles in Texture Set Settings.",
+        "You can't change UV Tile settings once a project has been created.",
         "Use UV Tile workflow",
         "Convert UV Tiles into individual Texture Sets (legacy)",
         "Import settings",
@@ -216,7 +216,6 @@ fn opencolorio_can_be_looked_at_but_changes_nothing() {
     h.get_by_label("OpenColorIO").click();
     h.run_steps(3);
 
-    assert!(h.query_by_label("OpenColorIO is not available yet. The project uses Legacy.").is_some());
     assert!(h.query_by_label("Bitmap import color space defaults").is_some());
     assert!(h.query_by_label("Export color spaces").is_some());
 
@@ -626,8 +625,9 @@ fn uv_tiles_are_shown_read_only() {
     open_window(&mut h);
 
     assert!(h.query_by_label("UV Tile settings (UDIMs)").is_some());
-    assert!(h.query_by_label("No UV tiles").is_some(), "a project without UV tiles");
-    assert!(h.query_by_label("Change UV tiles in Texture Set Settings.").is_some());
+    hover_uv_tile_box(&mut h);
+    assert!(h.query_by_label_contains("No UV tiles").is_some(), "a project without UV tiles");
+    assert!(h.query_by_label("You can't change UV Tile settings once a project has been created.").is_some());
 
     click(&mut h, Role::Button, "Cancel");
 
@@ -635,8 +635,16 @@ fn uv_tiles_are_shown_read_only() {
 
     open_window(&mut h);
 
-    assert!(h.query_by_label("No UV tiles").is_none());
-    assert!(h.query_by_label("1001").is_some(), "the tile list of a UDIM project");
+    hover_uv_tile_box(&mut h);
+    assert!(h.query_by_label_contains("No UV tiles").is_none());
+    assert!(h.query_by_label_contains("1001").is_some(), "the tile list of a UDIM project");
+}
+
+/// Hover the disabled Use UV Tile workflow box, whose hint lists the project's UV tiles.
+fn hover_uv_tile_box(h: &mut Harness<'_, TextureCraftApp>) {
+    let center = h.get_by_role_and_label(Role::CheckBox, "Use UV Tile workflow").rect().center();
+    h.hover_at(center);
+    h.run_steps(30);
 }
 
 #[test]

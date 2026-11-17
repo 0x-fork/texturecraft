@@ -203,20 +203,21 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     .width(TARGET_WIDTH_POINTS)
                     .selected_text(match window.target {
                         ImportTarget::Session => tr("current session"),
-                        ImportTarget::Library => tr("library 'Your assets'"),
+                        ImportTarget::Library => tr("library 'your_assets'"),
                     })
                     .show_ui(ui, |ui| {
                         if ui.selectable_label(window.target == ImportTarget::Session, tr("current session")).clicked() {
                             window.target = ImportTarget::Session;
                         }
                         // Your assets hold smart materials and brush presets, not images
-                        ui.add_enabled(false, egui::Button::selectable(false, tr("library 'Your assets'"))).on_disabled_hover_text(tr("Not available yet"));
+                        ui.add_enabled(false, egui::Button::selectable(false, tr("library 'your_assets'"))).on_disabled_hover_text(tr("Not available yet"));
                     });
                 ui.label(tr("Import your resources to:"));
             });
         });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
+            ui.label(tr("To add a new library, see the Edit / Settings menu"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 cancel = ui.button(tr("Cancel")).clicked();
                 import |= ui.add_enabled(!window.rows.is_empty(), primary_button(ui, tr("Import"))).clicked();

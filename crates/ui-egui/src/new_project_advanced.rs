@@ -12,7 +12,7 @@ use crate::TextureCraftApp;
 use crate::i18n::{tr, trf};
 use crate::project_form::{
     FIELD_WIDTH, ROW_INDENT, auto_unwrap_row, check_row, collapsible, color_management, note, physical_size, row, sub_title, tangent_space_row, unavailable,
-    uv_tile_radios,
+    uv_tile_radios, uv_tile_title,
 };
 use crate::state::{Mode, NewProject};
 use crate::theme::{Tokens, caption};
@@ -192,8 +192,8 @@ fn advanced_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
         tangent_space_row(ui);
 
         ui.add_space(4.0);
-        sub_title(ui, tr("UV Tile settings (UDIMs)"), Some(tr("Paint meshes whose UVs span several UV tiles (UDIMs)")));
-        note(ui, tr("You can change UV tiles later in Texture Set Settings."));
+        uv_tile_title(ui, tr("Paint meshes whose UVs span several UV tiles (UDIMs)"));
+        note(ui, tr("You won't be able to change UV Tile settings after creating the project."));
         let new_project = &mut app.ui.new_project;
         let mut uv_tiles = new_project.uv_tiles == Some(true);
         if check_row(ui, None, |ui| ui.checkbox(&mut uv_tiles, tr("Use UV Tile workflow")), |_| {}).changed() {

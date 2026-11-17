@@ -15,6 +15,7 @@ use crate::file_dialogs::{Bound, FileDialog};
 use crate::i18n::{tr, trf};
 use crate::project_form::{
     FIELD_WIDTH, ROW_INDENT, auto_unwrap_row, check_row, color_management, note, physical_size, row, sub_title, tangent_space_row, unavailable, uv_tile_radios,
+    uv_tile_title,
 };
 use crate::state::ProjectConfig;
 use crate::theme::{Tokens, caption};
@@ -225,28 +226,27 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
 
             // Texture Set Settings owns UV tile changes
             ui.add_space(4.0);
-            sub_title(ui, tr("UV Tile settings (UDIMs)"), Some(tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings.")));
-            note(ui, tr("Change UV tiles in Texture Set Settings."));
+            uv_tile_title(ui, tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings."));
+            note(ui, tr("You can't change UV Tile settings once a project has been created."));
             let has_tiles = texture_set_tiles.iter().any(|(_, tile_text)| tile_text.is_some());
             let tiles_hint = tr("Change the UV tiles of a texture set in Texture Set Settings");
-            check_row(ui, None, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut has_tiles.clone(), tr("Use UV Tile workflow"))), |_| {}).on_disabled_hover_text(tiles_hint);
+
+            // The project's tiles are listed in the hover hint, the window shows only the reference's text
+            let mut tile_lines: Vec<String> = texture_set_tiles
+                .iter()
+                .filter_map(|(name, tile_text)| {
+                    let tile_list = tile_text.as_deref()?;
+                    Some(if texture_set_tiles.len() > 1 { trf("{set}: {tiles}", &[("set", name), ("tiles", &tile_list)]) } else { tile_list.to_string() })
+                })
+                .collect();
+            if tile_lines.is_empty() {
+                tile_lines.push(tr("No UV tiles").to_string());
+            }
+            tile_lines.push(tiles_hint.to_string());
+            let tiles_text = tile_lines.join("\n");
+            check_row(ui, None, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut has_tiles.clone(), tr("Use UV Tile workflow"))), |_| {})
+                .on_disabled_hover_text(&tiles_text);
             uv_tile_radios(ui, false, tiles_hint);
-            ui.indent("project_config_tiles", |ui| {
-                if !has_tiles {
-                    ui.label(egui::RichText::new(tr("No UV tiles")).weak());
-                }
-                for (name, tile_text) in texture_set_tiles.iter().filter(|(_, tile_text)| tile_text.is_some()) {
-                    let tile_list = tile_text.as_deref().unwrap_or_default();
-                    ui.label(
-                        egui::RichText::new(if texture_set_tiles.len() > 1 {
-                            trf("{set}: {tiles}", &[("set", name), ("tiles", &tile_list)])
-                        } else {
-                            tile_list.to_string()
-                        })
-                        .weak(),
-                    );
-                }
-            });
 
             ui.add_space(4.0);
             sub_title(ui, tr("Import settings"), None);

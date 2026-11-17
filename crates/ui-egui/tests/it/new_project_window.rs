@@ -9,7 +9,7 @@ use egui_kittest::kittest::{NodeT, Queryable};
 use texturecraft_engine::template_cmds::DEFAULT_TEMPLATE;
 use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::new_project_advanced::create_command;
-use texturecraft_ui_egui::project_form::NOT_AVAILABLE;
+use texturecraft_ui_egui::project_form::{NOT_AVAILABLE, OCIO_NOT_AVAILABLE};
 
 /// A quad whose UVs lie in UV tile 1002 and a camera-free OBJ
 const TILE_1002_QUAD: &str = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 1.1 0.1\nvt 1.9 0.1\nvt 1.9 0.9\nvt 1.1 0.9\nf 1/1 2/2 3/3 4/4\n";
@@ -62,7 +62,7 @@ fn the_sections_follow_the_reference_order() {
         "Normal map format",
         "Compute tangent space per fragment",
         "UV Tile settings (UDIMs)",
-        "You can change UV tiles later in Texture Set Settings.",
+        "You won't be able to change UV Tile settings after creating the project.",
         "Use UV Tile workflow",
         "Preserve UV Tile layout per material and enable painting across tiles",
         "Convert UV Tiles into individual Texture Sets (legacy)",
@@ -133,6 +133,7 @@ fn settings_not_available_yet_are_disabled_with_a_hint() {
     let mut h = harness();
     let unavailable = [
         (Role::CheckBox, "Compute tangent space per fragment"),
+        (Role::Button, egui_phosphor::regular::GRADUATION_CAP),
         (Role::RadioButton, "Convert UV Tiles into individual Texture Sets (legacy)"),
         (Role::CheckBox, "Auto-unwrap"),
         (Role::Button, "Auto-unwrap options"),
@@ -160,6 +161,7 @@ fn opencolorio_shows_its_settings_disabled_and_creates_legacy() {
     let mut h = harness();
 
     assert!(h.query_by_label("OpenColorIO configuration").is_none(), "Legacy shows only the working color space");
+    assert!(h.query_by_label(OCIO_NOT_AVAILABLE).is_none(), "no OpenColorIO hint while Legacy is chosen");
 
     h.get_by_value("Legacy").scroll_to_me();
     h.run_steps(3);
@@ -168,7 +170,7 @@ fn opencolorio_shows_its_settings_disabled_and_creates_legacy() {
     h.get_by_label("OpenColorIO").click();
     h.run_steps(3);
 
-    assert!(h.query_by_label("OpenColorIO is not available yet. The project uses Legacy.").is_some());
+    assert!(h.query_by_label(OCIO_NOT_AVAILABLE).is_some(), "the dropdown's hover hint says OpenColorIO is not available yet");
     for label in ["OpenColorIO configuration", "Configuration file", "Standard sRGB color space", "Auto detect color spaces", "Material color space default"] {
         assert!(h.query_by_label(label).is_some(), "{label} is shown");
     }

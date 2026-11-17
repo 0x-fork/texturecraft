@@ -12,6 +12,9 @@ use crate::widgets::section_chevron;
 /// Hover hint of a control whose function TextureCraft does not have yet.
 pub const NOT_AVAILABLE: &str = n_("Not available yet");
 
+/// Hover hint of the Color management dropdown while OpenColorIO is chosen.
+pub const OCIO_NOT_AVAILABLE: &str = n_("OpenColorIO is not available yet. The project uses Legacy.");
+
 /// Width of the dropdowns and fields at the right of a row.
 pub(crate) const FIELD_WIDTH: f32 = 220.0;
 
@@ -91,6 +94,18 @@ pub(crate) fn sub_title(ui: &mut Ui, title: &str, info: Option<&str>) {
         if let Some(text) = info {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| info_icon(ui, text));
         }
+    });
+}
+
+/// The "UV Tile settings (UDIMs)" title: the tutorial icon (not available yet) and the info icon.
+pub(crate) fn uv_tile_title(ui: &mut Ui, info: &str) {
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_INDENT);
+        ui.label(caption(tr("UV Tile settings (UDIMs)")));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            info_icon(ui, info);
+            unavailable(ui.add_enabled(false, egui::Button::new(egui_phosphor::regular::GRADUATION_CAP).frame(false)));
+        });
     });
 }
 
@@ -225,24 +240,26 @@ const OCIO_EXPORT: [(&str, &str, Option<&str>); 3] = [
 ];
 
 /// The Color management section. `mode` is the dropdown's choice: Legacy shows the working color
-/// space; OpenColorIO shows its settings, all disabled, and a note that it is not available yet
+/// space; OpenColorIO shows its settings, all disabled, and the dropdown's hover hint says it is not available yet
 /// (the project stays Legacy whatever is chosen).
 pub(crate) fn color_management(ui: &mut Ui, id: &str, mode: &mut ColorManagement) {
     collapsible(ui, id, tr("Color management"), true, None, |ui| {
-        let tokens = Tokens::get(ui.ctx());
         ui.label(caption(tr("Configuration")));
         row(ui, tr("Color management"), Some(tr("Legacy works in linear sRGB. OpenColorIO manages color through a configuration")), |ui| {
-            egui::ComboBox::from_id_salt(format!("{id}_mode")).width(FIELD_WIDTH).selected_text(tr(mode.label())).show_ui(ui, |ui| {
-                for choice in [ColorManagement::Legacy, ColorManagement::OpenColorIo] {
-                    ui.selectable_value(mode, choice, tr(choice.label()));
-                }
-            });
+            let response = egui::ComboBox::from_id_salt(format!("{id}_mode"))
+                .width(FIELD_WIDTH)
+                .selected_text(tr(mode.label()))
+                .show_ui(ui, |ui| {
+                    for choice in [ColorManagement::Legacy, ColorManagement::OpenColorIo] {
+                        ui.selectable_value(mode, choice, tr(choice.label()));
+                    }
+                })
+                .response;
+            if *mode == ColorManagement::OpenColorIo {
+                response.on_hover_text(tr(OCIO_NOT_AVAILABLE));
+            }
         });
         if *mode == ColorManagement::OpenColorIo {
-            ui.horizontal(|ui| {
-                ui.add_space(ROW_INDENT);
-                ui.add(egui::Label::new(RichText::new(tr("OpenColorIO is not available yet. The project uses Legacy.")).color(tokens.warning)).wrap());
-            });
             for (label, value, info) in OCIO_CONFIGURATION {
                 row(ui, tr(label), info.map(tr), |ui| disabled_combo(ui, &format!("{id}_{label}"), tr(value)));
             }

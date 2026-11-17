@@ -195,7 +195,8 @@ fn unsupported_usages_and_the_user_library_are_listed_but_disabled() {
 
     combos(&h, "current session").next().expect("the dropdown").click();
     h.run_steps(3);
-    assert!(h.get_by_label("library 'Your assets'").accesskit_node().is_disabled());
+    assert!(h.get_by_label("library 'your_assets'").accesskit_node().is_disabled());
+    assert!(h.query_by_label("To add a new library, see the Edit / Settings menu").is_some(), "the note at the bottom left");
 }
 
 #[test]
