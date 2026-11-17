@@ -793,3 +793,29 @@ fn a_format_the_project_already_has_is_not_set_again() {
     assert_eq!(project_normal_format(&h), NormalFormat::DirectX);
     assert_eq!(h.state().session.history_labels().len(), steps, "no extra undo step");
 }
+
+#[test]
+#[ignore = "offscreen GPU snapshots; set TC_UI_SNAPSHOTS to an output directory"]
+fn project_config_snapshots() {
+    let output_dir = std::path::PathBuf::from(std::env::var_os("TC_UI_SNAPSHOTS").expect("set TC_UI_SNAPSHOTS"));
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let dir = temp_dir("snapshots");
+    let file = dir.join("quad.obj");
+    std::fs::write(&file, QUAD).unwrap();
+    let mut session = Session::from_mesh_bytes("quad.obj", QUAD.as_bytes(), 128, "quad").unwrap();
+    session.doc.project.mesh_path = file.display().to_string();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    h.run_steps(6);
+    open_window(&mut h);
+    h.run_steps(6);
+    h.render().unwrap().save(output_dir.join("project-config-legacy.png")).unwrap();
+    h.get_by_value("Legacy").scroll_to_me();
+    h.run_steps(3);
+    h.get_by_value("Legacy").click();
+    h.run_steps(3);
+    h.get_by_label("OpenColorIO").click();
+    h.run_steps(3);
+    h.get_by_label("Export color spaces").scroll_to_me();
+    h.run_steps(6);
+    h.render().unwrap().save(output_dir.join("project-config-ocio.png")).unwrap();
+}

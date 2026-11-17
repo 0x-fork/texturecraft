@@ -21,9 +21,6 @@ pub(crate) const FORM_HEIGHT: f32 = 760.0;
 /// Indent of the rows below a section title.
 pub(crate) const ROW_INDENT: f32 = 16.0;
 
-/// Room kept for the info icon at the end of a row without one.
-const INFO_SLOT: f32 = 16.0;
-
 /// How a project manages colour. Only Legacy is implemented; OpenColorIO can be chosen to see its
 /// settings, but they stay disabled and a project is always created and kept as Legacy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -79,7 +76,10 @@ pub(crate) fn check_row<R>(ui: &mut Ui, info: Option<&str>, control: impl FnOnce
 fn info_slot(ui: &mut Ui, info: Option<&str>) {
     match info {
         Some(text) => info_icon(ui, text),
-        None => ui.add_space(INFO_SLOT),
+        // An invisible icon keeps the controls of rows without one in the same column
+        None => {
+            ui.add_visible(false, egui::Label::new(egui_phosphor::regular::INFO));
+        }
     }
 }
 

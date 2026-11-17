@@ -251,11 +251,14 @@ fn baked_maps(new_project: &mut NewProject, ui: &mut Ui) -> bool {
     });
 
     ui.add_space(4.0);
-    egui::Frame::new().fill(tokens.field).corner_radius(2.0).inner_margin(4.0).show(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt("np_baked_map_list").max_height(FILE_LIST_HEIGHT).auto_shrink([false, false]).show(ui, |ui| {
-            for path in &new_project.baked_maps {
-                ui.add(egui::Label::new(file_name(path)).truncate()).on_hover_text(path.as_str());
-            }
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_INDENT);
+        egui::Frame::new().fill(tokens.field).corner_radius(2.0).inner_margin(4.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("np_baked_map_list").max_height(FILE_LIST_HEIGHT).auto_shrink([false, false]).show(ui, |ui| {
+                for path in &new_project.baked_maps {
+                    ui.add(egui::Label::new(file_name(path)).truncate()).on_hover_text(path.as_str());
+                }
+            });
         });
     });
     ui.add_space(4.0);

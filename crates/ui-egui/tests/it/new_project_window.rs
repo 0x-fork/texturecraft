@@ -173,6 +173,12 @@ fn opencolorio_shows_its_settings_disabled_and_creates_legacy() {
         assert!(h.query_by_label(label).is_some(), "{label} is shown");
     }
     assert!(h.query_by_label("ACEScg").is_some(), "the OpenColorIO working color space");
+    let ocio_config = h.get_by_value("ACES 2.0");
+    assert!(ocio_config.accesskit_node().is_disabled(), "the OpenColorIO settings are disabled");
+    let center = ocio_config.rect().center();
+    h.hover_at(center);
+    h.run_steps(30);
+    assert!(h.query_by_label(NOT_AVAILABLE).is_some(), "with the not-available hint");
     let params = create_command(&texturecraft_ui_egui::state::NewProject { file: Some("a.obj".into()), ..h.state().ui.new_project.clone() }).unwrap();
     assert!(params.get("colorManagement").is_none(), "nothing about color management reaches the command");
 }
@@ -258,4 +264,23 @@ fn create_stays_on_screen_in_a_short_window() {
 
     assert!(create.bottom() <= 600.0 && create.top() >= 0.0, "Create is visible without scrolling: {create:?}");
     assert!(cancel.bottom() <= 600.0, "{cancel:?}");
+}
+
+#[test]
+fn picking_a_template_sets_its_resolution_and_normal_map_format() {
+    let mut h = harness();
+    h.state_mut().session.templates.dir = None;
+    h.state_mut().run("textureSet.settings", serde_json::json!({"normalFormat": "directX"})).unwrap();
+    h.state_mut().run("project.template.save", serde_json::json!({"name": "Small DirectX"})).unwrap();
+    h.run_steps(2);
+
+    h.get_by_value(DEFAULT_TEMPLATE).click();
+    h.run_steps(3);
+    h.get_by_label("Small DirectX").click();
+    h.run_steps(3);
+
+    assert!(h.query_by_value("Small DirectX").is_some());
+    assert!(h.query_by_value("128 x 128").is_some(), "the template's resolution (the open project's 128 px)");
+    assert!(h.query_by_value("DirectX").is_some(), "the template's normal map format");
+    assert_eq!(h.state().ui.new_project.resolution, 128);
 }
