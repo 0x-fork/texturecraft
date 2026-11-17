@@ -136,18 +136,94 @@ fn every_setting_has_an_info_icon_and_the_window_ends_with_a_note() {
     let icons: Vec<_> = h.get_all_by_label(egui_phosphor::regular::INFO).collect();
     let tip = "Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it.";
 
-    assert!(h.query_by_label("Choosing or reimporting a mesh recomputes all channels.").is_some(), "the note above the buttons");
-    assert_eq!(icons.len(), 6, "mesh path, Select, Reimport mesh, Preserve strokes, Normal map format, UV tiles");
+    assert!(h.query_by_label("Please note: Changing any of these settings will cause all channels to be recomputed.").is_some(), "the note above the buttons");
+    assert_eq!(
+        icons.len(),
+        13,
+        "3D mesh, Reimport mesh, Normal map format, tangent space, UV tiles and its two layouts, Import cameras, Preserve strokes, Auto-unwrap, \
+         Physical size, Color management, Working color space"
+    );
     assert!(h.query_by_label(tip).is_none(), "no tooltip before hovering");
 
-    // The format icon is fifth in the window's rows
+    // The format icon is third in the window's rows
     let mut centers: Vec<_> = icons.iter().map(|n| n.rect().center()).collect();
     centers.sort_by(|a, b| a.y.total_cmp(&b.y));
-    let format_center = centers[4];
+    let format_center = centers[2];
     h.hover_at(format_center);
     h.run_steps(30);
 
     assert!(h.query_by_label(tip).is_some(), "hovering the normal map format icon explains it");
+}
+
+#[test]
+fn the_window_follows_the_reference_layout() {
+    let dir = temp_dir("layout");
+    let mut h = app_on_a_quad(&dir);
+    h.set_size(egui::vec2(1600.0, 2000.0));
+
+    open_window(&mut h);
+
+    let order = [
+        "3D MESH",
+        "Reimport mesh",
+        "PROJECT SETTINGS",
+        "Compute tangent space per fragment",
+        "UV Tile settings (UDIMs)",
+        "You can't change UV Tile settings once a project has been created.",
+        "Use UV Tile workflow",
+        "Convert UV Tiles into individual Texture Sets (legacy)",
+        "Import settings",
+        "Import cameras",
+        "Preserve stroke positions on mesh",
+        "Auto-unwrap",
+        "Physical size",
+        "Working color space",
+    ];
+    let top = |label: &str| h.get_all_by_label(label).map(|n| n.rect().top()).fold(f32::INFINITY, f32::min);
+    for labels in order.windows(2) {
+        assert!(top(labels[0]) < top(labels[1]), "{} comes before {}", labels[0], labels[1]);
+    }
+    assert!(h.query_by_label("Custom unit scale").is_none(), "Physical size starts collapsed");
+    let disabled = |role: Role, label: &str| h.get_by_role_and_label(role, label).accesskit_node().is_disabled();
+    for (role, label) in [
+        (Role::CheckBox, "Compute tangent space per fragment"),
+        (Role::CheckBox, "Use UV Tile workflow"),
+        (Role::RadioButton, "Preserve UV Tile layout per material and enable painting across tiles"),
+        (Role::RadioButton, "Convert UV Tiles into individual Texture Sets (legacy)"),
+        (Role::CheckBox, "Import cameras"),
+        (Role::CheckBox, "Auto-unwrap"),
+        (Role::Button, "Auto-unwrap options"),
+    ] {
+        assert!(disabled(role, label), "{label} is disabled");
+    }
+
+    let center = h.get_by_role_and_label(Role::CheckBox, "Compute tangent space per fragment").rect().center();
+    h.hover_at(center);
+    h.run_steps(30);
+    assert!(h.query_by_label("Not available yet").is_some(), "the hint of a setting TextureCraft does not have yet");
+}
+
+#[test]
+fn opencolorio_can_be_looked_at_but_changes_nothing() {
+    let dir = temp_dir("ocio");
+    let mut h = app_on_a_quad(&dir);
+    h.set_size(egui::vec2(1600.0, 2000.0));
+    open_window(&mut h);
+    let before = h.state().session.doc.project.clone();
+
+    h.get_by_value("Legacy").click();
+    h.run_steps(3);
+    h.get_by_label("OpenColorIO").click();
+    h.run_steps(3);
+
+    assert!(h.query_by_label("OpenColorIO is not available yet. The project uses Legacy.").is_some());
+    assert!(h.query_by_label("Bitmap import color space defaults").is_some());
+    assert!(h.query_by_label("Export color spaces").is_some());
+
+    click(&mut h, Role::Button, "OK");
+
+    assert!(!window_is_open(&h));
+    assert_eq!(h.state().session.doc.project, before, "OK applies nothing for color management");
 }
 
 #[test]

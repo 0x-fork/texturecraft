@@ -19,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "New project from a mesh file",
             [],
             None,
-            "{mesh: path to .glb/.gltf/.fbx/.dae/.usd/.usda/.usdc/.usdz/.abc/.obj/.ply/.stl, resolution?: 2048, name?, uvTiles?: bool (UDIM; default: when the UVs leave tile 1001), template?: project template name}",
+            "{mesh: path to .glb/.gltf/.fbx/.dae/.usd/.usda/.usdc/.usdz/.abc/.obj/.ply/.stl, resolution?: 2048, name?, uvTiles?: bool (UDIM; default: when the UVs leave tile 1001), template?: project template name, importCameras?: bool (default true: keep the cameras stored in the file)}",
             always,
             new_from_mesh
         ),
@@ -384,8 +384,8 @@ mod native {
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{absolute, open_path, read_mesh};
 
-/// `file.new {mesh, name?, resolution?, uvTiles?, template?}`: a new project from the mesh file `mesh`,
-/// remembering its path for Reimport mesh.
+/// `file.new {mesh, name?, resolution?, uvTiles?, template?, importCameras?}`: a new project from the
+/// mesh file `mesh`, remembering its path for Reimport mesh.
 #[cfg(not(target_arch = "wasm32"))]
 fn new_from_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     let path = native::path_param(p, "mesh", "file.new")?;
@@ -396,6 +396,9 @@ fn new_from_mesh(s: &mut Session, p: &Value) -> Result<Value> {
     let mut next = Session::from_mesh_bytes_tiled(&f.name, &f.bytes, u32::try_from(res).unwrap_or(0), &name, crate::commands::boolp(p, "uvTiles"))?;
     next.doc.project.mesh_path = native::absolute(path);
     next.log.extend(f.warnings);
+    if crate::commands::boolp(p, "importCameras") == Some(false) {
+        next.doc.project.cameras.clear();
+    }
     if let Some(t) = &template {
         next.apply_template(t);
     }
@@ -668,6 +671,35 @@ fn close(s: &mut Session, _: &Value) -> Result<Value> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    /// `file.new` keeps the cameras stored in the mesh file unless `importCameras` is false.
+    #[test]
+    fn new_from_mesh_imports_cameras_unless_told_not_to() {
+        let dir = std::env::temp_dir().join(format!("tc_new_cameras_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("shot.gltf");
+        let gltf = json!({
+            "asset": {"version": "2.0"},
+            "buffers": [{"byteLength": 36, "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAA"}],
+            "bufferViews": [{"buffer": 0, "byteLength": 36}],
+            "accessors": [{"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]}],
+            "meshes": [{"primitives": [{"attributes": {"POSITION": 0}}]}],
+            "cameras": [{"name": "Shot", "type": "perspective", "perspective": {"yfov": 0.8, "znear": 0.1}}],
+            "nodes": [{"mesh": 0}, {"camera": 0, "translation": [0.5, 0.5, 4.0]}],
+            "scenes": [{"nodes": [0, 1]}],
+            "scene": 0
+        });
+        std::fs::write(&file, serde_json::to_vec(&gltf).unwrap()).unwrap();
+        let path = file.display().to_string();
+        let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+
+        crate::execute(&mut s, "file.new", &json!({"mesh": path, "resolution": 128})).unwrap();
+        assert_eq!(s.doc.project.cameras.len(), 1, "the file's camera comes along by default");
+
+        crate::execute(&mut s, "file.new", &json!({"mesh": path, "resolution": 128, "importCameras": false})).unwrap();
+        assert!(s.doc.project.cameras.is_empty(), "importCameras false leaves the cameras out");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Reimport mesh reads the mesh file again from where it was imported, so a change saved to
     /// the file since shows up (it used to re-read the project's own copy and change nothing).

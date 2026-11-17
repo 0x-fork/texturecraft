@@ -163,7 +163,7 @@ pub fn invoke(app: &mut TextureCraftApp, ctx: &egui::Context, id: &str) {
     }
 
     match id {
-        "ui.newProject" => app.ui.windows.new_project = true,
+        "ui.newProject" => crate::new_project_advanced::open(app),
         "ui.export" => app.ui.windows.export = true,
         "ui.quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         #[cfg(not(target_arch = "wasm32"))]

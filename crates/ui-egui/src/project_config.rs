@@ -1,5 +1,7 @@
-//! Edit > Project Configuration...: the project's settings in sections. Today it has one, the
-//! 3D mesh: pick another mesh file for the project, or read the current one again.
+//! Edit > Project Configuration...: the project's settings in sections. 3D MESH picks another mesh
+//! file for the project or reads the current one again; PROJECT SETTINGS sets the normal map format
+//! and shows the UV tiles. Settings TextureCraft does not have yet (tangent space per fragment,
+//! physical size, OpenColorIO, import options other than stroke preservation) are shown disabled.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,18 +13,23 @@ use crate::TextureCraftApp;
 use crate::dock::info_icon;
 use crate::file_dialogs::{Bound, FileDialog};
 use crate::i18n::{tr, trf};
+use crate::project_form::{
+    FIELD_WIDTH, ROW_INDENT, auto_unwrap_row, check_row, color_management, note, physical_size, row, sub_title, tangent_space_row, unavailable, uv_tile_radios,
+};
 use crate::state::ProjectConfig;
-use crate::theme::caption;
+use crate::theme::{Tokens, caption};
 use crate::widgets::primary_button;
 
 /// Room for the Select... button and its info icon beside the path.
-const SELECT_BUTTON_WIDTH_POINTS: f32 = 150.0;
-/// Room for an info icon at the end of a row.
-const INFO_WIDTH_POINTS: f32 = 28.0;
+const SELECT_BUTTON_WIDTH_POINTS: f32 = 190.0;
+/// Room for the title bar, the note and the button row below the scrolling form.
+const DIALOG_CHROME_HEIGHT_POINTS: f32 = 120.0;
+/// Width of the Cancel and OK buttons.
+const BUTTON_WIDTH_POINTS: f32 = 90.0;
 /// Keep a usable field when the dialog is narrowed.
 const MIN_FIELD_WIDTH_POINTS: f32 = 60.0;
 /// Initial width of the configuration dialog.
-const DEFAULT_DIALOG_WIDTH_POINTS: f32 = 460.0;
+const DEFAULT_DIALOG_WIDTH_POINTS: f32 = 560.0;
 /// Leave space around the centered dialog on short viewports.
 const DIALOG_VIEWPORT_MARGIN_POINTS: f32 = 32.0;
 
@@ -36,6 +43,7 @@ pub(crate) fn open(app: &mut TextureCraftApp) {
         reimport: false,
         preserve: true,
         normal_format: None,
+        color_management: crate::project_form::ColorManagement::Legacy,
         confirm: false,
         project: app.session.project_id,
         opening_id: NEXT_OPENING_ID.fetch_add(1, Ordering::Relaxed),
@@ -135,122 +143,143 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let mut open = true;
     let (mut ok, mut cancel, mut select) = (std::mem::take(&mut config.confirm), false, false);
 
-    let dialog = crate::windows::dialog("project_config", tr("Project configuration"), &mut open)
-        .default_width(DEFAULT_DIALOG_WIDTH_POINTS)
-        .max_height((ctx.content_rect().height() - DIALOG_VIEWPORT_MARGIN_POINTS).max(0.0))
-        .vscroll(true);
+    // A fixed height keeps the centered window still while its sections lay out
+    let form_height =
+        (ctx.content_rect().height() - DIALOG_VIEWPORT_MARGIN_POINTS - DIALOG_CHROME_HEIGHT_POINTS).clamp(120.0, crate::project_form::FORM_HEIGHT);
+    let dialog = crate::windows::dialog("project_config", tr("Project configuration"), &mut open).default_width(DEFAULT_DIALOG_WIDTH_POINTS);
 
     dialog.show(ctx, |ui| {
-        // Keep the project sections in the order users expect
-        ui.label(caption(tr("3D MESH")));
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(tr("3D mesh"));
-            info_icon(ui, tr("The mesh file the project is built on. Hover the path to see it in full."));
+        ui.set_width(DEFAULT_DIALOG_WIDTH_POINTS);
+        egui::ScrollArea::vertical().id_salt("project_config_form").min_scrolled_height(form_height).max_height(form_height).auto_shrink([false, true]).show(ui, |ui| {
+            // Keep the project sections in the order users expect
+            ui.label(caption(tr("3D MESH")));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_INDENT);
+                ui.label(tr("3D mesh"));
 
-            let display_path = chosen_mesh.clone().unwrap_or_else(|| mesh_label.clone());
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            let path_width_points = (ui.available_width() - SELECT_BUTTON_WIDTH_POINTS).max(MIN_FIELD_WIDTH_POINTS);
-            let measure = |text: &str| ui.painter().layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE).rect.width() <= path_width_points;
+                let display_path = chosen_mesh.clone().unwrap_or_else(|| mesh_label.clone());
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let path_width_points = (ui.available_width() - SELECT_BUTTON_WIDTH_POINTS).max(MIN_FIELD_WIDTH_POINTS);
+                let painter = ui.painter().clone();
+                let measure = |text: &str| painter.layout_no_wrap(text.to_string(), font.clone(), egui::Color32::WHITE).rect.width() <= path_width_points;
 
-            if display_path.is_empty() {
-                ui.weak(tr("Built-in mesh"));
-            } else {
-                ui.label(elide_start(&display_path, measure)).on_hover_text(&display_path);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    info_icon(ui, tr("The mesh file the project is built on. Select... chooses another one, read when you press OK."));
+                    select = ui.button(tr("Select...")).clicked();
+                    if display_path.is_empty() {
+                        ui.weak(tr("Built-in mesh"));
+                    } else {
+                        ui.label(elide_start(&display_path, measure)).on_hover_text(&display_path);
+                    }
+                });
+            });
+            if chosen_mesh.is_none() && !current_mesh_path.is_empty() && !source_file_available {
+                ui.colored_label(ui.visuals().error_fg_color, tr("File not found"));
             }
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                info_icon(ui, tr("Choose another mesh file for the project. It is read when you press OK."));
-                select = ui.button(tr("Select...")).clicked();
+            // A selected replacement always reads the mesh again
+            // A missing source file cannot be reimported
+            let mut reimport = config.reimport || chosen_mesh.is_some();
+            let can_reimport_source = chosen_mesh.is_none() && source_file_available;
+            let reimport_checkbox = check_row(
+                ui,
+                Some(tr("Read the mesh file again, keeping the layers and painted strokes")),
+                |ui| ui.add_enabled(can_reimport_source, egui::Checkbox::new(&mut reimport, tr("Reimport mesh"))),
+                |_| {},
+            );
+
+            if can_reimport_source {
+                config.reimport = reimport;
+            } else if chosen_mesh.is_none() {
+                reimport_checkbox.on_disabled_hover_text(tr("There is no mesh file to read again. Select one."));
+            }
+
+            ui.add_space(12.0);
+            ui.label(caption(tr("PROJECT SETTINGS")));
+            ui.add_space(4.0);
+            let shown_format = config.normal_format.unwrap_or(current_normal_format);
+            row(
+                ui,
+                tr("Normal map format"),
+                Some(tr("Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it.")),
+                |ui| {
+                    egui::ComboBox::from_id_salt(tr("Normal map format"))
+                        .width(FIELD_WIDTH)
+                        .wrap_mode(egui::TextWrapMode::Truncate)
+                        .selected_text(format_name(shown_format))
+                        .show_ui(ui, |ui| {
+                            for format in [NormalFormat::OpenGl, NormalFormat::DirectX] {
+                                if ui.selectable_label(format == shown_format, format_name(format)).clicked() {
+                                    config.normal_format = (format != current_normal_format).then_some(format);
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(tr(
+                            "For the whole project: how normal map images set as mesh maps are read (set them again after a change), and the default for export",
+                        ));
+                },
+            );
+            tangent_space_row(ui);
+
+            // Texture Set Settings owns UV tile changes
+            ui.add_space(4.0);
+            sub_title(ui, tr("UV Tile settings (UDIMs)"), Some(tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings.")));
+            note(ui, tr("You can't change UV Tile settings once a project has been created."));
+            let has_tiles = texture_set_tiles.iter().any(|(_, tile_text)| tile_text.is_some());
+            let tiles_hint = tr("Change the UV tiles of a texture set in Texture Set Settings");
+            check_row(ui, None, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut has_tiles.clone(), tr("Use UV Tile workflow"))), |_| {}).on_disabled_hover_text(tiles_hint);
+            uv_tile_radios(ui, false, tiles_hint);
+            ui.indent("project_config_tiles", |ui| {
+                if !has_tiles {
+                    ui.label(egui::RichText::new(tr("No UV tiles")).weak());
+                }
+                for (name, tile_text) in texture_set_tiles.iter().filter(|(_, tile_text)| tile_text.is_some()) {
+                    let tile_list = tile_text.as_deref().unwrap_or_default();
+                    ui.label(
+                        egui::RichText::new(if texture_set_tiles.len() > 1 {
+                            trf("{set}: {tiles}", &[("set", name), ("tiles", &tile_list)])
+                        } else {
+                            tile_list.to_string()
+                        })
+                        .weak(),
+                    );
+                }
+                ui.label(egui::RichText::new(tr("Change them in Texture Set Settings")).small().weak());
             });
+
+            ui.add_space(4.0);
+            sub_title(ui, tr("Import settings"), None);
+            check_row(
+                ui,
+                Some(tr("Keep the cameras stored in the mesh file")),
+                |ui| unavailable(ui.add_enabled(false, egui::Checkbox::new(&mut false, tr("Import cameras")))),
+                |_| {},
+            );
+
+            // Import settings matter only when a mesh will be read
+            let importing = chosen_mesh.is_some() || (config.reimport && source_file_available);
+            check_row(
+                ui,
+                Some(tr("Painted strokes follow the surface when the new mesh's UVs differ")),
+                |ui| ui.add_enabled(importing, egui::Checkbox::new(&mut config.preserve, tr("Preserve stroke positions on mesh"))),
+                |_| {},
+            );
+            auto_unwrap_row(ui);
+
+            ui.add_space(4.0);
+            physical_size(ui, "project_config_physical_size", false);
+            color_management(ui, "project_config_color_management", &mut config.color_management);
         });
-        if chosen_mesh.is_none() && !current_mesh_path.is_empty() && !source_file_available {
-            ui.colored_label(ui.visuals().error_fg_color, tr("File not found"));
-        }
-
-        ui.add_space(4.0);
-
-        // A selected replacement always reads the mesh again
-        // A missing source file cannot be reimported
-        let mut reimport = config.reimport || chosen_mesh.is_some();
-        let can_reimport_source = chosen_mesh.is_none() && source_file_available;
-        let reimport_checkbox = ui
-            .horizontal(|ui| {
-                let checkbox = ui.add_enabled(can_reimport_source, egui::Checkbox::new(&mut reimport, tr("Reimport mesh")));
-                info_icon(ui, tr("Read the mesh file again, keeping the layers and painted strokes"));
-                checkbox
-            })
-            .inner;
-
-        if can_reimport_source {
-            config.reimport = reimport;
-        } else if chosen_mesh.is_none() {
-            reimport_checkbox.on_disabled_hover_text(tr("There is no mesh file to read again. Select one."));
-        }
 
         ui.add_space(8.0);
-        ui.label(caption(tr("Import settings")));
-
-        // Import settings matter only when a mesh will be read
-        let importing = chosen_mesh.is_some() || (config.reimport && source_file_available);
-        ui.horizontal(|ui| {
-            ui.add_enabled(importing, egui::Checkbox::new(&mut config.preserve, tr("Preserve stroke positions on mesh")));
-            info_icon(ui, tr("Painted strokes follow the surface when the new mesh's UVs differ"));
-        });
-
-        ui.add_space(12.0);
-        ui.label(caption(tr("PROJECT SETTINGS")));
-        ui.add_space(4.0);
-        let shown_format = config.normal_format.unwrap_or(current_normal_format);
-        ui.horizontal(|ui| {
-            ui.label(tr("Normal map format"));
-            egui::ComboBox::from_id_salt(tr("Normal map format"))
-                .width((ui.available_width() - INFO_WIDTH_POINTS).max(MIN_FIELD_WIDTH_POINTS))
-                .wrap_mode(egui::TextWrapMode::Truncate)
-                .selected_text(format_name(shown_format))
-                .show_ui(ui, |ui| {
-                    for format in [NormalFormat::OpenGl, NormalFormat::DirectX] {
-                        if ui.selectable_label(format == shown_format, format_name(format)).clicked() {
-                            config.normal_format = (format != current_normal_format).then_some(format);
-                        }
-                    }
-                })
-                .response
-                .on_hover_text(tr(
-                    "For the whole project: how normal map images set as mesh maps are read (set them again after a change), and the default for export",
-                ));
-            info_icon(ui, tr("Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it."));
-        });
-        ui.add_space(4.0);
-
-        // Texture Set Settings owns UV tile changes
-        ui.horizontal(|ui| {
-            ui.label(tr("UV Tile settings (UDIMs)"));
-            info_icon(ui, tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings."));
-        });
-        if texture_set_tiles.iter().all(|(_, tile_text)| tile_text.is_none()) {
-            ui.label(egui::RichText::new(tr("No UV tiles")).weak());
-        }
-        for (name, tile_text) in texture_set_tiles.iter().filter(|(_, tile_text)| tile_text.is_some()) {
-            let tile_list = tile_text.as_deref().unwrap_or_default();
-            ui.label(
-                egui::RichText::new(if texture_set_tiles.len() > 1 {
-                    trf("{set}: {tiles}", &[("set", name), ("tiles", &tile_list)])
-                } else {
-                    tile_list.to_string()
-                })
-                .weak(),
-            );
-        }
-        ui.label(egui::RichText::new(tr("Change them in Texture Set Settings")).small().weak());
-
-        ui.add_space(12.0);
-        ui.label(egui::RichText::new(tr("Choosing or reimporting a mesh recomputes all channels.")).small().weak());
+        ui.label(egui::RichText::new(tr("Please note: Changing any of these settings will cause all channels to be recomputed.")).color(Tokens::get(ui.ctx()).warning));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ok |= ui.add(primary_button(ui, tr("OK"))).clicked();
-                cancel = ui.button(tr("Cancel")).clicked();
+                ok |= ui.add(primary_button(ui, tr("OK")).min_size(egui::vec2(BUTTON_WIDTH_POINTS, 0.0))).clicked();
+                cancel = ui.add(egui::Button::new(tr("Cancel")).min_size(egui::vec2(BUTTON_WIDTH_POINTS, 0.0))).clicked();
             });
         });
     });
@@ -300,7 +329,8 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         app.ui.windows.project_config = None;
     } else if let Some(stored) = app.ui.windows.project_config.as_mut() {
         // A file answer arrives later through the stored state
-        (stored.reimport, stored.preserve, stored.normal_format, stored.confirm) = (config.reimport, config.preserve, config.normal_format, false);
+        (stored.reimport, stored.preserve, stored.normal_format, stored.color_management, stored.confirm) =
+            (config.reimport, config.preserve, config.normal_format, config.color_management, false);
 
         // A format retry must not reimport an already changed mesh
         if ok && mesh_applied {

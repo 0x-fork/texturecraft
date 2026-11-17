@@ -46,6 +46,8 @@ enum Pick {
     Cage,
     /// Export dialog › Output templates: an export template (`.json`).
     ExportPreset,
+    /// New project › 3D mesh › Select...: the mesh the project is created from.
+    NewProjectMesh,
 }
 
 /// Files picked in the browser, waiting for the next frame: (file name, bytes, purpose).
@@ -63,6 +65,11 @@ pub fn poll(app: &mut TextureCraftApp) {
             Pick::Environment => app.session.import_resource_bytes(&name, bytes).map(|res| use_environment(app, &res)),
             Pick::HighPoly => app.session.add_high_poly_bytes(&name, bytes).map(|n| app.toast(trf("High poly: {name}", &[("name", &n)]), false)),
             Pick::Cage => app.session.set_cage_bytes(&name, bytes).map(|n| app.toast(trf("Cage: {name}", &[("name", &n)]), false)),
+            Pick::NewProjectMesh => {
+                app.ui.new_project.file = Some(name);
+                app.ui.new_project.file_bytes = Some(std::sync::Arc::new(bytes));
+                continue;
+            }
             Pick::ExportPreset => {
                 match texturecraft_engine::formats::preset_from_json(&String::from_utf8_lossy(&bytes)) {
                     Ok(p) => crate::export_templates::import(app, &p),
@@ -206,8 +213,8 @@ fn zip_files(files: &[ExportedFile]) -> Result<Vec<u8>, String> {
 
 #[cfg(target_arch = "wasm32")]
 pub use web::{
-    download, export_mesh, export_textures, import_bake_mesh, import_environment, import_images, import_material, import_preset, open, save_project,
-    sync_unsaved, unsaved,
+    download, export_mesh, export_textures, import_bake_mesh, import_environment, import_images, import_material, import_preset, open, pick_new_project_mesh,
+    save_project, sync_unsaved, unsaved,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -258,6 +265,11 @@ mod web {
     /// Export dialog › Output templates › Import: pick a template; it is added on a later frame.
     pub fn import_preset(ctx: &egui::Context) {
         pick(ctx, tr("Export templates"), &["json"], false, Pick::ExportPreset);
+    }
+
+    /// New project › Select...: pick the mesh file; Create reads it once it has arrived.
+    pub fn pick_new_project_mesh(ctx: &egui::Context) {
+        pick(ctx, tr("3D meshes"), &MESH_EXTENSIONS, false, Pick::NewProjectMesh);
     }
 
     fn pick(ctx: &egui::Context, filter: &'static str, exts: &'static [&'static str], multiple: bool, kind: Pick) {

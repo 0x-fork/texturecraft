@@ -70,7 +70,7 @@ list, not a feature-completion denominator.
 
 | Check | Surface | Result | Observable evidence / limit |
 |---|---|---|---|
-| F01 New project | UI | Pass | Ctrl+N, built-in Cube, 1024 px, Create produced a new project with one empty paint layer. The native mesh-file selection path was not completed in this deeper pass |
+| F01 New project | UI | Pass (tests) | The window no longer offers built-in meshes ([#636](https://github.com/storytold/texturecraft/issues/636)). `tests/it/new_project_window.rs` covers the section order, the defaults, the disabled settings and their hint, Create waiting for a mesh file, and a UV tile project created from a mesh file. A manual pass with the native file picker is still to do |
 | F02 Paint in 3D | UI | Pass | A mouse drag produced a visible stroke in 3D and its UV representation; inspection showed a Paint stroke undo step and painted tiles |
 | F03 Paint in 2D | UI | Pass | A separate UV-view drag increased painted tiles from 7 to 21 per active channel and changed the visible image |
 | F04 Undo and redo | UI | Pass | Ctrl+Z restored 7 tiles and history depth 2; Ctrl+Y restored 21 tiles and depth 3 |

@@ -158,7 +158,7 @@ cargo xtask ci                                               # fmt, clippy, test
 ```
 
 You need Rust 1.95 or newer. The app opens with a baked sample project and a start window (new project, open, recent projects); **File ▸ New project** starts
-from a built-in mesh, a project template or your own mesh file (UVs are generated if it has none).
+from your own mesh file and a project template (UVs are generated if it has none).
 
 Japanese, Chinese, Korean and Arabic interface text uses the fonts of
 [storytold/craft-fonts](https://github.com/storytold/craft-fonts) where it has them, an optional

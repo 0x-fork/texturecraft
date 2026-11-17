@@ -166,22 +166,26 @@ impl Prefs {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NewProject {
-    pub mesh: String,
     pub resolution: u32,
-    pub name: String,
-    /// A mesh file chosen from disk (desktop only).
+    /// The mesh file chosen with Select... (its path on the desktop, its name in the browser).
     pub file: Option<String>,
-    /// UV tile (UDIM) workflow: on, off, or None for when the mesh's UVs leave tile 1001.
+    /// The browser's copy of the chosen mesh file, read when Create is pressed.
+    #[serde(skip)]
+    pub file_bytes: Option<std::sync::Arc<Vec<u8>>>,
+    /// Use UV Tile workflow: Some(true) makes UV tile (UDIM) texture sets; otherwise each set paints tile 1001.
     pub uv_tiles: Option<bool>,
     /// Project template name (built-in or the user's).
     #[serde(default = "default_template")]
     pub template: String,
-    /// Name typed to save the current project's settings as a template.
-    #[serde(skip)]
-    pub template_name: String,
     /// Normal map format of the project and its imported normal maps; None keeps the template's
     #[serde(default)]
     pub normal_format: Option<NormalFormat>,
+    /// Import settings > Import cameras: keep the cameras stored in the mesh file
+    #[serde(default = "import_cameras_default")]
+    pub import_cameras: bool,
+    /// Color management as chosen in the window (the project is always created as Legacy)
+    #[serde(skip)]
+    pub color_management: crate::project_form::ColorManagement,
     /// Baked map files to import at creation, matched to sets and mesh maps by name (desktop only)
     #[serde(skip)]
     pub baked_maps: Vec<String>,
@@ -191,17 +195,21 @@ fn default_template() -> String {
     texturecraft_engine::template_cmds::DEFAULT_TEMPLATE.into()
 }
 
+fn import_cameras_default() -> bool {
+    true
+}
+
 impl Default for NewProject {
     fn default() -> Self {
         NewProject {
-            mesh: "material_ball".into(),
-            resolution: 2048,
-            name: "Untitled".into(),
+            resolution: 1024,
             file: None,
+            file_bytes: None,
             uv_tiles: None,
             template: default_template(),
-            template_name: String::new(),
             normal_format: None,
+            import_cameras: true,
+            color_management: crate::project_form::ColorManagement::Legacy,
             baked_maps: Vec::new(),
         }
     }

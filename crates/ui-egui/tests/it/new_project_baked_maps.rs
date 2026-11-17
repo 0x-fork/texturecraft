@@ -8,23 +8,38 @@ use texturecraft_engine::core::{BakedMap, NormalFormat};
 use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::new_project_advanced::add_baked_map_files;
 
-fn harness() -> Harness<'static, TextureCraftApp> {
+/// Two quads with the materials Ball and Base, like the sample's texture sets
+const TWO_MATERIALS: &str = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n\
+usemtl Ball\nf 1/1 2/2 3/3 4/4\nusemtl Base\nf 5/1 6/2 7/3 8/4\n";
+
+/// The New project window with `test`'s mesh file (materials Ball and Base) selected
+fn harness_for(test: &str) -> Harness<'static, TextureCraftApp> {
+    let mesh = test_dir(test).join("Ball.obj");
+    std::fs::write(&mesh, TWO_MATERIALS).unwrap();
     let session = texturecraft_engine::sample_session(256, 64).unwrap();
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
     h.state_mut().ui.windows.new_project = true;
     h.state_mut().ui.new_project.resolution = 256;
-    h.run_steps(3);
-    h.get_by_label("Advanced settings").click();
-    h.run_steps(3);
-    h.get_by_label("Import baked maps").click();
+    h.state_mut().ui.new_project.file = Some(mesh.display().to_string());
     h.run_steps(3);
     h
 }
 
-/// 4×4 PNGs named `files` in a fresh folder, as their full paths; green 0.2 shows which way a normal map was read
-fn bake_files(test: &str, files: &[&str]) -> Vec<String> {
+fn test_dir(test: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("texturecraft-np-baked-maps-{test}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Click Create (fixed below the form)
+fn create(h: &mut Harness<'_, TextureCraftApp>) {
+    h.get_by_label("Create").click();
+    h.run_steps(3);
+}
+
+/// 4×4 PNGs named `files` in a fresh folder, as their full paths; green 0.2 shows which way a normal map was read
+fn bake_files(test: &str, files: &[&str]) -> Vec<String> {
+    let dir = test_dir(test);
     files
         .iter()
         .map(|file| {
@@ -37,7 +52,7 @@ fn bake_files(test: &str, files: &[&str]) -> Vec<String> {
 
 #[test]
 fn added_files_are_listed_once_and_clear_empties_the_list() {
-    let mut h = harness();
+    let mut h = harness_for("list");
     let paths = bake_files("list", &["Ball_normal.png", "Base_ao.png", "Ball_notes.png"]);
 
     add_baked_map_files(&mut h.state_mut().ui.new_project, paths.clone());
@@ -57,14 +72,13 @@ fn added_files_are_listed_once_and_clear_empties_the_list() {
 
 #[test]
 fn create_imports_the_listed_maps_in_the_chosen_normal_format() {
-    let mut h = harness();
+    let mut h = harness_for("create");
     let paths = bake_files("create", &["Ball_normal.png", "Base_ao.png", "Ball_notes.png"]);
     add_baked_map_files(&mut h.state_mut().ui.new_project, paths);
     h.state_mut().ui.new_project.normal_format = Some(NormalFormat::DirectX);
     h.run_steps(3);
 
-    h.get_by_label("Create").click();
-    h.run_steps(3);
+    create(&mut h);
 
     let state = h.state();
     assert!(!state.ui.windows.new_project, "the dialog closes");
@@ -83,19 +97,17 @@ fn create_imports_the_listed_maps_in_the_chosen_normal_format() {
 
 #[test]
 fn a_failed_import_keeps_the_file_list_and_created_project() {
-    let mut h = harness();
+    let mut h = harness_for("failure");
     let paths = bake_files("failure", &["Ball_normal.png", "Base_ao.png"]);
     std::fs::write(&paths[1], b"not an image").unwrap();
     add_baked_map_files(&mut h.state_mut().ui.new_project, paths.clone());
-    h.state_mut().ui.new_project.name = "Import failure".to_string();
     h.run_steps(3);
 
-    h.get_by_label("Create").click();
-    h.run_steps(3);
+    create(&mut h);
 
     let app = h.state();
     assert!(!app.ui.windows.new_project);
-    assert_eq!(app.session.doc.project.name, "Import failure");
+    assert_eq!(app.session.doc.project.name, "Ball", "the project is named after the mesh file");
     assert_eq!(app.ui.new_project.baked_maps, paths);
     assert!(app.session.doc.resources.is_empty() && app.session.images.is_empty());
     assert!(app.session.doc.baked.values().all(|baked| baked.maps.is_empty()));
@@ -114,12 +126,11 @@ fn new_project_baked_maps_snapshots() {
         eprintln!("snapshot adapter: {adapter:?}");
         TextureCraftApp::new(cc, session)
     });
+    let mesh = test_dir("snapshots").join("Ball.obj");
+    std::fs::write(&mesh, TWO_MATERIALS).unwrap();
     h.state_mut().ui.windows.new_project = true;
     h.state_mut().ui.new_project.resolution = 256;
-    h.run_steps(6);
-    h.get_by_label("Advanced settings").click();
-    h.run_steps(6);
-    h.get_by_label("Import baked maps").click();
+    h.state_mut().ui.new_project.file = Some(mesh.display().to_string());
     h.run_steps(6);
     let paths = bake_files("snapshots", &["Ball_normal.png", "Base_ao.png", "Ball_notes.png"]);
     add_baked_map_files(&mut h.state_mut().ui.new_project, paths);
@@ -139,7 +150,7 @@ fn new_project_baked_maps_snapshots() {
 
 #[test]
 fn normal_format_preview_uses_the_same_template_lookup_as_creation() {
-    let mut h = harness();
+    let mut h = harness_for("template");
     h.state_mut().session.templates.dir = None;
     h.state_mut().run("textureSet.settings", serde_json::json!({"normalFormat": "directX"})).unwrap();
     h.state_mut().run("project.template.save", serde_json::json!({"name": "Custom DirectX"})).unwrap();
@@ -147,7 +158,6 @@ fn normal_format_preview_uses_the_same_template_lookup_as_creation() {
     h.run_steps(3);
 
     h.get_by_value("DirectX");
-    h.get_by_label("Create").click();
-    h.run_steps(3);
+    create(&mut h);
     assert_eq!(h.state().session.doc.project.normal_format, NormalFormat::DirectX);
 }
