@@ -18,6 +18,8 @@ mod image_identity;
 pub mod pattern;
 pub mod store;
 pub mod thumb;
+mod tile_pattern;
+mod tile_random_stream;
 
 pub use below::{BelowCache, StackKey};
 pub use display::{DisplayKind, tile_bytes};

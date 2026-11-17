@@ -143,6 +143,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             let (g1, _, _) = noise::cellular((p * 2.7 + Vec3::splat(13.0)).to_array(), seed ^ 0x6B);
             smoothstep(0.08, 0.16, f1).min(smoothstep(0.06, 0.12, g1))
         }
+        ProceduralKind::TileGenerator => crate::tile_pattern::value(&crate::tile_pattern::DEFAULT, p.truncate(), seed),
         ProceduralKind::Chips => {
             let (f1, _, _) = noise::cellular((p * 2.0).to_array(), seed ^ 0x45);
             let n = noise::fbm(a, 5, seed, noise::perlin) + (f1 - 0.5) * 0.25;
@@ -200,16 +201,23 @@ fn shape(pr: &Procedural, v: f32) -> f32 {
     if pr.invert { 1.0 - v } else { v }
 }
 
-/// Evaluate a procedural through a projection.
+/// Evaluate a procedural through a projection, at full resolution
 pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords) -> f32 {
+    procedural_sized(pattern, projection, coords, None)
+}
+
+/// Evaluate a procedural through a projection, drawn as an image of `pixels` texels per side over one repeat of the projection (read back bilinearly) when its resolution asks for one: see [`pattern_pixels`]. `None` evaluates it exactly
+pub fn procedural_sized(pattern: &Procedural, projection: &Projection, coords: &Coords, pixels: Option<u32>) -> f32 {
     let pattern_scale = pattern.scale.max(1e-4);
+    let cells = pixels.map(|pixels| pixels as f32 / pattern_scale);
+    let sample = |point: Vec3| plane_value(pattern, point, cells);
     let value = match projection {
         Projection::Uv { scale, rotation, offset } => {
             let (sn, cs) = rotation.to_radians().sin_cos();
             let uv = Vec2::new(coords.uv.x * cs - coords.uv.y * sn, coords.uv.x * sn + coords.uv.y * cs) * Vec2::from(*scale) + Vec2::from(*offset);
 
             // Evaluate two-dimensional patterns on a slice of the volume
-            raw(pattern.kind, (uv * pattern_scale).extend(0.0), pattern.seed)
+            sample((uv * pattern_scale).extend(0.0))
         }
         Projection::Triplanar { scale, sharpness, offset } => {
             let p = coords.pos * *scale * pattern_scale + Vec3::from(*offset);
@@ -217,7 +225,7 @@ pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords
             // Shape scales the blend by the contrast
             let w = triplanar_weights(coords.nrm, *sharpness, pattern.contrast);
             let planes = [(w.x, Vec3::new(p.z, p.y, 0.0)), (w.y, Vec3::new(p.x, p.z, 0.0)), (w.z, Vec3::new(p.x, p.y, 0.0))];
-            planes.into_iter().filter(|(w, _)| *w > 0.0).map(|(w, q)| raw(pattern.kind, q, pattern.seed) * w).sum()
+            planes.into_iter().filter(|(w, _)| *w > 0.0).map(|(w, q)| sample(q) * w).sum()
         }
         Projection::Planar { scale, axis, offset } => {
             let p = coords.pos * *scale * pattern_scale + Vec3::from(*offset);
@@ -226,13 +234,13 @@ pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords
                 1 => Vec3::new(p.x, p.z, 0.0),
                 _ => Vec3::new(p.x, p.y, 0.0),
             };
-            raw(pattern.kind, q, pattern.seed)
+            sample(q)
         }
         Projection::Spherical { scale } => {
             let d = coords.pos.try_normalize().unwrap_or(Vec3::Y);
             let u = d.z.atan2(d.x) / std::f32::consts::TAU + 0.5;
             let v = d.y.clamp(-1.0, 1.0).acos() / std::f32::consts::PI;
-            raw(pattern.kind, Vec3::new(u * 4.0, v * 2.0, 0.0) * *scale * pattern_scale, pattern.seed)
+            sample(Vec3::new(u * 4.0, v * 2.0, 0.0) * *scale * pattern_scale)
         }
         Projection::Cylindrical { scale, axis } => {
             let p = coords.pos;
@@ -242,13 +250,43 @@ pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords
                 _ => (p.x, p.y, p.z),
             };
             let u = b.atan2(a) / std::f32::consts::TAU + 0.5;
-            raw(pattern.kind, Vec3::new(u * 4.0, h, 0.0) * *scale * pattern_scale, pattern.seed)
+            sample(Vec3::new(u * 4.0, h, 0.0) * *scale * pattern_scale)
         }
         // The decal already supplied coordinates in its local frame
-        Projection::Decal(_) => raw(pattern.kind, (coords.uv * pattern_scale).extend(0.0), pattern.seed),
+        Projection::Decal(_) => sample((coords.uv * pattern_scale).extend(0.0)),
     };
 
     shape(pattern, value)
+}
+
+/// The texels per side `pattern`'s resolution draws it at for a UV tile of `uv_tile` texels per side in a texture set of `texture_set`, when that is coarser than the UV tile (a finer image changes nothing: patterns are evaluated per texel)
+pub fn pattern_pixels(pattern: &Procedural, uv_tile: u32, texture_set: u32) -> Option<u32> {
+    if !pattern.resolution.can_reduce() {
+        return None;
+    }
+
+    let size = pattern.resolution.output_size(uv_tile, texture_set);
+    (size < uv_tile).then_some(size)
+}
+
+/// The pattern at `point` of its plane, read from an image of `cells` texels per unit (bilinear) when given
+fn plane_value(pr: &Procedural, point: Vec3, cells: Option<f32>) -> f32 {
+    let Some(cells) = cells.filter(|cells| cells.is_finite() && *cells > 0.0) else { return pattern_value(pr, point) };
+    let grid = point.truncate() * cells - 0.5;
+    let base = grid.floor();
+    let fraction = grid - base;
+    let at = |dx: f32, dy: f32| pattern_value(pr, ((base + Vec2::new(dx, dy) + 0.5) / cells).extend(point.z));
+    let top = at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * fraction.x;
+    let bottom = at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * fraction.x;
+    top + (bottom - top) * fraction.y
+}
+
+/// The pattern at `point` of its plane, exactly
+fn pattern_value(pr: &Procedural, point: Vec3) -> f32 {
+    match (&pr.tile, pr.kind) {
+        (Some(tile), ProceduralKind::TileGenerator) => crate::tile_pattern::value(tile, point.truncate(), pr.seed),
+        _ => raw(pr.kind, point, pr.seed),
+    }
 }
 
 /// Texture coordinates (and blend weights) at which an image is sampled for a projection
