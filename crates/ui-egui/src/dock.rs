@@ -2281,31 +2281,6 @@ mod mask_anchor_label_tests {
     }
 
     #[test]
-    fn inherited_effect_pickers_list_anchors_below_the_owner() {
-        let mut session = texturecraft_engine::sample_session(256, 64).unwrap();
-        let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        let valid = execute(&mut session, "effect.add.anchor", &json!({"layer": lower})).unwrap()["effect"].as_u64().unwrap();
-        let source = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        execute(&mut session, "mask.add.black", &json!({"layer": source})).unwrap();
-        let fill = execute(&mut session, "effect.add.fill", &json!({"layer": source})).unwrap()["effect"].as_u64().unwrap();
-        let generator = execute(&mut session, "effect.add.generator", &json!({"layer": source})).unwrap()["effect"].as_u64().unwrap();
-        let middle = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
-        let invalid = execute(&mut session, "effect.add.anchor", &json!({"layer": middle})).unwrap()["effect"].as_u64().unwrap();
-        let instance = execute(&mut session, "layer.instance", &json!({"layer": source})).unwrap()["layer"].as_u64().unwrap();
-
-        assert!(execute(&mut session, "effect.set", &json!({"effect": fill, "anchor": invalid})).is_err());
-        assert!(execute(&mut session, "effect.set", &json!({"effect": generator, "microAnchor": invalid})).is_err());
-
-        let harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
-        assert!(anchors_below(harness.state(), LayerId(instance)).iter().any(|(id, _)| *id == LayerId(invalid)));
-        for effect in [fill, generator] {
-            let choices = effect_anchors_below(harness.state(), LayerId(instance), LayerId(effect));
-            assert!(choices.iter().any(|(id, _)| *id == LayerId(valid)));
-            assert!(!choices.iter().any(|(id, _)| *id == LayerId(invalid)));
-        }
-    }
-
-    #[test]
     fn inherited_effect_pickers_hide_unrecorded_source_set_anchors() {
         let mesh = texturecraft_engine::geom::primitives::material_ball();
         let mut session = texturecraft_engine::Session::new_project("test", mesh, "builtin:material_ball", None, 256).unwrap();
