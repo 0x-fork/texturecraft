@@ -58,9 +58,8 @@ pub struct GpuState {
     pub renderer: Renderer,
     /// Raised when texture-set textures were recreated: the UI must upload every tile again.
     pub reset: Arc<AtomicBool>,
-    /// The texture sets whose textures were recreated (all neutral again), for [`GpuLink`]'s
-    /// record of the display kinds each set holds.
-    pub recreated: Arc<Mutex<BTreeSet<usize>>>,
+    /// Recreated sets and the display kinds uploaded since recreation, for [`GpuLink`].
+    pub recreated: Arc<Mutex<BTreeMap<usize, BTreeSet<DisplayKind>>>>,
     pub reports: Arc<Mutex<GpuReports>>,
     /// Wakes the UI when the GPU side has something to report.
     pub ctx: egui::Context,
@@ -82,7 +81,7 @@ const MAX_GPU_ERRORS: usize = 8;
 pub struct GpuLink {
     pub reset: Arc<AtomicBool>,
     /// [`GpuState::recreated`].
-    recreated: Arc<Mutex<BTreeSet<usize>>>,
+    recreated: Arc<Mutex<BTreeMap<usize, BTreeSet<DisplayKind>>>>,
     pub reports: Arc<Mutex<GpuReports>>,
     /// Raised when a view callback was dropped before the GPU applied its scene sync (the
     /// frame was never painted, e.g. a WebGPU surface not ready yet): send everything again.
@@ -97,8 +96,8 @@ pub struct GpuLink {
     aux: BTreeMap<usize, (String, u64)>,
     /// The display kinds sent to the GPU per set: kinds the set has no channels for are not
     /// converted, unless an earlier upload gave them content that must be overwritten. Only the
-    /// renderer recreating a set's textures ([`GpuState::recreated`]) clears its entry: a set
-    /// that keeps its size keeps its textures through mesh, layout and project changes.
+    /// renderer recreating a set's textures ([`GpuState::recreated`]) replaces its entry with
+    /// kinds uploaded since recreation. A set that keeps its size retains its textures.
     sent: HashMap<usize, BTreeSet<DisplayKind>>,
     pub adapter: String,
     /// Most tiles waiting to be composited since compositing last caught up (progress).
@@ -122,7 +121,7 @@ const UPLOAD_MS_PER_TILE: f64 = 0.006;
 
 pub fn init(rs: &egui_wgpu::RenderState, ctx: &egui::Context) -> GpuLink {
     let reset = Arc::new(AtomicBool::new(false));
-    let recreated = Arc::new(Mutex::new(BTreeSet::new()));
+    let recreated = Arc::new(Mutex::new(BTreeMap::new()));
     let reports = Arc::new(Mutex::new(GpuReports::default()));
     // wgpu's default handler panics on any error no scope caught (an out-of-memory texture, a
     // driver hiccup): report it instead, so the user keeps the session.
@@ -228,8 +227,10 @@ impl GpuLink {
             }
             self.aux.clear();
         }
-        for texture_set in std::mem::take(&mut *self.recreated.lock().unwrap_or_else(PoisonError::into_inner)) {
-            self.sent.remove(&texture_set);
+        for (texture_set, kinds) in std::mem::take(&mut *self.recreated.lock().unwrap_or_else(PoisonError::into_inner)) {
+            if texture_set < self.sets.len() {
+                self.sent.insert(texture_set, kinds);
+            }
         }
 
         for texture_set in 0..session.caches.len() {
@@ -329,6 +330,23 @@ impl GpuLink {
     }
 }
 
+fn record_recreated_uploads(recreated: &mut BTreeMap<usize, BTreeSet<DisplayKind>>, reset: &[usize], sync: &SceneSync) {
+    for &texture_set in reset {
+        recreated.insert(texture_set, BTreeSet::new());
+    }
+
+    // Skip the tile scan on frames without a pending recreation acknowledgement
+    if recreated.is_empty() {
+        return;
+    }
+
+    for (texture_set, kind, _, _, _) in &sync.tiles {
+        if let Some(kinds) = recreated.get_mut(texture_set) {
+            kinds.insert(*kind);
+        }
+    }
+}
+
 /// Mask view resolution for a texture set without a composite cache
 const MASK_VIEW_FALLBACK_RESOLUTION: u32 = 1024;
 
@@ -368,16 +386,17 @@ impl CallbackTrait for ViewCallback {
             if let Some((mesh, id)) = &sync.mesh {
                 gpu.renderer.set_mesh(device, queue, mesh, *id);
             }
+            let mut reset = Vec::new();
             if let Some((sets, material_count, shift)) = &sync.sets {
                 gpu.renderer.set_display_shift(*shift);
-                let reset = gpu.renderer.set_texture_sets(device, queue, sets, *material_count);
-                if !reset.is_empty() {
-                    gpu.recreated.lock().unwrap_or_else(PoisonError::into_inner).extend(reset);
-                    gpu.reset.store(true, Ordering::Release);
-                }
+                reset = gpu.renderer.set_texture_sets(device, queue, sets, *material_count);
             }
             for (texture_set, kind, tile_x, tile_y, bytes) in &sync.tiles {
                 gpu.renderer.upload_tile(device, queue, *texture_set, *kind, *tile_x, *tile_y, bytes);
+            }
+            record_recreated_uploads(&mut gpu.recreated.lock().unwrap_or_else(PoisonError::into_inner), &reset, &sync);
+            if !reset.is_empty() {
+                gpu.reset.store(true, Ordering::Release);
             }
             for (texture_set, size, bytes) in &sync.aux {
                 gpu.renderer.upload_aux(device, queue, *texture_set, *size, bytes);
@@ -500,13 +519,27 @@ mod tests {
     }
 
     #[test]
+    fn a_kind_uploaded_after_recreation_is_overwritten_by_the_next_project() {
+        let mut gpu = link();
+        let out = gpu.sync(&mut session(true), None, None, 0, 0.0);
+        assert!(kinds(&out).contains(&DisplayKind::Emissive));
+
+        // The renderer recreated set zero and uploaded this sync's emissive tiles
+        record_recreated_uploads(&mut gpu.recreated.lock().unwrap(), &[0], &out);
+        gpu.reset.store(true, Ordering::Release);
+
+        let out = gpu.sync(&mut session(false), None, None, 0, 0.0);
+        assert!(kinds(&out).contains(&DisplayKind::Emissive), "the uploaded emissive texture is overwritten");
+    }
+
+    #[test]
     fn a_recreated_set_converts_only_the_kinds_it_has_channels_for() {
         let mut gpu = link();
         gpu.sync(&mut session(true), None, None, 0, 0.0);
         let mut plain = session(false);
         gpu.sync(&mut plain, None, None, 0, 0.0);
         // The recreated set starts neutral, so old display kinds need no upload
-        gpu.recreated.lock().unwrap().insert(0);
+        gpu.recreated.lock().unwrap().insert(0, BTreeSet::new());
         gpu.reset.store(true, Ordering::Release);
         let out = gpu.sync(&mut plain, None, None, 0, 0.0);
         assert!(!out.tiles.is_empty());
