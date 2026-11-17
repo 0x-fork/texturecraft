@@ -2375,6 +2375,8 @@ mod mask_anchor_label_tests {
 
     #[test]
     fn inherited_effect_pickers_hide_unrecorded_source_set_anchors() {
+        // The harness draws the UI, and the i18n tests switch the process-wide language to ones its fonts cannot draw
+        let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mesh = texturecraft_engine::geom::primitives::material_ball();
         let mut session = texturecraft_engine::Session::new_project("test", mesh, "builtin:material_ball", None, 256).unwrap();
         let lower = execute(&mut session, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
