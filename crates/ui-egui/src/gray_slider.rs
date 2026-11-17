@@ -5,6 +5,7 @@ use egui_phosphor::regular as ic;
 
 use crate::i18n::tr;
 use crate::theme::Tokens;
+use crate::widgets::value_header;
 
 const BAR_HEIGHT: f32 = 8.0;
 const BAR_ROUNDING: f32 = 2.0;
@@ -17,16 +18,18 @@ const MIN_BAR_WIDTH: f32 = KNOB_RADIUS * 4.0;
 /// `label` and `value` over a black-to-white bar and an Invert value button: `Some(merge)` on every frame that changes it, as [`crate::widgets::slider_edit`]
 pub(crate) fn gray_slider(ui: &mut Ui, label: &str, value: &mut f32) -> Option<bool> {
     let tokens = Tokens::get(ui.ctx());
+    let (field, typed) = value_header(ui, label, value, 0.0..=1.0, 2);
     ui.horizontal(|ui| {
-        ui.label(label);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(format!("{value:.2}")));
-    });
-    ui.horizontal(|ui| {
-        let mut edit = None;
+        let mut edit = typed;
         let button_width = ui.spacing().interact_size.y;
         let width = (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(MIN_BAR_WIDTH);
         let (rect, response) = ui.allocate_exact_size(vec2(width, KNOB_RADIUS * 2.0 + KNOB_STROKE * 2.0), Sense::click_and_drag());
         let bar = Rect::from_center_size(rect.center(), vec2(rect.width() - KNOB_RADIUS * 2.0, BAR_HEIGHT));
+        if response.is_pointer_button_down_on() {
+            // A grab of the bar ends typing, so the field shows the dragged value
+            ui.data_mut(|data| data.remove_temp::<String>(field));
+            ui.memory_mut(|memory| memory.surrender_focus(field));
+        }
         if let Some(pointer) = response.interact_pointer_pos().filter(|_| response.dragged() || response.clicked()) {
             *value = ((pointer.x - bar.left()) / bar.width().max(1.0)).clamp(0.0, 1.0);
             edit = Some(response.dragged() && !response.drag_started());

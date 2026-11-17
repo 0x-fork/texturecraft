@@ -669,14 +669,16 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
             EffectKind::Filter(_) if swaps_filter => {}
             EffectKind::Filter(filter) => crate::filter_lib::apply(params, filter, CMD)?,
             EffectKind::Fill { source, projection } => {
+                // `uniform` picks the source, so it outranks settings that would edit the current pattern
+                let uniform = f32p(params, "uniform").filter(|_| strp(params, "procedural").is_none());
                 if let Some(anchor) = anchor {
                     *source = anchor;
                 } else if let Some(image) = image {
                     *source = image;
+                } else if let Some(value) = uniform {
+                    *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 } else if let Some(pattern) = fill_pattern(CMD, params, source)? {
                     *source = pattern;
-                } else if let Some(value) = f32p(params, "uniform") {
-                    *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 } else if let Some(value) = f32p(params, "value")
                     && matches!(source, Source::Uniform(_) | Source::Anchor { .. } | Source::Image { .. })
                 {

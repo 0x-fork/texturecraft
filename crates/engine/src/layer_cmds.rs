@@ -425,6 +425,7 @@ fn fill_source_from(
         return Err(bad(CMD, "the channel has no pattern: give `procedural` with its settings"));
     };
 
+    crate::procedural_params::pattern_basics_from(params, &mut pattern);
     crate::procedural_params::pattern_settings_from(CMD, params, &mut pattern)?;
     Ok(Some(Source::Procedural { pattern, low, high }))
 }

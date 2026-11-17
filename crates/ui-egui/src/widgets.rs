@@ -29,10 +29,10 @@ pub fn slider_edit(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::R
     slider_inner(ui, label, value, range, decimals).1
 }
 
-fn slider_inner(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, decimals: usize) -> (Response, Option<bool>) {
+/// The row above a slider's track, `label` and `value` as a field to type in: the field's id, and `Some(false)` on the frame a typed value replaces `value`
+pub(crate) fn value_header(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, decimals: usize) -> (egui::Id, Option<bool>) {
     let tokens = Tokens::get(ui.ctx());
     let (minimum, maximum) = (*range.start(), *range.end());
-    let width = ui.available_width();
     let font = egui::TextStyle::Body.resolve(ui.style());
     let value_width = [minimum, maximum]
         .into_iter()
@@ -78,6 +78,13 @@ fn slider_inner(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::Rang
             .inner
         })
         .inner;
+    (field, edit)
+}
+
+fn slider_inner(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::RangeInclusive<f32>, decimals: usize) -> (Response, Option<bool>) {
+    let (minimum, maximum) = (*range.start(), *range.end());
+    let width = ui.available_width();
+    let (field, mut edit) = value_header(ui, label, value, range, decimals);
     let (rect, mut response) = ui.allocate_exact_size(vec2(width, 14.0), Sense::click_and_drag());
     if response.is_pointer_button_down_on() {
         ui.data_mut(|data| data.remove_temp::<String>(field));

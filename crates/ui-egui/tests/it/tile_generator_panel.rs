@@ -2,7 +2,7 @@
 
 use egui::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{Queryable, by};
 use serde_json::json;
 use texturecraft_engine::core::{EffectKind, LayerId, Procedural, ProceduralKind, Source, TileGenerator};
 use texturecraft_engine::{ViewMode, execute};
@@ -154,6 +154,42 @@ fn an_amount_drag_is_one_undo_step_and_restore_defaults_puts_the_tiles_back() {
     assert_eq!(*pattern(&harness, effect).tile.unwrap(), TileGenerator::default());
 }
 
+/// The gray rows take a typed value, so they can be set without a pointer
+#[test]
+fn a_gray_value_typed_in_its_field_applies() {
+    let (mut harness, effect) = harness(false);
+    execute(&mut harness.state_mut().session, "effect.set", &json!({"effect": effect.0, "procedural": "Tile Generator"})).unwrap();
+    harness.run_steps(3);
+    // A section's title can also be a control's label above it: the title is the last one
+    harness.get_all_by_label("Color").last().unwrap().scroll_to_me();
+    harness.run_steps(12);
+    harness.get_all_by_label("Color").last().unwrap().click();
+    harness.run_steps(6);
+    harness.get_by_label("Background").scroll_to_me();
+    harness.run_steps(12);
+    let field = |harness: &Harness<'_, TextureCraftApp>| {
+        let row = harness.get_by_label("Background").rect().center().y;
+        harness.get_all(by().role(Role::TextInput)).find(|node| (node.rect().center().y - row).abs() < 4.0).unwrap().rect().center()
+    };
+
+    let at = field(&harness);
+    harness.drag_at(at);
+    harness.drop_at(at);
+    harness.run_steps(2);
+    for key in [egui::Key::End, egui::Key::Backspace, egui::Key::Backspace, egui::Key::Backspace, egui::Key::Backspace] {
+        harness.key_press(key);
+        harness.run_steps(1);
+    }
+    for character in "0.5".chars() {
+        harness.event(egui::Event::Text(character.to_string()));
+        harness.run_steps(1);
+    }
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(3);
+
+    assert_eq!(pattern(&harness, effect).tile.unwrap().background, 0.5);
+}
+
 #[test]
 #[ignore = "requires a GPU adapter and TC_UI_SNAPSHOTS"]
 fn tile_generator_snapshots() {
@@ -180,6 +216,13 @@ fn tile_generator_snapshots() {
         harness.render().unwrap().save(directory.join(format!("tile-panel-{name}.png"))).unwrap();
     }
     harness.state_mut().ui.prefs.brightness = Brightness::Dark;
+
+    // Open, the section also holds a menu labelled "Resolution": its title is the first one
+    harness.get_by_label("Resolution").click();
+    harness.run_steps(6);
+    harness.render().unwrap().save(directory.join("tile-resolution.png")).unwrap();
+    harness.get_all_by_label("Resolution").next().unwrap().click();
+    harness.run_steps(6);
 
     for (sections, name) in [(["Pattern", "Size"], "pattern-size"), (["Position", "Rotation"], "position-rotation")] {
         for section in sections {

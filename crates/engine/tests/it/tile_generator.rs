@@ -65,6 +65,18 @@ fn tile_settings_alone_edit_the_channels_pattern() {
 }
 
 #[test]
+fn tile_settings_with_a_seed_edit_both() {
+    let mut session = session();
+    let layer = tile_fill(&mut session);
+
+    execute(&mut session, "layer.fill.set", &json!({"channel": "baseColor", "tile": {"amount": [3, 3]}, "seed": 9, "invert": true})).unwrap();
+
+    let pattern = base_color_pattern(&session, layer);
+    assert_eq!(tile(&pattern).amount, [3, 3]);
+    assert_eq!((pattern.seed, pattern.invert), (9, true), "the seed and invert beside a tile setting are applied, not dropped");
+}
+
+#[test]
 fn picking_the_tile_generator_again_keeps_its_settings() {
     let mut session = session();
     let layer = tile_fill(&mut session);
@@ -139,6 +151,18 @@ fn a_mask_fill_picks_and_edits_a_pattern_with_effect_set() {
     execute(&mut session, "effect.set", &json!({"effect": effect, "uniform": 0.3})).unwrap();
     let Some((_, edited)) = session.doc.project.effect(LayerId(effect)) else { panic!("the mask fill is gone") };
     assert!(matches!(&edited.kind, EffectKind::Fill { source: Source::Uniform(value), .. } if *value == [0.3; 3]), "a uniform pick reads the value again");
+}
+
+#[test]
+fn a_uniform_pick_outranks_pattern_edits_on_a_mask_fill() {
+    let mut session = session();
+    let effect = mask_fill(&mut session);
+    execute(&mut session, "effect.set", &json!({"effect": effect, "procedural": "Tile Generator"})).unwrap();
+
+    execute(&mut session, "effect.set", &json!({"effect": effect, "uniform": 0.3, "seed": 4})).unwrap();
+
+    let Some((_, edited)) = session.doc.project.effect(LayerId(effect)) else { panic!("the mask fill is gone") };
+    assert!(matches!(&edited.kind, EffectKind::Fill { source: Source::Uniform(value), .. } if *value == [0.3; 3]), "the fill reads the value, not the pattern");
 }
 
 #[test]

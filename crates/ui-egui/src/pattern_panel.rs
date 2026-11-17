@@ -11,7 +11,7 @@ use crate::TextureCraftApp;
 use crate::dock::{image_drop, image_menu};
 use crate::i18n::{tr, trf};
 use crate::pattern_target::PatternTarget;
-use crate::resource_panel::{ATTRIBUTE_KEY_WIDTH, NOTE_FONT_SIZE, factor_label, random_seed};
+use crate::resource_panel::{ATTRIBUTE_KEY_WIDTH, NOTE_FONT_SIZE, factor_label, output_size_label, random_seed};
 use crate::theme::Tokens;
 use crate::tile_edits::TileEdits;
 use crate::widgets::{combo, section, slider_edit};
@@ -108,11 +108,11 @@ fn resolution(app: &mut TextureCraftApp, ui: &mut Ui, target: &PatternTarget, pa
     })
     .on_hover_text(tr("Scales the base resolution: below 1 the pattern is drawn coarser and smoothed back up."));
 
-    let Ok(texture_set) = app.session.doc.project.texture_set(app.session.ts()).map(|set| set.resolution) else { return };
-    let size = current.output_size(texture_set, texture_set);
+    let Ok(texture_set) = app.session.doc.project.texture_set(app.session.ts()) else { return };
+    let size_label = output_size_label(&current, texture_set);
     ui.horizontal(|ui| {
         ui.label(RichText::new(tr("Output size")).color(tokens.text_dim));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(format!("{size} × {size}")));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(size_label));
     });
 }
 

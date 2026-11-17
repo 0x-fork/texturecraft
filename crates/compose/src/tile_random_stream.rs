@@ -51,3 +51,35 @@ impl TileRandomStream {
         (hash >> (u32::BITS - DRAW_BITS)) as f32 / (1u32 << DRAW_BITS) as f32
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A draw keeps 24 bits, so `bits / 2^24` is the value exactly
+    fn exact(bits: u32) -> f32 {
+        bits as f32 / (1u32 << DRAW_BITS) as f32
+    }
+
+    /// Saved projects keep only the seed and the settings, so a changed draw would move the tiles of existing textures
+    #[test]
+    fn draws_stay_the_values_saved_projects_were_made_with() {
+        assert_eq!(TileRandomStream::Luminance.draw(0, 0), exact(6_969_297));
+        assert_eq!(TileRandomStream::Rotation.draw(1, 7), exact(11_123_133));
+        assert_eq!(TileRandomStream::Input.draw(u32::MAX, u32::MAX), exact(6_943_220));
+    }
+
+    #[test]
+    fn draws_are_below_one_and_differ_by_seed_stream_and_index() {
+        let first = TileRandomStream::Scale.draw(3, 5);
+
+        assert_eq!(first, TileRandomStream::Scale.draw(3, 5), "the same seed, stream and index draw the same value");
+        assert_ne!(first, TileRandomStream::Scale.draw(4, 5));
+        assert_ne!(first, TileRandomStream::Offset.draw(3, 5));
+        assert_ne!(first, TileRandomStream::Scale.draw(3, 6));
+        for index in 0..1000 {
+            let value = TileRandomStream::Mask.draw(index, index);
+            assert!((0.0..1.0).contains(&value), "draw {index} is {value}");
+        }
+    }
+}
