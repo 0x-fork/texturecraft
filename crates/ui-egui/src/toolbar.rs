@@ -293,7 +293,11 @@ fn tool_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui, tokens: &Tokens) 
                 path_controls(app, ui);
             }
         }
-        Tool::PolygonFill => fill_mode_buttons(app, ui),
+        Tool::PolygonFill => {
+            fill_mode_buttons(app, ui);
+            ui.separator();
+            crate::symmetry::toolbar_controls(app, ui);
+        }
         Tool::ColorPicker => {
             ui.label(RichText::new(tr("Click the mesh to pick its material into the brush")).color(tokens.text_dim));
         }
@@ -341,6 +345,7 @@ pub fn path_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let (closed, fill) = (path.closed, path.fill);
     let selected = path.selected.is_some_and(|i| i < path.points.len());
     let has_points = !path.points.is_empty();
+    let corner = path.selected.is_some_and(|i| path.is_corner(i));
     if icon_button(ui, ic::POLYGON, tr("Closed path"), closed, button_size).clicked() {
         app.session.set_path_closed(!closed);
     }
@@ -348,6 +353,11 @@ pub fn path_controls(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let fill_tip = if closed { tr("Fill the closed path (lasso)") } else { tr("Fill the path (close it first)") };
     if icon_button(ui, ic::PAINT_BUCKET, fill_tip, fill, button_size).clicked() {
         app.session.set_path_fill(!fill);
+    }
+
+    if ui.add_enabled_ui(selected, |ui| icon_button(ui, ic::ANGLE, tr("Corner point (Shift+click places one)"), corner, button_size)).inner.clicked() {
+        // The command repaints an edited path and is one undo step
+        app.run("path.corner", json!({}));
     }
 
     if ui.add_enabled_ui(selected, |ui| icon_button(ui, ic::BACKSPACE, tr("Remove point"), false, button_size)).inner.clicked() {

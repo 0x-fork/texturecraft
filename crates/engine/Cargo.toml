@@ -26,5 +26,6 @@ thiserror = { workspace = true }
 rustix = { workspace = true }
 
 [dev-dependencies]
+craft-dds = { workspace = true }
 image = { workspace = true }
 zip = { workspace = true }

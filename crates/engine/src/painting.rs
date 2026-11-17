@@ -4,16 +4,23 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use texturecraft_compose::PaintTarget;
-use texturecraft_core::{Channel, Effect, EffectKind, LayerId, LayerKind, Mask, MaskBackground};
+use texturecraft_core::{Channel, Effect, EffectKind, LayerId, LayerKind, Mask, MaskBackground, Source};
 use texturecraft_geom::glam::Vec2;
 use texturecraft_paint::{
     CommitSource, EyeDepth, PickCtx, Pickup, PickupMode, RasterCtx, Shape, Staging, Stroke, StrokeCanvas, SurfaceHit, commit_layer, commit_mask, pick,
     rasterize,
 };
 
-use crate::session::{ActiveStroke, CloneFrom, Session, StackTarget, Tool};
+use crate::session::{ActiveStroke, CloneFrom, QUICK_MASK_STROKE_LABEL, Session, StackTarget, Tool, history_label, stroke_template};
 use crate::uv_stroke_state::UvStrokeState;
+use crate::uv_symmetry::UvMirror;
 use crate::{EngineError, Result};
+
+/// The brush size (as in `BrushSettings::size`) at which a brush material's pattern has its natural size; a smaller brush makes the pattern smaller in proportion
+pub const BRUSH_PATTERN_SIZE: f32 = 0.1;
+
+/// Brush size floor for the pattern scale
+const MIN_PATTERN_BRUSH_SIZE: f32 = 0.0005;
 
 /// Shortest distance between 2D view stamps, so a stamp with no radius (a pen at zero pressure) can't stall a stroke.
 const MIN_UV_STAMP_STEP: f32 = 1e-5;
@@ -103,6 +110,29 @@ impl Session {
         }
     }
 
+    /// Whether the stroke the selection starts paints a mask (the layer's mask, or a paint or
+    /// filter sublayer inside it).
+    fn paints_mask(&self) -> bool {
+        match self.target {
+            StackTarget::Content => false,
+            StackTarget::Mask => true,
+            StackTarget::Effect(effect) => {
+                let project = &self.doc.project;
+                project.effect(effect).and_then(|(owner, _)| project.layers.get(&owner)).is_some_and(|l| !l.content_effects.iter().any(|e| e.id == effect))
+            }
+        }
+    }
+
+    /// The mask that paint effect `effect` belongs to as values per texel (zero everywhere when
+    /// the layer has no mask yet), for a clone or smudge stroke to read.
+    fn mask_values_before(&self, ts: usize, effect: LayerId) -> Option<texturecraft_texel::TileImage> {
+        let (owner, _) = self.doc.project.effect(effect)?;
+        let cache = self.caches.get(ts)?;
+        let tiles: Vec<(u32, u32)> = cache.covered_tiles.iter().copied().collect();
+        let empty = || texturecraft_texel::TileImage::new(cache.gbuf.width, cache.gbuf.height, 1);
+        Some(self.with_inputs(ts, |inputs| texturecraft_compose::mask_values(inputs, owner, &tiles)).unwrap_or_else(empty))
+    }
+
     /// What a stroke paints while non-paint effect `effect` of layer `owner` is selected: the
     /// nearest paint effect below it in the same stack, else the paint layer's own pixels (for
     /// content) or a new paint effect inserted just below it (for a mask).
@@ -131,6 +161,34 @@ impl Session {
         }
         mask.effects.insert(at, Effect::new(eid, EffectKind::Paint));
         Ok(PaintTarget::Mask(eid))
+    }
+
+    /// The pattern of the brush's material (`tool.material`) as a pickup over the texture, for the
+    /// channels in `values`: the material's fill, evaluated with the compose fill code tri-planar
+    /// in world space, so it stays fixed to the surface and continuous across stamps and strokes.
+    /// Its size follows the brush size ([`BRUSH_PATTERN_SIZE`] is the natural size). Channels the
+    /// material lacks carry the tool's value. None without a brush material.
+    fn brush_pattern(&mut self, values: &BTreeMap<Channel, [f32; 3]>, size: (u32, u32)) -> Option<Pickup> {
+        let id = self.tool.material.clone()?;
+        let mut sources = crate::materials::brush_sources(&id)?;
+        sources.retain(|(channel, _)| values.contains_key(channel));
+        for (channel, value) in values {
+            if !sources.iter().any(|(set, _)| set == channel) {
+                sources.push((*channel, Source::Uniform(*value)));
+            }
+        }
+        let ts = self.ts();
+        self.update();
+        let gbuf = self.caches.get(ts)?.gbuf.clone();
+        let next_id = self.doc.project.next_id;
+        let layer_id = self.doc.project.alloc_id();
+        let scale = BRUSH_PATTERN_SIZE / self.tool.brush.size.max(MIN_PATTERN_BRUSH_SIZE);
+        let layer = crate::materials::brush_fill(layer_id, sources, scale);
+        self.doc.project.insert_layer(ts, layer, None, false).ok()?;
+        let flat = self.flatten(ts, layer_id);
+        let _ = self.doc.project.remove_layer(layer_id);
+        self.doc.project.next_id = next_id;
+        Some(Pickup::from_layer(PickupMode::Clone { offset: [0; 2] }, &flat?, size, gbuf, values.keys().copied()))
     }
 
     fn stroke_values(&self, target: PaintTarget) -> BTreeMap<Channel, [f32; 3]> {
@@ -168,7 +226,7 @@ impl Session {
         }
         // Cloning from the selected layer reads that layer alone.
         let layer_source = match self.selected_layer() {
-            Some(id) if pickup.is_some() && tool == Tool::Clone && self.tool.clone_from == CloneFrom::Layer => {
+            Some(id) if pickup.is_some() && tool == Tool::Clone && self.tool.clone_from == CloneFrom::Layer && !self.paints_mask() => {
                 Some(self.flatten(ts, id).ok_or_else(|| EngineError::Other("clone from a paint or fill layer (folders have no content of their own)".into()))?)
             }
             _ => None,
@@ -186,11 +244,14 @@ impl Session {
             }
         };
         let values = target.map(|t| self.stroke_values(t)).unwrap_or_default();
+        // Clone and smudge on a mask read the mask as it was before the stroke.
+        let mask_source = match target {
+            Some(PaintTarget::Mask(effect)) if pickup.is_some() => self.mask_values_before(ts, effect),
+            _ => None,
+        };
         let stencil = if tool == Tool::Projection && !quick_mask { self.capture_stencil(viewport) } else { None };
         let problem = if !erase && values.is_empty() && matches!(target, Some(PaintTarget::Layer(_))) {
             Some("no channel enabled to paint: enable channels in the tool's material")
-        } else if pickup.is_some() && matches!(target, Some(PaintTarget::Mask(_))) {
-            Some("the Clone and Smudge tools paint layer content: select the layer instead of its mask")
         } else if tool == Tool::Projection && !quick_mask && stencil.is_none() && !uv_mode {
             Some("the Projection tool needs a stencil: pick an image in the tool properties (tool.stencil)")
         } else {
@@ -201,12 +262,7 @@ impl Session {
             return Err(EngineError::Other(msg.into()));
         }
         let depth = (!uv_mode).then(|| self.eye_depth(viewport));
-        let mut brush = self.tool.brush.clone();
-        if tool == Tool::Smudge {
-            // shortcut: smudge drags one stamp trail; mirrored trails would need one pickup each.
-            brush.symmetry = Default::default();
-        }
-        let stroke = Stroke::new(&brush, &self.mesh);
+        let stroke = Stroke::new(&self.tool.brush, &self.mesh);
         let mut canvas = StrokeCanvas::new(size.0, size.1);
         if !quick_mask {
             canvas.limit = self.stroke_limit(ts, size);
@@ -220,24 +276,32 @@ impl Session {
                 }
                 m => m,
             };
-            canvas.pickup = Some(match &layer_source {
-                Some(flat) => Pickup::from_layer(mode, flat, size, cache.gbuf.clone(), values.keys().copied()),
-                None => Pickup::new(mode, cache.composite.clone(), cache.gbuf.clone(), values.keys().copied()),
-            });
+            let mut pickup = match (&layer_source, mask_source) {
+                // On a mask the stroke reads the mask's own values.
+                (_, Some(values)) => Pickup::from_mask(mode, values, cache.gbuf.clone()),
+                (Some(flat), None) => Pickup::from_layer(mode, flat, size, cache.gbuf.clone(), values.keys().copied()),
+                (None, None) => Pickup::new(mode, cache.composite.clone(), cache.gbuf.clone(), values.keys().copied()),
+            };
+            if tool == Tool::Smudge && stroke.settings.symmetry.any() {
+                // Every mirrored copy of a smudge drags its own trail, in the 3D and the 2D view.
+                pickup.isolate_copies();
+            }
+            canvas.pickup = Some(pickup);
             if tool == Tool::Clone
+                && self.tool.clone_aligned
                 && let Some(src) = self.tool.clone_source.as_mut()
             {
                 src.offset.get_or_insert(offset);
             }
         }
+        if canvas.pickup.is_none() && tool == Tool::Paint && matches!(target, Some(PaintTarget::Layer(_))) {
+            canvas.pickup = self.brush_pattern(&values, size);
+        }
         let label = if quick_mask {
-            "Quick mask stroke"
-        } else if erase {
-            "Eraser stroke"
-        } else if matches!(target, Some(PaintTarget::Mask(_))) {
-            "Mask stroke"
+            QUICK_MASK_STROKE_LABEL.to_string()
         } else {
-            "Paint stroke"
+            let on_mask = matches!(target, Some(PaintTarget::Mask(_)));
+            history_label(stroke_template(tool, on_mask), &self.stroke_layer_name())
         };
         self.stroke = Some(ActiveStroke {
             ts,
@@ -252,10 +316,18 @@ impl Session {
             erase,
             stencil,
             before,
-            label: label.to_string(),
+            label,
             staging: Staging::default(),
         });
         Ok(())
+    }
+
+    /// The name of the layer a stroke paints on (the owner layer when an effect is selected)
+    fn stroke_layer_name(&self) -> String {
+        let p = &self.doc.project;
+        let Some(id) = self.selected_layer() else { return String::new() };
+        let owner = p.effect(id).map_or(id, |(owner, _)| owner);
+        p.layer(owner).map(|l| l.name.clone()).unwrap_or_default()
     }
 
     /// Clone / smudge pickup for the current tool, with the clone offset (source minus
@@ -266,7 +338,9 @@ impl Session {
             Tool::Clone => {
                 let src =
                     self.tool.clone_source.ok_or_else(|| EngineError::Other("set a clone source first: V + click on the mesh (tool.cloneSource)".into()))?;
-                let offset = match (src.offset, first_uv) {
+                // Not aligned: every stroke measures the offset from its own first point.
+                let kept = if self.tool.clone_aligned { src.offset } else { None };
+                let offset = match (kept, first_uv) {
                     (Some(o), _) => o,
                     (None, Some(p)) => [src.uv[0] - p.x, src.uv[1] - p.y],
                     (None, None) => return Err(EngineError::Other("start the clone stroke on the mesh".into())),
@@ -284,6 +358,7 @@ impl Session {
             alpha: b.alpha,
             image: b.alpha_image.as_ref().and_then(|n| images.get(n)).map(|i| &**i),
             library: b.alpha_library.as_deref().and_then(texturecraft_paint::alphas::find).map(|a| a.image()),
+            params: b.alpha_params,
             level: 0,
         }
     }
@@ -360,6 +435,12 @@ impl Session {
         };
         let length = segment.length();
         let shape = Self::shape(&self.images, settings);
+
+        // The copies of each dab: the Clone tool's pickup offset is fixed, so it paints none
+        let material = self.doc.project.texture_sets.get(active.ts).map(|t| t.material).unwrap_or(0);
+        let mirror = (self.tool.tool != Tool::Clone)
+            .then(|| UvMirror::new(&settings.symmetry, active.stroke.center(), &self.mesh, &self.bvh, &cache.gbuf, material))
+            .flatten();
         let mut batch = Vec::new();
         let mut stamped = 0;
         while distance <= length && stamped < MAX_UV_STAMPS_PER_SAMPLE {
@@ -368,11 +449,18 @@ impl Session {
             while distance <= length && batch.len() < batch_size {
                 let center = start + segment * (distance / length.max(f32::MIN_POSITIVE));
                 let seed = progress.stamps.wrapping_add((stamped + batch.len()) as u32);
-                batch.push(texturecraft_paint::UvStamp { center, radius, angle, flow: settings.flow, hardness: settings.hardness, seed });
+                batch.push(texturecraft_paint::UvStamp { center, radius, angle, flow: settings.flow, hardness: settings.hardness, seed, source: None });
                 distance += step;
             }
 
             stamped += batch.len();
+            if let Some(mirror) = &mirror {
+                for index in 0..batch.len() {
+                    if let Some(stamp) = batch.get(index).copied() {
+                        mirror.add_copies(&stamp, &mut batch);
+                    }
+                }
+            }
             texturecraft_paint::rasterize_uv(&mut active.canvas, &cache.gbuf, shape, &batch);
         }
 
@@ -566,6 +654,7 @@ impl Session {
         for channel in cache.composite.channels.keys() {
             let value = cache.composite.value(*channel, x, y);
             self.tool.values.insert(*channel, value);
+            self.tool.material = None;
             picked.insert(*channel, value);
         }
         Ok(picked)
@@ -576,17 +665,30 @@ impl Session {
         self.stroke.as_ref().map(|s| s.canvas.dirty.len()).unwrap_or(0)
     }
 
-    /// Where the Clone tool reads for destination `at` (texture coordinates) as a surface
-    /// point: the source itself until the first stroke fixes the offset, or when `at` is None.
-    pub fn clone_source_point(&self, at: Option<Vec2>) -> Option<texturecraft_geom::glam::Vec3> {
+    /// Where the Clone tool reads for destination `at` (texture coordinates), in texture
+    /// coordinates: the source itself until the first stroke fixes the offset, or when `at` is
+    /// None. None without a source or when that spot is outside the texture. The far edge
+    /// (1.0) counts as inside, so the 2D marker shows a source set on the edge; reads of the
+    /// surface use `clone_source_uv`, which stays half-open.
+    pub fn clone_source_marker_uv(&self, at: Option<Vec2>) -> Option<Vec2> {
         let src = self.tool.clone_source?;
         let uv = match (src.offset, at) {
             (Some(o), Some(p)) => Vec2::new(p.x + o[0], p.y + o[1]),
             _ => Vec2::from(src.uv),
         };
-        if !((0.0..1.0).contains(&uv.x) && (0.0..1.0).contains(&uv.y)) {
-            return None;
-        }
+        ((0.0..=1.0).contains(&uv.x) && (0.0..=1.0).contains(&uv.y)).then_some(uv)
+    }
+
+    /// Like `clone_source_marker_uv`, but half-open: None on the far edge, where the G-buffer
+    /// has no texel.
+    pub fn clone_source_uv(&self, at: Option<Vec2>) -> Option<Vec2> {
+        self.clone_source_marker_uv(at).filter(|uv| uv.x < 1.0 && uv.y < 1.0)
+    }
+
+    /// Where the Clone tool reads for destination `at` (texture coordinates) as a surface
+    /// point: the source itself until the first stroke fixes the offset, or when `at` is None.
+    pub fn clone_source_point(&self, at: Option<Vec2>) -> Option<texturecraft_geom::glam::Vec3> {
+        let uv = self.clone_source_uv(at)?;
         let g = &self.caches.get(self.ts())?.gbuf;
         let (x, y) = ((uv.x * g.width as f32) as usize, (uv.y * g.height as f32) as usize);
         Some(g.surface(&self.mesh, y * g.width as usize + x)?.pos)

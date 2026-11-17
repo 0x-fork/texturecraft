@@ -765,6 +765,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-dds"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=0e116906d050000a4d85e1279ccd62b9e220bbb3#0e116906d050000a4d85e1279ccd62b9e220bbb3"
+
+[[package]]
 name = "craft-dialogs"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=390fe98b0dd3fb84db7c3af7cbd958db4e8cc585#390fe98b0dd3fb84db7c3af7cbd958db4e8cc585"
@@ -4456,6 +4461,7 @@ dependencies = [
 name = "texturecraft-engine"
 version = "0.6.1"
 dependencies = [
+ "craft-dds",
  "epaint_default_fonts",
  "image",
  "rayon",
@@ -4479,6 +4485,7 @@ version = "0.6.1"
 dependencies = [
  "base64 0.22.1",
  "craft-cms",
+ "craft-dds",
  "craft-materialx",
  "craft-mcmat",
  "craft-mesh",

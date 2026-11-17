@@ -114,6 +114,20 @@ fn sets_with_the_same_file_name_warn_instead_of_overwriting() {
 }
 
 #[test]
+fn a_list_of_sets_in_one_command_finds_file_names_they_share() {
+    let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+    execute(&mut s, "textureSet.rename", &json!({"ts": 0, "name": "a b"})).unwrap();
+    execute(&mut s, "textureSet.rename", &json!({"ts": 1, "name": "A_B"})).unwrap();
+    let dir = temp("clash_list");
+    let sets: Vec<usize> = (0..s.set_count()).collect();
+    let r = execute(&mut s, "file.exportTextures", &json!({"dir": dir.display().to_string(), "preset": OPENPBR, "ts": sets, "materialX": true})).unwrap();
+    assert_eq!(files(&r).iter().filter(|f| f.ends_with(".mtlx")).count(), s.set_count() - 1, "{r}");
+    assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("\"A_B\"")), "{r}");
+    let bad = execute(&mut s, "file.exportTextures", &json!({"dir": dir.display().to_string(), "preset": OPENPBR, "ts": [0, 99]}));
+    assert!(bad.is_err(), "an index past the last set is refused");
+}
+
+#[test]
 fn udim_sets_use_the_udim_token() {
     let mut s = Session::new_project("t", primitives::udim_plane(), "builtin:udim_plane", None, 128).unwrap();
     let dir = temp("udim");
@@ -155,4 +169,30 @@ fn the_directx_warning_comes_once_and_only_with_a_normal_map() {
     let dir = temp("gl");
     let r = export(&mut s, &dir, OPENPBR, true);
     assert!(!r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("DirectX")), "{r}");
+}
+
+#[test]
+fn the_export_plan_lists_the_materials_the_export_writes() {
+    let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+    let plan = |s: &mut Session, preset: &str, mtlx: Option<bool>| {
+        let mut p = json!({"preset": preset, "ts": "all"});
+        if let Some(on) = mtlx {
+            p["materialX"] = json!(on);
+        }
+        let v = execute(s, "export.plan", &p).unwrap();
+        v.as_array().unwrap().iter().map(|f| (f["file"].as_str().unwrap().to_string(), f["format"].as_str().unwrap().to_string())).collect::<Vec<_>>()
+    };
+    let dir = temp("plan");
+    let written: Vec<String> = files(&export(&mut s, &dir, OPENPBR, true))
+        .iter()
+        .filter(|f| f.ends_with(".mtlx"))
+        .map(|f| f.rsplit(['/', '\\']).next().unwrap().to_string())
+        .collect();
+    assert_eq!(written.len(), s.set_count());
+    let listed: Vec<String> = plan(&mut s, OPENPBR, Some(true)).into_iter().filter(|(_, fmt)| fmt == "mtlx").map(|(f, _)| f).collect();
+    assert_eq!(listed, written);
+    assert!(!plan(&mut s, OPENPBR, None).iter().any(|(f, _)| f.ends_with(".mtlx")));
+    assert!(!plan(&mut s, OPENPBR, Some(false)).iter().any(|(f, _)| f.ends_with(".mtlx")));
+    // A template with no OpenPBR maps writes no material, so it lists none.
+    assert!(!plan(&mut s, "Document channels + Normal + AO", Some(true)).iter().any(|(f, _)| f.ends_with(".mtlx")));
 }

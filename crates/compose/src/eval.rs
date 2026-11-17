@@ -21,7 +21,7 @@ use texturecraft_texel::{DilationMap, TILE, TILE_AREA, TileImage, from_u16, nois
 use crate::below::{Band, BelowCache, Level, StackKey};
 use crate::curvature_sizes::CurvatureSizes;
 use crate::held_fields::HeldFields;
-use crate::pattern::{Coords, decal_uv, image_samples, procedural, world_noise};
+use crate::pattern::{Coords, decal_uv_symmetric, image_samples, procedural, world_noise};
 use crate::store::{BakedMaps, ImageStore, PixelStore, decode};
 
 const NCH: usize = Channel::ALL.len();
@@ -71,6 +71,10 @@ impl Stencil {
         Some((rgb, s[3].clamp(0.0, 1.0)))
     }
 }
+
+/// The channel under which a clone or smudge stroke on a mask carries its mask values (the mask
+/// has no channels of its own; any scalar channel works).
+pub const MASK_CHANNEL: Channel = Channel::Roughness;
 
 /// The stroke being drawn, shown before it is committed.
 #[derive(Clone, Debug)]
@@ -1269,8 +1273,8 @@ struct Texel<'a, 'b> {
     stroke: f32,
     /// `eval` stops when it reaches this layer.
     stop: Option<LayerId>,
-    /// Stack values recorded by the anchor points evaluated so far.
-    anchors: Vec<(LayerId, Acc)>,
+    /// Stack values recorded by the anchor points evaluated so far; true marks a mask anchor (gray, not channel values).
+    anchors: Vec<(LayerId, Acc, bool)>,
     /// Where `eval` takes layer masks and content from.
     tape: Tape<'b>,
 }
@@ -1394,8 +1398,10 @@ impl<'a, 'b> Texel<'a, 'b> {
     /// position in the decal's frame (then sampled as UVs) and the decal's coverage.
     fn projected<'p>(&mut self, proj: &'p Projection) -> (Coords, &'p Projection, f32) {
         let c = self.coords();
+        let (lo, hi) = self.inp.bounds;
+        let center = (lo + hi) * 0.5;
         match proj {
-            Projection::Decal(d) => match self.world().and_then(|p| decal_uv(d, p, c.nrm)) {
+            Projection::Decal(d) => match self.world().and_then(|p| decal_uv_symmetric(d, p, c.nrm, center)) {
                 Some((uv, w)) => (Coords { uv, ..c }, &DECAL_UV, w),
                 None => (c, &DECAL_UV, 0.0),
             },
@@ -1417,11 +1423,35 @@ impl<'a, 'b> Texel<'a, 'b> {
         w * image.map_or(1.0, |img| img.sample(c.uv.x, c.uv.y)[3].clamp(0.0, 1.0))
     }
 
+    /// The stack value anchor point `anchor` recorded for `channel` (the channel default for an
+    /// anchor not evaluated yet)
+    fn anchored(&self, anchor: LayerId, channel: Channel) -> [f32; 3] {
+        let values = self.anchors.iter().rev().find(|(id, ..)| *id == anchor).and_then(|(_, values, _)| values.get(channel.index()).copied());
+        values.unwrap_or_else(|| channel.default_value())
+    }
+
+    /// Whether anchor point `anchor` sits in a mask, where every channel holds the mask's gray.
+    fn is_mask_anchor(&self, anchor: LayerId) -> bool {
+        self.anchors.iter().rev().find(|(id, ..)| *id == anchor).is_some_and(|(_, _, mask)| *mask)
+    }
+
     /// The value `source` gives this texel through `projection`, read as a channel of `kind`
     fn source(&mut self, source: &Source, projection: &Projection, kind: ChannelKind) -> [f32; 3] {
         match source {
             Source::Uniform(value) => *value,
-            Source::Procedural { pattern, low, high } => {
+            // A gradient map: on color channels the value picks a color along the stops
+            Source::Procedural { pattern, ramp, .. } if kind == ChannelKind::Color && !ramp.is_empty() => {
+                let (coords, projection, _) = self.projected(projection);
+                texturecraft_core::gradient(ramp, procedural(pattern, projection, &coords)).unwrap_or_default()
+            }
+            Source::Anchor { anchor, channel, ramp } if kind == ChannelKind::Color && !ramp.is_empty() => {
+                let value = self.anchored(*anchor, *channel);
+                // Signed values (height) span -1..1; a mask anchor's gray already spans 0..1 in every channel
+                let signed = channel.kind() == ChannelKind::Signed && !self.is_mask_anchor(*anchor);
+                let lightness = if signed { lum(value) * 0.5 + 0.5 } else { lum(value) };
+                texturecraft_core::gradient(ramp, lightness).unwrap_or_default()
+            }
+            Source::Procedural { pattern, low, high, .. } => {
                 let (coords, projection, _) = self.projected(projection);
                 let amount = procedural(pattern, projection, &coords);
                 mix3(*low, *high, amount)
@@ -1450,7 +1480,7 @@ impl<'a, 'b> Texel<'a, 'b> {
                     ChannelKind::Signed => [lum(rgb) * 2.0 - 1.0; 3],
                 }
             }
-            Source::Anchor { anchor, channel } => self.anchor_value(*anchor, *channel, kind),
+            Source::Anchor { anchor, channel, .. } => self.anchor_value(*anchor, *channel, kind),
         }
     }
 
@@ -1458,8 +1488,7 @@ impl<'a, 'b> Texel<'a, 'b> {
     /// where a scalar is needed). An anchor not evaluated yet (above this layer, hidden) reads the
     /// channel default.
     fn anchor_value(&self, anchor: LayerId, channel: Channel, kind: ChannelKind) -> [f32; 3] {
-        let value = self.anchors.iter().rev().find(|(id, _)| *id == anchor).and_then(|(_, channels)| channels.get(channel.index()).copied());
-        let value = value.unwrap_or_else(|| channel.default_value());
+        let value = self.anchored(anchor, channel);
         let needs_gray = matches!(channel.kind(), ChannelKind::Color | ChannelKind::NormalMap) && matches!(kind, ChannelKind::Scalar | ChannelKind::Signed);
         if needs_gray { [lum(value); 3] } else { value }
     }
@@ -1615,7 +1644,9 @@ impl<'a, 'b> Texel<'a, 'b> {
                             painted *= 1.0 - stroke;
                             coverage *= 1.0 - stroke;
                         } else {
-                            painted = preview.mask_value * stroke + painted * (1.0 - stroke);
+                            // Clone and smudge show the values they carry instead of the mask gray
+                            let deposited = preview.carried.get(&MASK_CHANNEL).map_or(preview.mask_value, |carried| from_u16(carried.get(self.x, self.y)[0]));
+                            painted = deposited * stroke + painted * (1.0 - stroke);
                             coverage = stroke + coverage * (1.0 - stroke);
                         }
                     }
@@ -1655,7 +1686,7 @@ impl<'a, 'b> Texel<'a, 'b> {
                 }
 
                 // Every channel of a mask anchor reads the mask's gray
-                EffectKind::Anchor => self.anchors.push((effect.id, [[value.clamp(0.0, 1.0); 3]; NCH])),
+                EffectKind::Anchor => self.anchors.push((effect.id, [[value.clamp(0.0, 1.0); 3]; NCH], true)),
 
                 // Content-only effects
                 EffectKind::Material(_) => {}
@@ -1704,14 +1735,14 @@ impl<'a, 'b> Texel<'a, 'b> {
                             }
                             _ => *acc,
                         };
-                        self.anchors.push((*a, rec));
+                        self.anchors.push((*a, rec, false));
                     }
                     continue;
                 }
                 _ => {}
             }
             for (a, _) in &n.anchors {
-                self.anchors.push((*a, *acc));
+                self.anchors.push((*a, *acc, false));
             }
         }
         false
@@ -2376,9 +2407,10 @@ pub fn pad_tiles(out: &mut Composite, dmap: &DilationMap, tiles: &[(u32, u32)]) 
     written
 }
 
-/// The layer mask as a square grayscale image, using nearest texels and black outside the mesh
+/// The layer mask over the whole texture set as `0..=1` values, row by row from the top (the
+/// orientation of the exported maps), `gbuf.width × gbuf.height` of them; black outside the mesh
 /// Returns None without an enabled mask
-pub fn mask_image(inputs: &Inputs, id: LayerId, size: u32) -> Option<Vec<u8>> {
+pub fn mask_texels(inputs: &Inputs, id: LayerId) -> Option<Vec<f32>> {
     let mask = layer_mask(inputs.project, id).filter(|mask| mask.enabled)?;
     let channels = inputs.project.texture_set(inputs.ts).map(|set| set.channel_list()).unwrap_or_default();
     let (width, height) = (inputs.gbuf.width, inputs.gbuf.height);
@@ -2388,34 +2420,83 @@ pub fn mask_image(inputs: &Inputs, id: LayerId, size: u32) -> Option<Vec<u8>> {
     prepare_mask_curvature_sizes(inputs, std::iter::once(mask));
 
     let fields = neighbourhood_fields(inputs, &channels, &coordinates);
-    let tiles: HashMap<(u32, u32), Vec<u8>> = coordinates
+    let tiles: HashMap<(u32, u32), Vec<f32>> = coordinates
         .par_iter()
         .map(|&tile| {
-            let mut values = vec![0u8; TILE_AREA];
+            let mut values = vec![0.0f32; TILE_AREA];
             for (offset, value) in mask_tile(inputs, id, mask, &channels, &fields, tile, 0..TILE_AREA) {
                 if let Some(destination) = values.get_mut(offset) {
-                    *destination = (value * 255.0 + 0.5) as u8;
+                    *destination = value;
                 }
             }
             (tile, values)
         })
         .collect();
 
-    let size = size.max(1);
-    let mut output = vec![0u8; (size * size) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let sample_x = (u64::from(x) * u64::from(width) / u64::from(size)) as u32;
-            let sample_y = (u64::from(y) * u64::from(height) / u64::from(size)) as u32;
-            if let Some(tile) = tiles.get(&(sample_x / TILE, sample_y / TILE))
-                && let Some(value) = tile.get(((sample_y % TILE) * TILE + sample_x % TILE) as usize)
-                && let Some(destination) = output.get_mut((y * size + x) as usize)
+    let mut output = vec![0.0f32; width as usize * height as usize];
+    for y in 0..height {
+        for x in 0..width {
+            if let Some(tile) = tiles.get(&(x / TILE, y / TILE))
+                && let Some(value) = tile.get(((y % TILE) * TILE + x % TILE) as usize)
+                && let Some(destination) = output.get_mut((y * width + x) as usize)
             {
                 *destination = *value;
             }
         }
     }
     Some(output)
+}
+
+/// The layer mask as a square grayscale image, using nearest texels and black outside the mesh
+/// Returns None without an enabled mask
+pub fn mask_image(inputs: &Inputs, id: LayerId, size: u32) -> Option<Vec<u8>> {
+    let texels = mask_texels(inputs, id)?;
+    let (width, height) = (inputs.gbuf.width, inputs.gbuf.height);
+    let size = size.max(1);
+    let mut output = vec![0u8; (size * size) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let sample_x = (u64::from(x) * u64::from(width) / u64::from(size)) as u32;
+            let sample_y = (u64::from(y) * u64::from(height) / u64::from(size)) as u32;
+            if let Some(value) = texels.get(sample_y as usize * width as usize + sample_x as usize)
+                && let Some(destination) = output.get_mut((y * size + x) as usize)
+            {
+                *destination = (value * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+    Some(output)
+}
+
+/// The layer mask as one-component values at the texture set's full resolution over `tiles`
+/// (uncovered texels read zero). Clone and smudge read it. Unlike [`mask_image`] it also reads a
+/// disabled mask; None when the layer has no mask.
+pub fn mask_values(inputs: &Inputs, id: LayerId, tiles: &[(u32, u32)]) -> Option<TileImage> {
+    let mask = layer_mask(inputs.project, id)?;
+    let channels = inputs.project.texture_set(inputs.ts).map(|set| set.channel_list()).unwrap_or_default();
+    let (width, height) = (inputs.gbuf.width, inputs.gbuf.height);
+
+    prepare_mask_curvature_sizes(inputs, std::iter::once(mask));
+
+    let fields = neighbourhood_fields(inputs, &channels, tiles);
+    let computed: Vec<((u32, u32), Vec<u16>)> = tiles
+        .par_iter()
+        .map(|&tile| {
+            let mut values = vec![0u16; TILE_AREA];
+            for (offset, value) in mask_tile(inputs, id, mask, &channels, &fields, tile, 0..TILE_AREA) {
+                if let Some(destination) = values.get_mut(offset) {
+                    *destination = to_u16(value.clamp(0.0, 1.0));
+                }
+            }
+            (tile, values)
+        })
+        .collect();
+
+    let mut image = TileImage::new(width, height, 1);
+    for ((tx, ty), values) in computed {
+        image.set_tile(tx, ty, Some(std::sync::Arc::new(values)));
+    }
+    Some(image)
 }
 
 /// Mask values at texture-set coordinates, in request order; None without an enabled mask
@@ -2861,7 +2942,7 @@ mod tests {
         let pattern = Procedural::new(ProceduralKind::Checker);
         mask.effects.push(Effect::new(
             eid,
-            EffectKind::Fill { source: Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3] }, projection: Projection::default() },
+            EffectKind::Fill { source: Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() }, projection: Projection::default() },
         ));
         f.project.layer_mut(id).unwrap().mask = Some(mask);
         let out = run(&f, None);
@@ -2911,7 +2992,7 @@ mod tests {
         let pattern = Procedural::new(ProceduralKind::Checker);
         mask.effects.push(Effect::new(
             effect,
-            EffectKind::Fill { source: Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3] }, projection: Projection::default() },
+            EffectKind::Fill { source: Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() }, projection: Projection::default() },
         ));
         fixture.project.layer_mut(layer).unwrap().mask = Some(mask);
 
@@ -2953,13 +3034,16 @@ mod tests {
         let lower = fill_layer(&mut fixture.project, [0.0; 3], 1.0);
         let LayerKind::Fill(fill) = &mut fixture.project.layer_mut(lower).unwrap().kind else { panic!("expected a fill layer") };
 
-        fill.sources.insert(Channel::BaseColor, Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] });
+        fill.sources.insert(
+            Channel::BaseColor,
+            Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() },
+        );
         let anchor = content_fx(&mut fixture, lower, EffectKind::Anchor);
         let upper = fill_layer(&mut fixture.project, [1.0; 3], 1.0);
         let mut mask = Mask::new(MaskBackground::Black);
         mask.effects.push(Effect::new(
             fixture.project.alloc_id(),
-            EffectKind::Fill { source: Source::Anchor { anchor, channel: Channel::BaseColor }, projection: Projection::default() },
+            EffectKind::Fill { source: Source::Anchor { anchor, channel: Channel::BaseColor, ramp: Vec::new() }, projection: Projection::default() },
         ));
         fixture.project.layer_mut(upper).unwrap().mask = Some(mask.clone());
         let texels: Vec<_> = (0..128).map(|x| (x, 63)).collect();
@@ -2981,7 +3065,7 @@ mod tests {
         fixture.gbuf = UvGBuffer::new(&fixture.mesh, 0, 128, 128);
         fixture.project.texture_sets[0].resolution = 128;
         let layer = fill_layer(&mut fixture.project, [1.0; 3], 1.0);
-        let checker = Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] };
+        let checker = Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() };
         let warp = Filter::DirectionalWarp { intensity: 256.0, angle: 90.0, scale: 4.0, seed: 3 };
         let texels: Vec<_> = (0..128).map(|x| (x, 63)).collect();
         let mut masked = |filters: &[Filter]| {
@@ -3006,7 +3090,10 @@ mod tests {
         let layer = fill_layer(&mut fixture.project, [0.0; 3], 1.0);
         let LayerKind::Fill(fill) = &mut fixture.project.layer_mut(layer).unwrap().kind else { panic!("expected a fill layer") };
 
-        fill.sources.insert(Channel::BaseColor, Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] });
+        fill.sources.insert(
+            Channel::BaseColor,
+            Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() },
+        );
         let warp = Filter::DirectionalWarp { intensity: 256.0, angle: 90.0, scale: 4.0, seed: 3 };
         let warp_effect = content_fx(&mut fixture, layer, EffectKind::Filter(warp));
         let row = |fixture: &Fixture| -> Vec<f32> {
@@ -3101,7 +3188,7 @@ mod tests {
     fn generator_blur_softens_only_the_generator_not_the_stack_below() {
         let (mut fixture, layer) = ridge_fixture(100);
         let mut row_with = |blur: f32| {
-            let checker = Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] };
+            let checker = Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() };
             let below = Effect::new(fixture.project.alloc_id(), EffectKind::Fill { source: checker, projection: Projection::default() });
             let mut generator = ridge_generator();
             generator.global.blur = blur;
@@ -3235,7 +3322,7 @@ mod tests {
         let (e1, e2) = (f.project.alloc_id(), f.project.alloc_id());
         mask.effects.push(Effect::new(
             e1,
-            EffectKind::Fill { source: Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3] }, projection: Projection::default() },
+            EffectKind::Fill { source: Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() }, projection: Projection::default() },
         ));
         f.project.layer_mut(id).unwrap().mask = Some(mask.clone());
         let hard: Vec<f32> = (0..64).map(|x| run(&f, None).value(Channel::BaseColor, x, 20)[0]).collect();
@@ -3321,7 +3408,10 @@ soft {soft:?}"
         let mut f = fixture();
         let id = f.project.alloc_id();
         let mut fill = Fill::default();
-        fill.sources.insert(Channel::Roughness, Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] });
+        fill.sources.insert(
+            Channel::Roughness,
+            Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() },
+        );
         f.project.insert_layer(0, Layer::new(id, "F", LayerKind::Fill(fill), &[Channel::Roughness]), None, false).unwrap();
         let row = |f: &Fixture| {
             let out = run(f, None);
@@ -3351,7 +3441,10 @@ soft {soft:?}"
         let mut f = fixture();
         let id = f.project.alloc_id();
         let mut fill = Fill::default();
-        fill.sources.insert(Channel::Roughness, Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] });
+        fill.sources.insert(
+            Channel::Roughness,
+            Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() },
+        );
         f.project.insert_layer(0, Layer::new(id, "F", LayerKind::Fill(fill), &[Channel::Roughness]), None, false).unwrap();
         let plain = run(&f, None);
         let edges = content_fx(&mut f, id, EffectKind::Filter(Filter::EdgeDetect { width: 32.0 }));
@@ -3383,7 +3476,10 @@ soft {soft:?}"
         let checker = |f: &mut Fixture| {
             let id = f.project.alloc_id();
             let mut fill = Fill::default();
-            fill.sources.insert(Channel::Roughness, Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] });
+            fill.sources.insert(
+                Channel::Roughness,
+                Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() },
+            );
             f.project.insert_layer(0, Layer::new(id, "F", LayerKind::Fill(fill), &[Channel::Roughness]), None, false).unwrap();
             id
         };
@@ -3506,7 +3602,7 @@ soft {soft:?}"
         let anchor = content_fx(&mut f, low, EffectKind::Anchor);
         let top = fill_layer(&mut f.project, [1.0; 3], 0.5);
         let mut mask = Mask::new(MaskBackground::Black);
-        let source = Source::Anchor { anchor, channel: Channel::Height };
+        let source = Source::Anchor { anchor, channel: Channel::Height, ramp: Vec::new() };
         mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Fill { source, projection: Projection::default() }));
         f.project.layer_mut(top).unwrap().mask = Some(mask.clone());
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.7; 3]));
@@ -3523,7 +3619,7 @@ soft {soft:?}"
     fn anchor_reader(fixture: &mut Fixture, anchor: LayerId) -> LayerId {
         let top = fill_layer(&mut fixture.project, [1.0; 3], 0.5);
         let mut mask = Mask::new(MaskBackground::Black);
-        let source = Source::Anchor { anchor, channel: Channel::Roughness };
+        let source = Source::Anchor { anchor, channel: Channel::Roughness, ramp: Vec::new() };
         mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Fill { source, projection: Projection::default() }));
         fixture.project.layer_mut(top).unwrap().mask = Some(mask);
         top
@@ -3564,7 +3660,7 @@ soft {soft:?}"
         let lower = fill_layer(&mut fixture.project, [0.0; 3], 1.0);
         let anchor = fixture.project.alloc_id();
         let mut mask = Mask::new(MaskBackground::Black);
-        let checker = Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3] };
+        let checker = Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() };
         mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Fill { source: checker, projection: Projection::default() }));
         mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 64.0 })));
         mask.effects.push(Effect::new(anchor, EffectKind::Anchor));
@@ -3676,6 +3772,8 @@ soft {soft:?}"
             rotation: 0.0,
             offset: [0.0; 2],
             depth: 0.5,
+            symmetry: None,
+            flip: [false; 2],
         };
         let id = f.project.alloc_id();
         let mut fill = Fill { projection: Projection::Decal(d), ..Fill::default() };
@@ -3707,6 +3805,223 @@ soft {soft:?}"
         assert!(close(half.value(Channel::BaseColor, 32, 32), [0.75, 0.25, 0.25]), "the image alpha shapes the decal");
     }
 
+    /// Composites a cube with a decal of a four-colored image, and checks each texel of the
+    /// faces picked by `expect` against the image at the coordinates it gives (None: the texel
+    /// is not part of the check). Returns how many texels were checked.
+    fn cube_decal_texels(d: texturecraft_core::Decal, expect: impl Fn(Vec3, Vec3) -> Option<Option<(f32, f32)>>) -> usize {
+        let mesh = primitives::cube(2.0);
+        let gbuf = UvGBuffer::new(&mesh, 0, 64, 64);
+        let mut project = Project::new("t", "builtin:cube");
+        project.texture_sets.push(TextureSet::new("Cube", 0, 64));
+        let id = project.alloc_id();
+        let mut fill = Fill { projection: Projection::Decal(d), ..Fill::default() };
+        fill.sources.insert(Channel::BaseColor, Source::image("decal"));
+        project.insert_layer(0, Layer::new(id, "Decal", LayerKind::Fill(fill), &[Channel::BaseColor]), None, false).unwrap();
+        // Top left red, top right blue, bottom left green, bottom right yellow
+        let img = crate::store::ImageRes {
+            width: 2,
+            height: 2,
+            rgba: vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0], [0.0, 1.0, 0.0, 1.0], [1.0, 1.0, 0.0, 1.0]],
+            srgb: false,
+        };
+        let images: ImageStore = [("decal".to_string(), std::sync::Arc::new(img.clone()))].into_iter().collect();
+        let pixels = PixelStore::default();
+        let baked = BakedMaps::default();
+        let inp = Inputs {
+            project: &project,
+            ts: 0,
+            mesh: &mesh,
+            gbuf: &gbuf,
+            pixels: &pixels,
+            baked: &baked,
+            block_scales: project.texture_sets[0].block_scales(),
+            preview: None,
+            images: &images,
+            bounds: mesh.bounds(),
+        };
+        let mut out = Composite::new(&project.texture_sets[0].channel_list(), 64);
+        composite_tiles(&inp, &mut out, &all_tiles(64, 64));
+
+        let mut checked = 0;
+        for i in 0..64 * 64 {
+            let Some(surface) = gbuf.surface(&mesh, i) else { continue };
+            let Some(want) = expect(surface.pos, surface.nrm) else { continue };
+            let got = out.value(Channel::BaseColor, (i % 64) as u32, (i / 64) as u32);
+            let want = want.map_or([0.5; 3], |(u, v)| {
+                let c = img.sample(u, v);
+                [c[0], c[1], c[2]]
+            });
+            assert!(close(got, want), "texel at {:?} on a face turned to {:?}: {got:?}, expected {want:?}", surface.pos, surface.nrm);
+            checked += 1;
+        }
+        checked
+    }
+
+    /// A 1 by 1 decal on the cube's +X face (the image's right runs toward -Z, its up toward +Y)
+    fn cube_decal(center: [f32; 3], size: f32, symmetry: Option<texturecraft_core::DecalSymmetry>) -> texturecraft_core::Decal {
+        texturecraft_core::Decal {
+            center,
+            normal: [1.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+            size: [size; 2],
+            rotation: 0.0,
+            offset: [0.0; 2],
+            depth: 0.5,
+            symmetry,
+            flip: [false; 2],
+        }
+    }
+
+    /// What the decal of `size` centered at (cy, cz) on the +X face gives the point (y, z) of
+    /// that face: the image coordinates well inside the frame, None for a bare texel clearly
+    /// outside it, and None for texels near its edge (not part of the checks).
+    fn face_expect(y: f32, z: f32, (cy, cz): (f32, f32), size: f32) -> Option<Option<(f32, f32)>> {
+        let (u, v) = (0.5 - (z - cz) / size, 0.5 - (y - cy) / size);
+        let off = (u - 0.5).abs().max((v - 0.5).abs());
+        if off < 0.4 {
+            Some(Some((u, v)))
+        } else if off > 0.6 {
+            Some(None)
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn a_mirrored_decal_lands_on_the_opposite_cube_face_with_its_flip() {
+        use texturecraft_core::{DecalFlip, DecalSymmetry};
+        let at = (0.1, -0.2);
+        let on_x = |flip| {
+            cube_decal_texels(cube_decal([1.0, at.0, at.1], 1.0, Some(DecalSymmetry { axis: 0, flip, offset: 0.0 })), |p, n| {
+                if n.x > 0.99 {
+                    face_expect(p.y, p.z, at, 1.0)
+                } else if n.x < -0.99 {
+                    // The mirror image: the point's reflection, then the flip of the copy
+                    face_expect(p.y, p.z, at, 1.0).map(|texel| {
+                        texel.map(|(u, v)| match flip {
+                            DecalFlip::None => (u, v),
+                            DecalFlip::U => (1.0 - u, v),
+                            DecalFlip::V => (u, 1.0 - v),
+                        })
+                    })
+                } else {
+                    Some(None)
+                }
+            })
+        };
+        for flip in [DecalFlip::None, DecalFlip::U, DecalFlip::V] {
+            assert!(on_x(flip) > 800, "{flip:?}: most of the cube was checked");
+        }
+
+        // No symmetry: the -X face stays bare
+        let bare = cube_decal_texels(cube_decal([1.0, at.0, at.1], 1.0, None), |p, n| if n.x > 0.99 { face_expect(p.y, p.z, at, 1.0) } else { Some(None) });
+        assert!(bare > 800);
+
+        // Mirrored across Z, the copy sits on the same face on the other side of the Z = 0 plane
+        let at = (0.1, -0.5);
+        let across_z = Some(DecalSymmetry { axis: 2, flip: DecalFlip::None, offset: 0.0 });
+        let on_z = cube_decal_texels(cube_decal([1.0, at.0, at.1], 0.4, across_z), |p, n| {
+            if n.x > 0.99 {
+                match (face_expect(p.y, p.z, at, 0.4), face_expect(p.y, -p.z, at, 0.4)) {
+                    (Some(Some(texel)), _) | (_, Some(Some(texel))) => Some(Some(texel)),
+                    (Some(None), Some(None)) => Some(None),
+                    _ => None,
+                }
+            } else {
+                Some(None)
+            }
+        });
+        assert!(on_z > 800);
+    }
+
+    #[test]
+    fn the_mirror_plane_can_be_moved_along_its_axis() {
+        use texturecraft_core::{DecalFlip, DecalSymmetry};
+        // Mirrored across Z with the plane at z = 0.3: a decal at z = -0.2 gets its copy at z = 0.8
+        let at = (0.1, -0.2);
+        let moved = Some(DecalSymmetry { axis: 2, flip: DecalFlip::None, offset: 0.3 });
+        let checked = cube_decal_texels(cube_decal([1.0, at.0, at.1], 0.4, moved), |p, n| {
+            if n.x > 0.99 {
+                match (face_expect(p.y, p.z, at, 0.4), face_expect(p.y, 0.6 - p.z, at, 0.4)) {
+                    (Some(Some(texel)), _) | (_, Some(Some(texel))) => Some(Some(texel)),
+                    (Some(None), Some(None)) => Some(None),
+                    _ => None,
+                }
+            } else {
+                Some(None)
+            }
+        });
+        assert!(checked > 800);
+    }
+
+    #[test]
+    fn moving_the_decal_moves_its_mirrored_copy() {
+        use texturecraft_core::{DecalFlip, DecalSymmetry};
+        let symmetry = Some(DecalSymmetry { axis: 0, flip: DecalFlip::None, offset: 0.0 });
+        for at in [(0.5, 0.3), (-0.4, -0.5)] {
+            let checked =
+                cube_decal_texels(
+                    cube_decal([1.0, at.0, at.1], 0.4, symmetry),
+                    |p, n| {
+                        if n.x.abs() > 0.99 { face_expect(p.y, p.z, at, 0.4) } else { Some(None) }
+                    },
+                );
+            assert!(checked > 800, "{at:?}");
+        }
+    }
+
+    #[test]
+    fn flipping_a_decal_mirrors_its_image_inside_the_frame() {
+        let mut f = fixture();
+        let s = f.gbuf.surface(&f.mesh, 32 * 64 + 32).unwrap();
+        // The frame's center sits a quarter of its width to the right of the texel, so the texel reads the image's left half
+        let d = texturecraft_core::Decal {
+            center: s.pos.to_array(),
+            normal: s.nrm.to_array(),
+            up: s.nrm.any_orthonormal_vector().to_array(),
+            size: [1.0, 1.0],
+            rotation: 0.0,
+            offset: [0.25, 0.0],
+            depth: 0.5,
+            symmetry: None,
+            flip: [false; 2],
+        };
+        let id = f.project.alloc_id();
+        let mut fill = Fill { projection: Projection::Decal(d), ..Fill::default() };
+        fill.sources.insert(Channel::BaseColor, Source::image("decal"));
+        f.project.insert_layer(0, Layer::new(id, "Decal", LayerKind::Fill(fill), &[Channel::BaseColor]), None, false).unwrap();
+
+        // Left half red, right half blue
+        let img = crate::store::ImageRes { width: 2, height: 1, rgba: vec![[1.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]], srgb: false };
+        let images: ImageStore = [("decal".to_string(), std::sync::Arc::new(img))].into_iter().collect();
+        let texel = |f: &Fixture, flip: [bool; 2]| {
+            let mut project = f.project.clone();
+            if let Ok(layer) = project.layer_mut(id)
+                && let LayerKind::Fill(fill) = &mut layer.kind
+            {
+                fill.projection = Projection::Decal(texturecraft_core::Decal { flip, ..d });
+            }
+            let inp = Inputs {
+                project: &project,
+                ts: 0,
+                mesh: &f.mesh,
+                gbuf: &f.gbuf,
+                pixels: &f.pixels,
+                baked: &f.baked,
+                block_scales: project.texture_sets[0].block_scales(),
+                preview: None,
+                images: &images,
+                bounds: f.mesh.bounds(),
+            };
+            let mut out = Composite::new(&project.texture_sets[0].channel_list(), 64);
+            composite_tiles(&inp, &mut out, &all_tiles(64, 64));
+            out.value(Channel::BaseColor, 32, 32)
+        };
+        assert!(close(texel(&f, [false, false]), [1.0, 0.0, 0.0]), "the left half shows red");
+        assert!(close(texel(&f, [true, false]), [0.0, 0.0, 1.0]), "Flip U shows the right half there");
+        assert!(close(texel(&f, [false, true]), [1.0, 0.0, 0.0]), "Flip V leaves the left half");
+    }
+
     #[test]
     fn anchors_read_colors_as_gray_in_fill_layers() {
         let mut f = fixture();
@@ -3714,9 +4029,100 @@ soft {soft:?}"
         let anchor = content_fx(&mut f, low, EffectKind::Anchor);
         let id = f.project.alloc_id();
         let mut fill = Fill::default();
-        fill.sources.insert(Channel::Roughness, Source::Anchor { anchor, channel: Channel::BaseColor });
+        fill.sources.insert(Channel::Roughness, Source::Anchor { anchor, channel: Channel::BaseColor, ramp: Vec::new() });
         f.project.insert_layer(0, Layer::new(id, "Top", LayerKind::Fill(fill), &[Channel::Roughness]), None, false).unwrap();
         let expect = texturecraft_core::lum([0.2, 0.4, 0.6]);
         assert!(close(run(&f, None).value(Channel::Roughness, 9, 9), [expect; 3]));
+    }
+
+    const RAMP: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+    #[test]
+    fn an_anchor_gradient_map_recolors_the_stack_below_by_its_lightness() {
+        // The stops at 0, 0.5 and 1, and halfway between them
+        for (gray, want) in [(0.0, [1.0, 0.0, 0.0]), (0.25, [0.5, 0.5, 0.0]), (0.5, [0.0, 1.0, 0.0]), (0.75, [0.0, 0.5, 0.5]), (1.0, [0.0, 0.0, 1.0])] {
+            let mut f = fixture();
+            let low = fill_layer(&mut f.project, [gray; 3], 0.5);
+            let anchor = content_fx(&mut f, low, EffectKind::Anchor);
+            let id = f.project.alloc_id();
+            let mut fill = Fill::default();
+            fill.sources.insert(Channel::BaseColor, Source::Anchor { anchor, channel: Channel::BaseColor, ramp: RAMP.to_vec() });
+            // A scalar channel reading the same anchor with stops keeps reading its gray.
+            fill.sources.insert(Channel::Roughness, Source::Anchor { anchor, channel: Channel::BaseColor, ramp: RAMP.to_vec() });
+            fill.sources.insert(Channel::Metallic, Source::Uniform([0.3; 3]));
+            let channels = [Channel::BaseColor, Channel::Roughness, Channel::Metallic];
+            f.project.insert_layer(0, Layer::new(id, "Top", LayerKind::Fill(fill), &channels), None, false).unwrap();
+            let out = run(&f, None);
+            assert!(close(out.value(Channel::BaseColor, 9, 9), want), "gray {gray}: {:?}", out.value(Channel::BaseColor, 9, 9));
+            assert!(close(out.value(Channel::Roughness, 9, 9), [gray; 3]), "gray {gray}: {:?}", out.value(Channel::Roughness, 9, 9));
+            assert!(close(out.value(Channel::Metallic, 9, 9), [0.3; 3]));
+        }
+    }
+
+    #[test]
+    fn an_anchor_gradient_map_reads_signed_height_from_minus_one_to_one() {
+        for (height, want) in [(-1.0, [1.0, 0.0, 0.0]), (0.0, [0.0, 1.0, 0.0]), (0.5, [0.0, 0.5, 0.5])] {
+            let mut f = fixture();
+            let low = f.project.alloc_id();
+            let mut below = Fill::default();
+            below.sources.insert(Channel::Height, Source::Uniform([height; 3]));
+            f.project.insert_layer(0, Layer::new(low, "Below", LayerKind::Fill(below), &[Channel::Height]), None, false).unwrap();
+            let anchor = content_fx(&mut f, low, EffectKind::Anchor);
+            let id = f.project.alloc_id();
+            let mut fill = Fill::default();
+            fill.sources.insert(Channel::BaseColor, Source::Anchor { anchor, channel: Channel::Height, ramp: RAMP.to_vec() });
+            f.project.insert_layer(0, Layer::new(id, "Top", LayerKind::Fill(fill), &[Channel::BaseColor]), None, false).unwrap();
+            let out = run(&f, None);
+            assert!(close(out.value(Channel::BaseColor, 9, 9), want), "height {height}: {:?}", out.value(Channel::BaseColor, 9, 9));
+        }
+    }
+
+    #[test]
+    fn a_gradient_map_reads_a_mask_anchors_gray_from_zero_to_one_in_every_channel() {
+        for channel in [Channel::BaseColor, Channel::Height] {
+            for (gray, want) in [(0.0, [1.0, 0.0, 0.0]), (0.25, [0.5, 0.5, 0.0]), (0.5, [0.0, 1.0, 0.0]), (1.0, [0.0, 0.0, 1.0])] {
+                let mut f = fixture();
+                let low = fill_layer(&mut f.project, [0.0; 3], 0.5);
+                let anchor = f.project.alloc_id();
+                let mut mask = Mask::new(MaskBackground::Black);
+                mask.effects
+                    .push(Effect::new(f.project.alloc_id(), EffectKind::Fill { source: Source::Uniform([gray; 3]), projection: Projection::default() }));
+                mask.effects.push(Effect::new(anchor, EffectKind::Anchor));
+                f.project.layer_mut(low).unwrap().mask = Some(mask);
+                let id = f.project.alloc_id();
+                let mut fill = Fill::default();
+                fill.sources.insert(Channel::BaseColor, Source::Anchor { anchor, channel, ramp: RAMP.to_vec() });
+                f.project.insert_layer(0, Layer::new(id, "Top", LayerKind::Fill(fill), &[Channel::BaseColor]), None, false).unwrap();
+                let out = run(&f, None);
+                assert!(close(out.value(Channel::BaseColor, 9, 9), want), "{channel:?}, gray {gray}: {:?}", out.value(Channel::BaseColor, 9, 9));
+            }
+        }
+    }
+
+    #[test]
+    fn a_procedural_gradient_map_replaces_low_and_high_and_no_stops_keep_them() {
+        let (low, high) = ([0.2, 0.3, 0.4], [0.8, 0.7, 0.6]);
+        let composite = |ramp: Vec<[f32; 3]>, lo: [f32; 3], hi: [f32; 3]| {
+            let mut f = fixture();
+            let id = f.project.alloc_id();
+            let mut fill = Fill::default();
+            let pattern = Procedural::new(ProceduralKind::Gradient);
+            fill.sources.insert(Channel::BaseColor, Source::Procedural { pattern: pattern.clone(), low: lo, high: hi, ramp: ramp.clone() });
+            fill.sources.insert(Channel::Roughness, Source::Procedural { pattern, low: lo, high: hi, ramp });
+            f.project.insert_layer(0, Layer::new(id, "Fill", LayerKind::Fill(fill), &[Channel::BaseColor, Channel::Roughness]), None, false).unwrap();
+            let out = run(&f, None);
+            (0..64).map(|x| (out.value(Channel::BaseColor, x, 20), out.value(Channel::Roughness, x, 20))).collect::<Vec<_>>()
+        };
+        // The pattern's own 0..1 values, then the same pattern through low and high and through the stops.
+        let gray = composite(Vec::new(), [0.0; 3], [1.0; 3]);
+        let plain = composite(Vec::new(), low, high);
+        let mapped = composite(RAMP.to_vec(), low, high);
+        let near = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-3);
+        assert!(gray.iter().any(|(v, _)| v[0] < 0.25) && gray.iter().any(|(v, _)| v[0] > 0.75), "the gradient spans dark to light");
+        for (((t, _), (p, _)), (m, rough)) in gray.iter().zip(&plain).zip(&mapped) {
+            assert!(near(*p, mix3(low, high, t[0])), "no stops: low to high");
+            assert!(near(*m, texturecraft_core::gradient(&RAMP, t[0]).unwrap()), "{t:?} -> {m:?}");
+            assert!((rough[0] - mix3(low, high, t[0])[0]).abs() < 1e-3, "roughness ignores the stops: {rough:?}");
+        }
     }
 }

@@ -167,7 +167,7 @@ fn rgb(c: [f32; 3]) -> Source {
 }
 
 fn pat(kind: ProceduralKind, scale: f32, seed: u32, contrast: f32, low: [f32; 3], high: [f32; 3]) -> Source {
-    Source::Procedural { pattern: Procedural { kind, scale, seed, contrast, balance: 0.0, invert: false }, low, high }
+    Source::Procedural { pattern: Procedural { kind, scale, seed, contrast, balance: 0.0, invert: false }, low, high, ramp: Vec::new() }
 }
 
 /// A scalar pattern between `lo` and `hi`.
@@ -715,6 +715,46 @@ pub(crate) fn build(b: &mut Builder, id: &str) -> Result<Vec<Layer>> {
     }
 }
 
+/// The channel sources of simple material `id`: its single, unmasked fill layer. `None` for smart
+/// materials (several layers, or a masked layer) and for unknown ids: a brush paints one fill's
+/// sources, so those stay layers.
+pub fn brush_sources(id: &str) -> Option<Vec<(Channel, Source)>> {
+    let m = find(id).filter(|m| !m.smart)?;
+    let mut scratch = Project::new("", "");
+    let layers = build(&mut Builder { p: &mut scratch, channels: Channel::LOBES.to_vec() }, m.id).ok()?;
+    let [layer] = layers.as_slice() else { return None };
+    let LayerKind::Fill(fill) = &layer.kind else { return None };
+    if layer.mask.is_some() {
+        return None;
+    }
+    Some(fill.sources.iter().map(|(channel, source)| (*channel, source.clone())).collect())
+}
+
+/// The brush's plain values for simple material `id`, one per channel it sets (what the tool's
+/// material shows): a pattern counts as the middle between its two values. `None` as
+/// [`brush_sources`].
+pub fn brush_values(id: &str) -> Option<Vec<(Channel, [f32; 3])>> {
+    let mean = |low: &[f32; 3], high: &[f32; 3]| std::array::from_fn(|i| (low[i] + high[i]) * 0.5);
+    Some(
+        brush_sources(id)?
+            .into_iter()
+            .filter_map(|(channel, source)| match source {
+                Source::Uniform(value) => Some((channel, value)),
+                Source::Procedural { low, high, .. } => Some((channel, mean(&low, &high))),
+                Source::Image { .. } | Source::Anchor { .. } => None,
+            })
+            .collect(),
+    )
+}
+
+/// The fill a brush material paints through, as a layer: `sources` projected tri-planar at
+/// `scale` (the same fill evaluation a layer with that material uses).
+pub(crate) fn brush_fill(id: LayerId, sources: Vec<(Channel, Source)>, scale: f32) -> Layer {
+    let channels: Vec<Channel> = sources.iter().map(|(channel, _)| *channel).collect();
+    let projection = Projection::Triplanar { scale, sharpness: 8.0, offset: [0.0; 3] };
+    Layer::new(id, "Brush material", LayerKind::Fill(Fill { sources: sources.into_iter().collect(), projection, link: None }), &channels)
+}
+
 /// Where [`apply_at`] puts a material.
 #[derive(Clone, Copy, Debug)]
 pub enum Place {
@@ -724,6 +764,10 @@ pub enum Place {
     Above(LayerId, bool),
     /// At this index of the top-level stack (0 = bottom).
     Index(usize),
+    /// Directly below a layer, in the same stack or folder (a shelf drop on a layer row).
+    Below(LayerId),
+    /// At the top of the top-level stack (a shelf drop on the 3D or 2D view).
+    Top,
 }
 
 /// Add material `id` above the selection: a single fill layer, or a folder for multi-layer
@@ -759,7 +803,7 @@ pub fn apply_at(s: &mut Session, id: &str, place: Place) -> Result<LayerId> {
             for l in layers {
                 s.doc.project.insert_layer(ts, l, Some(gid), true)?;
             }
-            s.selected.insert(ts, gid);
+            s.select_one(ts, gid);
             gid
         };
         place.apply(s, top)?;
@@ -770,10 +814,12 @@ pub fn apply_at(s: &mut Session, id: &str, place: Place) -> Result<LayerId> {
 impl Place {
     /// From `above` (+ `inside`) or `index` params; the selection by default.
     pub(crate) fn from_params(p: &serde_json::Value) -> Place {
-        match (crate::commands::u64p(p, "above"), crate::commands::u64p(p, "index")) {
-            (Some(above), _) => Place::Above(LayerId(above), crate::commands::boolp(p, "inside").unwrap_or(false)),
-            (None, Some(i)) => Place::Index(usize::try_from(i).unwrap_or(usize::MAX)),
-            (None, None) => Place::Selection,
+        match (crate::commands::u64p(p, "above"), crate::commands::u64p(p, "below"), crate::commands::u64p(p, "index")) {
+            (Some(above), _, _) => Place::Above(LayerId(above), crate::commands::boolp(p, "inside").unwrap_or(false)),
+            (None, Some(below), _) => Place::Below(LayerId(below)),
+            (None, None, Some(i)) => Place::Index(usize::try_from(i).unwrap_or(usize::MAX)),
+            (None, None, None) if crate::commands::boolp(p, "top") == Some(true) => Place::Top,
+            (None, None, None) => Place::Selection,
         }
     }
 
@@ -786,6 +832,13 @@ impl Place {
                 s.doc.project.move_above(top, None, false)?;
                 s.doc.project.move_layer(top, i)?;
             }
+            Place::Below(target) => {
+                s.doc.project.move_above(top, Some(target), false)?;
+                if let Some((_, _, index)) = s.doc.project.locate(top) {
+                    s.doc.project.move_layer(top, index.saturating_sub(1))?;
+                }
+            }
+            Place::Top => s.doc.project.move_above(top, None, false)?,
         }
         Ok(())
     }
