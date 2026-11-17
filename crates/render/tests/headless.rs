@@ -1026,3 +1026,18 @@ fn painted_placeholders_render_like_full_textures() {
     let [r1, g1, _] = red.at(w / 2, hgt / 2);
     assert!(r1 > r0 && g1 < g0, "the painted base color shows: {:?} → {:?}", before.at(w / 2, hgt / 2), red.at(w / 2, hgt / 2));
 }
+
+#[test]
+fn signed_half_float_normal_tiles_change_shading() {
+    let Some((mut headless, frame)) = setup() else { return };
+    let flat = render(&mut headless, &frame, "flat_main_normal");
+    let tilted_normal: Vec<u8> = [0.8, 0.0, 0.6, 0.5].into_iter().flat_map(|value| half::f16::from_f32(value).to_le_bytes()).collect();
+
+    fill(&mut headless, &[0, 1], DisplayKind::Normal, &tilted_normal);
+    let tilted = render(&mut headless, &frame, "tilted_main_normal");
+
+    let (flat_pixels, _) = flat.px.as_chunks::<4>();
+    let (tilted_pixels, _) = tilted.px.as_chunks::<4>();
+    let changed_pixels = flat_pixels.iter().zip(tilted_pixels).filter(|(before, after)| before != after).count();
+    assert!(changed_pixels > 100, "the signed normal should change the material highlight: {changed_pixels} pixels");
+}
