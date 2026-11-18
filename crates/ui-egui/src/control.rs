@@ -114,6 +114,11 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                         app.layer_panel = Default::default();
                     }
 
+                    // The Export dialog cannot operate after Close
+                    if id == "file.close" {
+                        app.ui.windows.export = false;
+                    }
+
                     ok(value)
                 }
                 Err(error) => err(error),

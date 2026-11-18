@@ -53,6 +53,7 @@ fn close_releases_view_targets_and_rejects_immediate_capture() {
 
     for mesh in ["cube", "plane"] {
         assert!(harness.state_mut().run("project.new", serde_json::json!({"mesh": mesh, "resolution": 128})).is_some());
+        harness.state_mut().ui.layout = texturecraft_ui_egui::state::ViewLayout::Split;
         harness.run_steps(4);
         harness.render().unwrap();
         let render_state = harness.state().render_state.as_ref().unwrap().clone();
@@ -70,6 +71,7 @@ fn close_releases_view_targets_and_rejects_immediate_capture() {
             }
         };
         assert!(texturecraft_ui_egui::control::screenshot(harness.state(), texturecraft_ui_egui::viewport::VIEW_3D).is_some());
+        assert!(texturecraft_ui_egui::control::screenshot(harness.state(), texturecraft_ui_egui::viewport::VIEW_2D).is_some());
         report("before close");
         let ctx = harness.ctx.clone();
 

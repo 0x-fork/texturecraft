@@ -60,6 +60,12 @@ pub fn poll(app: &mut TextureCraftApp) {
                 load(app, &name, bytes);
                 continue;
             }
+
+            // The picker may finish after Close; never import into the placeholder
+            Pick::Environment if !app.session.project_open => {
+                app.toast(tr("No project is open"), true);
+                continue;
+            }
             Pick::Environment => app.session.import_resource_bytes(&name, bytes).map(|res| use_environment(app, &res)),
             Pick::HighPoly => app.session.add_high_poly_bytes(&name, bytes).map(|n| app.toast(trf("High poly: {name}", &[("name", &n)]), false)),
             Pick::Cage => app.session.set_cage_bytes(&name, bytes).map(|n| app.toast(trf("Cage: {name}", &[("name", &n)]), false)),
@@ -369,6 +375,30 @@ mod web {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use egui_kittest::Harness;
+
+    #[test]
+    fn environment_pick_after_close_does_not_edit_the_placeholder() {
+        let session = texturecraft_engine::sample_session(128, 32).unwrap();
+        let mut harness = Harness::builder().build_eframe(|context| TextureCraftApp::new(context, session));
+        let png = texturecraft_engine::formats::gray16_png(1, 1, [0.5].into_iter()).unwrap();
+        INBOX.lock().unwrap().push(("environment.png".into(), png.clone(), Pick::Environment));
+
+        assert!(harness.state_mut().run("file.close", serde_json::Value::Null).is_some());
+
+        poll(harness.state_mut());
+
+        assert!(!harness.state().session.can_undo());
+        assert!(!harness.state().session.doc.resources.contains_key("environment.png"));
+
+        assert!(harness.state_mut().run("project.new", serde_json::json!({"mesh": "cube", "resolution": 128})).is_some());
+        INBOX.lock().unwrap().push(("environment.png".into(), png, Pick::Environment));
+
+        poll(harness.state_mut());
+
+        assert!(harness.state().session.doc.resources.contains_key("environment.png"));
+    }
 
     #[test]
     fn zip_round_trips_every_export_file() {

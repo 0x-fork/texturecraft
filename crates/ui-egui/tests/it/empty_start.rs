@@ -269,6 +269,19 @@ fn control_close_rejects_a_viewport_capture_before_the_next_frame() {
 }
 
 #[test]
+fn control_close_dismisses_the_export_dialog() {
+    let mut harness = open_project();
+    harness.state_mut().ui.windows.export = true;
+    let ctx = harness.ctx.clone();
+
+    let reply = texturecraft_ui_egui::control::handle(harness.state_mut(), &ctx, "command.run", &json!({"id": "file.close"}));
+
+    assert_eq!(reply["ok"], true);
+    assert!(!harness.state().session.project_open);
+    assert!(!harness.state().ui.windows.export, "Close dismisses the dialog before the next frame");
+}
+
+#[test]
 fn uploaded_project_replacement_discards_the_old_resize() {
     let mut harness = open_project();
     let bytes = harness.state().session.to_project_bytes().unwrap();
