@@ -101,6 +101,13 @@ Bake workflow (issue [#651](https://github.com/storytold/texturecraft/issues/651
 has a Presets menu (save, load, delete named bake settings; Apply to All Texture Sets) and a finished
 bake shows a summary toast (maps baked, time, failed sets, pointing to the Log on failure).
 
+File > Import resources ([#638](https://github.com/storytold/texturecraft/issues/638)) queues
+images and materials for the open project. Images support a name prefix and a usage. Texture
+and undefined usages store the image, while environment and alpha also apply it to the scene
+or brush. Filter the list by usage or remove rows before importing. Color LUT, post effects
+and asset-library import remain unavailable. The browser imports images straight from its file
+picker.
+
 Broader properties/filter work remains tracked in
 [#433](https://github.com/storytold/texturecraft/issues/433). Its individual rows need checking
 against current code; an open issue is not proof that every control it lists is still missing.
@@ -112,7 +119,7 @@ list, not a feature-completion denominator.
 
 | Check | Surface | Result | Observable evidence / limit |
 |---|---|---|---|
-| F01 New project | UI | Pass | Ctrl+N, built-in Cube, 1024 px, Create produced a new project with one empty paint layer. The native mesh-file selection path was not completed in this deeper pass |
+| F01 New project | UI | Pass (tests) | The window no longer offers built-in meshes ([#636](https://github.com/storytold/texturecraft/issues/636)). `tests/it/new_project_window.rs` covers the section order, the defaults, the disabled settings and their hint, Create waiting for a mesh file, and a UV tile project created from a mesh file. A manual pass with the native file picker is still to do |
 | F02 Paint in 3D | UI | Pass | A mouse drag produced a visible stroke in 3D and its UV representation; inspection showed a Paint stroke undo step and painted tiles |
 | F03 Paint in 2D | UI | Pass | A separate UV-view drag increased painted tiles from 7 to 21 per active channel and changed the visible image |
 | F04 Undo and redo | UI | Pass | Ctrl+Z restored 7 tiles and history depth 2; Ctrl+Y restored 21 tiles and depth 3 |

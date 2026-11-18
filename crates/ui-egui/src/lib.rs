@@ -14,6 +14,7 @@ pub mod bake_mode;
 pub mod bake_presets;
 mod bake_report;
 mod bake_scene;
+mod color_management;
 mod color_selection_editor;
 pub mod control;
 mod decal_drop;
@@ -34,6 +35,8 @@ mod gray_slider;
 mod grid_tile;
 pub mod i18n;
 pub mod id_color_pick;
+#[cfg(not(target_arch = "wasm32"))]
+mod import_resources;
 mod inactive_set_hint;
 pub mod keymap;
 pub mod layer_panel;
@@ -68,6 +71,7 @@ mod preview_worker;
 pub mod profile;
 #[cfg(not(target_arch = "wasm32"))]
 mod project_config;
+pub mod project_form;
 pub mod properties_popup;
 mod rail_popup;
 pub mod render_mode;

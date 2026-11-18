@@ -6,13 +6,22 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use texturecraft_compose::ImageRes;
 use texturecraft_core::{Channel, Fill, Layer, LayerKind, Source};
+use texturecraft_formats::{MAX_RESOURCE_NAME_LEN, sanitize_resource_name};
 
 use crate::commands::{CommandSpec, always, bad, channel_param, strp};
 use crate::{EngineError, Result, Session, cmd};
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
-        cmd!("resource.import", "Import resources", ["File"], None, "{path} — an image file (png, jpg, tga, tif, bmp, webp, exr, hdr)", always, import),
+        cmd!(
+            "resource.import",
+            "Import resources",
+            ["File"],
+            None,
+            "{path — an image file (png, jpg, tga, tif, bmp, webp, exr, hdr), prefix?: put in front of the resource name (anything outside A-Z a-z 0-9 _ . - becomes _)}",
+            always,
+            import
+        ),
         cmd!("resource.list", "List resources", [], None, "{}", always, |s, _| Ok(list(s))),
         cmd!("resource.remove", "Remove resource", [], None, "{name}", always, remove),
         cmd!("file.removeUnused", "Remove unused resources...", ["File"], None, "{}", always, remove_unused),
@@ -38,22 +47,48 @@ pub(crate) fn decoded(d: texturecraft_formats::DecodedImage) -> Arc<ImageRes> {
 impl Session {
     /// Add an image resource from bytes (one undo step); returns its unique, sanitized name
     pub fn import_resource_bytes(&mut self, file_name: &str, bytes: Vec<u8>) -> Result<String> {
-        self.edit("Import resource", |session| session.add_image_resource(file_name, bytes, texturecraft_formats::MAX_RESOURCE_TEXELS))
+        self.import_resource_bytes_prefixed("", file_name, bytes)
+    }
+
+    /// Like [`Self::import_resource_bytes`], with `prefix` put in front of the resource's name
+    pub fn import_resource_bytes_prefixed(&mut self, prefix: &str, file_name: &str, bytes: Vec<u8>) -> Result<String> {
+        self.edit("Import resource", |session| session.add_image_resource_prefixed(prefix, file_name, bytes, texturecraft_formats::MAX_RESOURCE_TEXELS))
     }
 
     /// Add an image within a decoded texel budget, inside the caller's edit
     pub(crate) fn add_image_resource(&mut self, file_name: &str, bytes: Vec<u8>, max_texels: u64) -> Result<String> {
+        self.add_image_resource_prefixed("", file_name, bytes, max_texels)
+    }
+
+    fn add_image_resource_prefixed(&mut self, prefix: &str, file_name: &str, bytes: Vec<u8>, max_texels: u64) -> Result<String> {
         if bytes.len() > MAX_BYTES {
             return Err(EngineError::Other(format!("{file_name} is larger than {} MB", MAX_BYTES >> 20)));
         }
 
         let image = texturecraft_formats::decode_image_within(&bytes, max_texels).map_err(|error| EngineError::Other(format!("{file_name}: {error}")))?;
         let leaf = std::path::Path::new(file_name).file_name().and_then(|name| name.to_str()).unwrap_or("image");
-        let base = texturecraft_formats::sanitize_resource_name(leaf);
+        let mut base = sanitize_resource_name(leaf);
+
+        // The file name has priority over the optional prefix
+        let prefix_room = MAX_RESOURCE_NAME_LEN - base.len();
+        let prefix = prefix.trim();
+        if !prefix.is_empty() && prefix_room > 0 {
+            let mut prefix = sanitize_resource_name(prefix);
+            prefix.truncate(prefix_room);
+            base.insert_str(0, &prefix);
+        }
+
+        let (stem, extension) = base.rfind('.').map_or((base.as_str(), ""), |extension_start| base.split_at(extension_start));
         let mut name = base.clone();
         let mut duplicate_index = 2;
         while self.doc.resources.contains_key(&name) {
-            name = format!("{duplicate_index}_{base}");
+            let discriminator = format!("{duplicate_index}_");
+            let available = MAX_RESOURCE_NAME_LEN - discriminator.len();
+
+            // Leave room for a stem even for names that end in an unusually long extension
+            let (stem, extension) = if extension.len() < available { (stem, extension) } else { (base.as_str(), "") };
+            let stem = stem.get(..stem.len().min(available - extension.len())).unwrap_or(stem);
+            name = format!("{discriminator}{stem}{extension}");
             duplicate_index += 1;
         }
 
@@ -101,7 +136,7 @@ fn list(s: &Session) -> Value {
 fn import(s: &mut Session, p: &Value) -> Result<Value> {
     let path = strp(p, "path").ok_or_else(|| bad("resource.import", "`path` is required"))?;
     let bytes = read_image_file("resource.import", path, MAX_BYTES as u64)?;
-    let name = s.import_resource_bytes(path, bytes)?;
+    let name = s.import_resource_bytes_prefixed(strp(p, "prefix").unwrap_or(""), path, bytes)?;
     Ok(json!({ "name": name }))
 }
 
@@ -114,10 +149,12 @@ pub(crate) fn read_image_file(cmd: &str, path: &str, max_bytes: u64) -> Result<V
     let read_error = |error| bad(cmd, format!("cannot read {path}: {error}"));
     let too_large = || bad(cmd, format!("{path} is too large (limit {max_bytes} bytes)"));
     let metadata = std::fs::metadata(path).map_err(read_error)?;
+
     // Pipes can block on open, and devices may never reach EOF
     if !metadata.is_file() {
         return Err(bad(cmd, format!("{path} is not a regular file")));
     }
+
     if metadata.len() > max_bytes {
         return Err(too_large());
     }
@@ -156,8 +193,7 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
-/// Drop resources no layer, mask effect, the projection stencil or the environment uses (one undo
-/// step).
+/// Drop resources unused by layers, mask effects, the brush alpha, the stencil or the environment.
 fn remove_unused(s: &mut Session, _: &Value) -> Result<Value> {
     let mut used = Vec::new();
     for set in &s.doc.project.texture_sets {
@@ -166,6 +202,7 @@ fn remove_unused(s: &mut Session, _: &Value) -> Result<Value> {
         }
     }
     used.extend(s.tool.stencil.as_ref().map(|st| st.image.clone()));
+    used.extend(s.tool.brush.alpha_image.clone());
     used.extend(s.doc.project.display.environment_resource().map(str::to_string));
     let unused: Vec<String> = s.doc.resources.keys().filter(|k| !used.contains(k)).cloned().collect();
     if !unused.is_empty() {
@@ -239,5 +276,44 @@ mod tests {
     #[test]
     fn devices_are_rejected_before_reading() {
         assert!(read_image_file("test", "/dev/null", 16).unwrap_err().to_string().contains("not a regular file"));
+    }
+
+    #[test]
+    fn duplicate_prefixed_image_names_survive_saving_and_reopening() {
+        let mut session = crate::sample_session(128, 32).unwrap();
+        let png = texturecraft_formats::gray16_png(1, 1, [0.5].into_iter()).unwrap();
+        let file_name = format!("{}.png", "x".repeat(108));
+        let prefix = "material";
+        let mut names = Vec::new();
+
+        for _ in 0..10 {
+            let name = session.import_resource_bytes_prefixed(prefix, &file_name, png.clone()).unwrap();
+            crate::execute(&mut session, "layer.add.image", &json!({"name": name})).unwrap();
+            names.push(name);
+        }
+
+        let reopened = Session::from_project_bytes(&session.to_project_bytes().unwrap()).unwrap();
+
+        assert_eq!(reopened.images.len(), names.len());
+        for name in names {
+            assert!(reopened.images.contains_key(&name), "missing image after reload: {name}");
+            assert!(name.ends_with(".png"));
+        }
+    }
+
+    #[test]
+    fn removing_unused_resources_keeps_the_active_brush_alpha() {
+        let mut session = crate::sample_session(128, 32).unwrap();
+        let png = texturecraft_formats::gray16_png(1, 1, [0.5].into_iter()).unwrap();
+        let alpha = session.import_resource_bytes("brush.png", png.clone()).unwrap();
+        let unused = session.import_resource_bytes("unused.png", png).unwrap();
+        crate::execute(&mut session, "tool.brush", &json!({"alpha": {"image": alpha}})).unwrap();
+
+        let result = crate::execute(&mut session, "file.removeUnused", &Value::Null).unwrap();
+
+        assert_eq!(result["removed"], json!([unused]));
+        assert_eq!(session.tool.brush.alpha_image.as_deref(), Some(alpha.as_str()));
+        assert!(session.images.contains_key(&alpha));
+        assert!(!session.images.contains_key(&unused));
     }
 }
