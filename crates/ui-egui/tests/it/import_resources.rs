@@ -10,27 +10,7 @@ use texturecraft_engine::Session;
 use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::file_dialogs::{Answer, Request};
 
-/// A test folder removed when its owner drops
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(test: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("texturecraft-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&path).unwrap();
-
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
+use super::temp_dir::TempDir;
 
 const TITLE: &str = "Import resources";
 /// The prefix field's tooltip, which is its accessible label.
@@ -99,26 +79,26 @@ fn the_menu_opens_the_window_without_importing_or_asking() {
 
     assert!(is_open(&h));
     assert!(resources(&h).is_empty());
-    assert!(h.query_by_label("Import your resources and set their usage").is_some());
-    assert!(combos(&h, "All imported resources (0)").next().is_some());
+    assert!(h.query_by_label("Choose files and assign their roles").is_some());
+    assert!(combos(&h, "All files (0)").next().is_some());
     assert!(h.get_by_label("Remove selected resources").accesskit_node().is_disabled(), "nothing is selected");
 }
 
 #[test]
 fn added_files_are_listed_and_import_keeps_their_names() {
     let dir = TempDir::new("import-resources-add");
-    let (a, b) = (png(dir.path(), "bluenoise.png"), png(dir.path(), "scratch.png"));
+    let (a, b) = (png(&dir, "bluenoise.png"), png(&dir, "scratch.png"));
     let mut h = app();
     invoke(&mut h);
     add(&mut h, &[a.clone(), b]);
 
-    assert!(combos(&h, "All imported resources (2)").next().is_some());
+    assert!(combos(&h, "All files (2)").next().is_some());
     assert!(h.query_by_label("bluenoise.png").is_some() && h.query_by_label("scratch.png").is_some());
     assert!(resources(&h).is_empty(), "adding only lists");
 
     // The same file twice is one row
     add(&mut h, &[a]);
-    assert!(combos(&h, "All imported resources (2)").next().is_some());
+    assert!(combos(&h, "All files (2)").next().is_some());
 
     click(&mut h, "Import");
     assert!(!is_open(&h));
@@ -130,7 +110,7 @@ fn remove_selected_drops_only_the_selected_rows() {
     let dir = TempDir::new("import-resources-remove");
     let mut h = app();
     invoke(&mut h);
-    add(&mut h, &[png(dir.path(), "one.png"), png(dir.path(), "two.png")]);
+    add(&mut h, &[png(&dir, "one.png"), png(&dir, "two.png")]);
 
     h.get_by_label("one.png").click();
     h.run_steps(3);
@@ -138,7 +118,7 @@ fn remove_selected_drops_only_the_selected_rows() {
 
     assert!(h.query_by_label("one.png").is_none());
     assert!(h.query_by_label("two.png").is_some());
-    assert!(combos(&h, "All imported resources (1)").next().is_some());
+    assert!(combos(&h, "All files (1)").next().is_some());
     click(&mut h, "Import");
     assert_eq!(resources(&h), ["two.png"]);
 }
@@ -148,7 +128,7 @@ fn the_usage_defaults_to_undefined_and_the_choice_reaches_the_import() {
     let dir = TempDir::new("import-resources-usage");
     let mut h = app();
     invoke(&mut h);
-    add(&mut h, &[png(dir.path(), "plain.png"), png(dir.path(), "brush.png"), png(dir.path(), "sky.png")]);
+    add(&mut h, &[png(&dir, "plain.png"), png(&dir, "brush.png"), png(&dir, "sky.png")]);
     assert_eq!(combos(&h, "undefined").count(), 3);
 
     choose_usage(&mut h, 1, "alpha");
@@ -166,7 +146,7 @@ fn a_prefix_goes_in_front_of_the_resource_name() {
     let dir = TempDir::new("import-resources-prefix");
     let mut h = app();
     invoke(&mut h);
-    add(&mut h, &[png(dir.path(), "dust.png")]);
+    add(&mut h, &[png(&dir, "dust.png")]);
 
     h.get_by_role_and_label(Role::TextInput, PREFIX_HINT).click();
     h.run_steps(2);
@@ -182,7 +162,7 @@ fn unsupported_usages_and_the_user_library_are_listed_but_disabled() {
     let dir = TempDir::new("import-resources-disabled");
     let mut h = app();
     invoke(&mut h);
-    add(&mut h, &[png(dir.path(), "x.png")]);
+    add(&mut h, &[png(&dir, "x.png")]);
 
     combos(&h, "undefined").next().expect("the dropdown").click();
     h.run_steps(3);
@@ -193,10 +173,9 @@ fn unsupported_usages_and_the_user_library_are_listed_but_disabled() {
     h.get_by_label("texture").click();
     h.run_steps(3);
 
-    combos(&h, "current session").next().expect("the dropdown").click();
+    combos(&h, "Open project").next().expect("the dropdown").click();
     h.run_steps(3);
-    assert!(h.get_by_label("library 'your_assets'").accesskit_node().is_disabled());
-    assert!(h.query_by_label("To add a new library, see the Edit / Settings menu").is_some(), "the note at the bottom left");
+    assert!(h.get_by_label("Asset library").accesskit_node().is_disabled());
 }
 
 #[test]
@@ -204,7 +183,7 @@ fn cancel_imports_nothing() {
     let dir = TempDir::new("import-resources-cancel");
     let mut h = app();
     invoke(&mut h);
-    add(&mut h, &[png(dir.path(), "never.png")]);
+    add(&mut h, &[png(&dir, "never.png")]);
     click(&mut h, "Cancel");
 
     assert!(!is_open(&h));
@@ -212,13 +191,13 @@ fn cancel_imports_nothing() {
 
     // Reopening starts empty
     invoke(&mut h);
-    assert!(combos(&h, "All imported resources (0)").next().is_some());
+    assert!(combos(&h, "All files (0)").next().is_some());
 }
 
 #[test]
 fn the_engine_command_still_imports_a_path_with_an_optional_prefix() {
     let dir = TempDir::new("import-resources-command");
-    let file = png(dir.path(), "tile.png");
+    let file = png(&dir, "tile.png");
     let mut session = Session::new_project("Test", texturecraft_engine::geom::primitives::cube(1.0), "builtin:cube", None, 128).unwrap();
 
     let plain = texturecraft_engine::execute(&mut session, "resource.import", &serde_json::json!({"path": file.display().to_string()})).unwrap();
@@ -227,4 +206,65 @@ fn the_engine_command_still_imports_a_path_with_an_optional_prefix() {
 
     assert_eq!(plain["name"], "tile.png");
     assert_eq!(prefixed["name"], "a_b_tile.png");
+}
+
+#[test]
+fn only_failed_rows_remain_after_a_partial_import() {
+    let dir = TempDir::new("import-resources-retry");
+    let good = png(&dir, "good.png");
+    let failed = dir.join("retry.png");
+    let mut h = app();
+    invoke(&mut h);
+    add(&mut h, &[good, failed.clone()]);
+    choose_usage(&mut h, 1, "alpha");
+    {
+        let rows = &mut h.state_mut().ui.windows.import_resources.as_mut().unwrap().rows;
+        rows[1].prefix = "brush_".into();
+    }
+    h.run_steps(2);
+
+    click(&mut h, "Import");
+
+    let rows = &h.state().ui.windows.import_resources.as_ref().expect("failed row stays open").rows;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, failed);
+    assert_eq!(rows[0].prefix, "brush_");
+    assert_eq!(resources(&h), ["good.png"]);
+
+    png(&dir, "retry.png");
+    click(&mut h, "Import");
+
+    assert!(!is_open(&h));
+    assert_eq!(resources(&h), ["brush_retry.png", "good.png"]);
+    assert_eq!(h.state().session.tool.brush.alpha_image.as_deref(), Some("brush_retry.png"));
+}
+
+#[test]
+fn opening_import_resources_replaces_project_configuration() {
+    let mut h = app();
+    let ctx = h.ctx.clone();
+    texturecraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "ui.projectConfig");
+    assert!(h.state().ui.windows.project_config.is_some());
+
+    invoke(&mut h);
+
+    assert!(is_open(&h));
+    assert!(h.state().ui.windows.project_config.is_none());
+}
+
+#[test]
+#[ignore = "offscreen GPU snapshot; set TC_UI_SNAPSHOTS to an output directory"]
+fn import_resources_snapshot() {
+    let output_dir = PathBuf::from(std::env::var_os("TC_UI_SNAPSHOTS").expect("set TC_UI_SNAPSHOTS"));
+    let dir = TempDir::new("import-resources-snapshot");
+    let session = Session::new_project("Resources", texturecraft_engine::geom::primitives::cube(1.0), "builtin:cube", None, 128).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).with_pixels_per_point(1.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    h.run_steps(4);
+
+    invoke(&mut h);
+    add(&mut h, &[png(&dir, "panel_basecolor.png"), png(&dir, "brush_alpha.png")]);
+    choose_usage(&mut h, 1, "alpha");
+
+    std::fs::create_dir_all(&output_dir).unwrap();
+    h.render().unwrap().save(output_dir.join("import-resources.png")).unwrap();
 }

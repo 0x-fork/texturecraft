@@ -4,6 +4,7 @@
 
 use egui::{Response, RichText, Sense, Ui};
 
+pub use crate::color_management::ColorManagement;
 use crate::dock::info_icon;
 use crate::i18n::{n_, tr};
 use crate::theme::{Tokens, caption};
@@ -16,31 +17,16 @@ pub const NOT_AVAILABLE: &str = n_("Not available yet");
 pub const OCIO_NOT_AVAILABLE: &str = n_("OpenColorIO is not available yet. The project uses Legacy.");
 
 /// Width of the dropdowns and fields at the right of a row.
-pub(crate) const FIELD_WIDTH: f32 = 220.0;
+pub(crate) const FIELD_WIDTH_POINTS: f32 = 220.0;
 
 /// Tallest the scrolling form of the two windows grows (the rest scrolls).
-pub(crate) const FORM_HEIGHT: f32 = 760.0;
+pub(crate) const FORM_HEIGHT_POINTS: f32 = 760.0;
+
+/// Scrolling form height when viewport space is limited.
+pub(crate) const MIN_FORM_HEIGHT_POINTS: f32 = 120.0;
 
 /// Indent of the rows below a section title.
-pub(crate) const ROW_INDENT: f32 = 16.0;
-
-/// How a project manages colour. Only Legacy is implemented; OpenColorIO can be chosen to see its
-/// settings, but they stay disabled and a project is always created and kept as Legacy.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ColorManagement {
-    #[default]
-    Legacy,
-    OpenColorIo,
-}
-
-impl ColorManagement {
-    fn label(self) -> &'static str {
-        match self {
-            ColorManagement::Legacy => n_("Legacy"),
-            ColorManagement::OpenColorIo => "OpenColorIO",
-        }
-    }
-}
+pub(crate) const ROW_INDENT_POINTS: f32 = 16.0;
 
 /// `response` with the not-available hint while it is disabled.
 pub(crate) fn unavailable(response: Response) -> Response {
@@ -50,7 +36,7 @@ pub(crate) fn unavailable(response: Response) -> Response {
 /// A row: `label` at the left, then `control` right-aligned before the info icon (`info`).
 pub(crate) fn row<R>(ui: &mut Ui, label: &str, info: Option<&str>, control: impl FnOnce(&mut Ui) -> R) -> R {
     ui.horizontal(|ui| {
-        ui.add_space(ROW_INDENT);
+        ui.add_space(ROW_INDENT_POINTS);
         ui.label(label);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             info_slot(ui, info);
@@ -65,7 +51,7 @@ pub(crate) fn row<R>(ui: &mut Ui, label: &str, info: Option<&str>, control: impl
 /// `trailing` adds a control just before the icon (a button).
 pub(crate) fn check_row<R>(ui: &mut Ui, info: Option<&str>, control: impl FnOnce(&mut Ui) -> R, trailing: impl FnOnce(&mut Ui)) -> R {
     ui.horizontal(|ui| {
-        ui.add_space(ROW_INDENT);
+        ui.add_space(ROW_INDENT_POINTS);
         let inner = control(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             info_slot(ui, info);
@@ -79,6 +65,7 @@ pub(crate) fn check_row<R>(ui: &mut Ui, info: Option<&str>, control: impl FnOnce
 fn info_slot(ui: &mut Ui, info: Option<&str>) {
     match info {
         Some(text) => info_icon(ui, text),
+
         // An invisible icon keeps the controls of rows without one in the same column
         None => {
             ui.add_visible(false, egui::Label::new(egui_phosphor::regular::INFO));
@@ -89,7 +76,7 @@ fn info_slot(ui: &mut Ui, info: Option<&str>) {
 /// A bold sub-section title such as Import settings, with an optional info icon at the end.
 pub(crate) fn sub_title(ui: &mut Ui, title: &str, info: Option<&str>) {
     ui.horizontal(|ui| {
-        ui.add_space(ROW_INDENT);
+        ui.add_space(ROW_INDENT_POINTS);
         ui.label(caption(title));
         if let Some(text) = info {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| info_icon(ui, text));
@@ -97,29 +84,18 @@ pub(crate) fn sub_title(ui: &mut Ui, title: &str, info: Option<&str>) {
     });
 }
 
-/// The "UV Tile settings (UDIMs)" title: the tutorial icon (not available yet) and the info icon.
-pub(crate) fn uv_tile_title(ui: &mut Ui, info: &str) {
-    ui.horizontal(|ui| {
-        ui.add_space(ROW_INDENT);
-        ui.label(caption(tr("UV Tile settings (UDIMs)")));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            info_icon(ui, info);
-            unavailable(ui.add_enabled(false, egui::Button::new(egui_phosphor::regular::GRADUATION_CAP).frame(false)));
-        });
-    });
-}
-
 /// A dim italic note in a section.
 pub(crate) fn note(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {
-        ui.add_space(2.0 * ROW_INDENT);
+        ui.add_space(2.0 * ROW_INDENT_POINTS);
         ui.add(egui::Label::new(RichText::new(text).italics().color(Tokens::get(ui.ctx()).text_dim)).wrap());
     });
 }
 
 /// A dropdown that cannot be opened, showing `value`, with the not-available hint.
 pub(crate) fn disabled_combo(ui: &mut Ui, id: &str, value: &str) -> Response {
-    let response = ui.add_enabled_ui(false, |ui| egui::ComboBox::from_id_salt(id).width(FIELD_WIDTH).selected_text(value).show_ui(ui, |_| {}).response).inner;
+    let response =
+        ui.add_enabled_ui(false, |ui| egui::ComboBox::from_id_salt(id).width(FIELD_WIDTH_POINTS).selected_text(value).show_ui(ui, |_| {}).response).inner;
     unavailable(response)
 }
 
@@ -129,7 +105,7 @@ pub(crate) fn collapsible(ui: &mut Ui, id: &str, title: &str, default_open: bool
     let id = ui.make_persistent_id(id);
     let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
     ui.horizontal(|ui| {
-        ui.add_space(ROW_INDENT);
+        ui.add_space(ROW_INDENT_POINTS);
         let header = ui
             .horizontal(|ui| {
                 ui.add(egui::Label::new(section_chevron(ui, state.is_open())).selectable(false));
@@ -167,14 +143,14 @@ pub(crate) fn uv_tile_radios(ui: &mut Ui, enabled: bool, disabled_hint: &str) {
         let preserve = check_row(
             ui,
             Some(tr("Each material keeps its UV tiles in one texture set, and strokes paint across tiles")),
-            |ui| ui.add_enabled(enabled, egui::RadioButton::new(true, tr("Preserve UV Tile layout per material and enable painting across tiles"))),
+            |ui| ui.add_enabled(enabled, egui::RadioButton::new(true, tr("Keep UV tiles together per material"))),
             |_| {},
         );
         preserve.on_disabled_hover_text(disabled_hint);
         check_row(
             ui,
             Some(tr("Each UV tile becomes a texture set of its own")),
-            |ui| unavailable(ui.add_enabled(false, egui::RadioButton::new(false, tr("Convert UV Tiles into individual Texture Sets (legacy)")))),
+            |ui| unavailable(ui.add_enabled(false, egui::RadioButton::new(false, tr("Use a separate texture set for each tile")))),
             |_| {},
         );
     });
@@ -196,13 +172,10 @@ pub(crate) fn auto_unwrap_row(ui: &mut Ui) {
 /// The Physical size section: the mesh file's own unit scale is what TextureCraft uses; a custom
 /// scale and physical-size fill layers are not available yet.
 pub(crate) fn physical_size(ui: &mut Ui, id: &str, default_open: bool) {
+    const UNIT_FIELD_WIDTH_POINTS: f32 = 60.0;
+
     collapsible(ui, id, tr("Physical size"), default_open, Some(tr("The real-world size of one unit of the mesh")), |ui| {
-        check_row(
-            ui,
-            Some(tr("Use the unit scale stored in the mesh file")),
-            |ui| ui.radio(true, tr("Use mesh file's internal unit scale (recommended)")),
-            |_| {},
-        );
+        check_row(ui, Some(tr("Use the unit scale stored in the mesh file")), |ui| ui.radio(true, tr("Use the mesh file’s unit scale")), |_| {});
         check_row(
             ui,
             Some(tr("Set the size of one unit yourself")),
@@ -210,15 +183,15 @@ pub(crate) fn physical_size(ui: &mut Ui, id: &str, default_open: bool) {
             |_| {},
         );
         ui.horizontal(|ui| {
-            ui.add_space(3.0 * ROW_INDENT);
+            ui.add_space(3.0 * ROW_INDENT_POINTS);
             ui.label(tr("1 unit ="));
-            unavailable(ui.add_enabled(false, egui::TextEdit::singleline(&mut String::new()).desired_width(60.0)));
+            unavailable(ui.add_enabled(false, egui::TextEdit::singleline(&mut String::new()).desired_width(UNIT_FIELD_WIDTH_POINTS)));
             ui.label(tr("cm"));
         });
         check_row(
             ui,
             Some(tr("Fill layers of applied materials are scaled in physical size instead of UV space")),
-            |ui| unavailable(ui.add_enabled(false, egui::Checkbox::new(&mut false, tr("Switch fill layer scaling to Physical size when assigning materials")))),
+            |ui| unavailable(ui.add_enabled(false, egui::Checkbox::new(&mut false, tr("Scale material fills in real-world units")))),
             |_| {},
         );
     });
@@ -240,14 +213,13 @@ const OCIO_EXPORT: [(&str, &str, Option<&str>); 3] = [
 ];
 
 /// The Color management section. `mode` is the dropdown's choice: Legacy shows the working color
-/// space; OpenColorIO shows its settings, all disabled, and the dropdown's hover hint says it is not available yet
-/// (the project stays Legacy whatever is chosen).
+/// space. OpenColorIO previews disabled settings while the project continues to use Legacy.
 pub(crate) fn color_management(ui: &mut Ui, id: &str, mode: &mut ColorManagement) {
     collapsible(ui, id, tr("Color management"), true, None, |ui| {
         ui.label(caption(tr("Configuration")));
         row(ui, tr("Color management"), Some(tr("Legacy works in linear sRGB. OpenColorIO manages color through a configuration")), |ui| {
             let response = egui::ComboBox::from_id_salt(format!("{id}_mode"))
-                .width(FIELD_WIDTH)
+                .width(FIELD_WIDTH_POINTS)
                 .selected_text(tr(mode.label()))
                 .show_ui(ui, |ui| {
                     for choice in [ColorManagement::Legacy, ColorManagement::OpenColorIo] {
@@ -264,7 +236,7 @@ pub(crate) fn color_management(ui: &mut Ui, id: &str, mode: &mut ColorManagement
                 row(ui, tr(label), info.map(tr), |ui| disabled_combo(ui, &format!("{id}_{label}"), tr(value)));
             }
             row(ui, tr("Configuration file"), Some(tr("A custom OpenColorIO configuration file")), |ui| {
-                unavailable(ui.add_enabled(false, egui::TextEdit::singleline(&mut String::new()).desired_width(FIELD_WIDTH)));
+                unavailable(ui.add_enabled(false, egui::TextEdit::singleline(&mut String::new()).desired_width(FIELD_WIDTH_POINTS)));
             });
         }
 

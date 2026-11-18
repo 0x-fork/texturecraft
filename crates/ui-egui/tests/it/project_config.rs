@@ -9,8 +9,7 @@ use texturecraft_engine::Session;
 use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::file_dialogs::{Answer, Request};
 
-mod temp_dir;
-use temp_dir::TempDir;
+use super::temp_dir::TempDir;
 
 const QUAD: &str = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 1/1 2/2 3/3 4/4\n";
 const TRIANGLE: &str = "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nf 1/1 2/2 3/3\n";
@@ -136,7 +135,7 @@ fn every_setting_has_an_info_icon_and_the_window_ends_with_a_note() {
     let icons: Vec<_> = h.get_all_by_label(egui_phosphor::regular::INFO).collect();
     let tip = "Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it.";
 
-    assert!(h.query_by_label("Please note: Changing any of these settings will cause all channels to be recomputed.").is_some(), "the note above the buttons");
+    assert!(h.query_by_label("Changing the mesh or normal format can recalculate texture channels.").is_some(), "the note above the buttons");
     assert_eq!(
         icons.len(),
         13,
@@ -169,9 +168,9 @@ fn the_window_follows_the_reference_layout() {
         "PROJECT SETTINGS",
         "Compute tangent space per fragment",
         "UV Tile settings (UDIMs)",
-        "You can't change UV Tile settings once a project has been created.",
+        "Change the UV tiles of a texture set in Texture Set Settings",
         "Use UV Tile workflow",
-        "Convert UV Tiles into individual Texture Sets (legacy)",
+        "Use a separate texture set for each tile",
         "Import settings",
         "Import cameras",
         "Preserve stroke positions on mesh",
@@ -188,8 +187,8 @@ fn the_window_follows_the_reference_layout() {
     for (role, label) in [
         (Role::CheckBox, "Compute tangent space per fragment"),
         (Role::CheckBox, "Use UV Tile workflow"),
-        (Role::RadioButton, "Preserve UV Tile layout per material and enable painting across tiles"),
-        (Role::RadioButton, "Convert UV Tiles into individual Texture Sets (legacy)"),
+        (Role::RadioButton, "Keep UV tiles together per material"),
+        (Role::RadioButton, "Use a separate texture set for each tile"),
         (Role::CheckBox, "Import cameras"),
         (Role::CheckBox, "Auto-unwrap"),
         (Role::Button, "Auto-unwrap options"),
@@ -284,6 +283,9 @@ fn a_delayed_selection_does_not_change_a_window_reopened_after_layout_reset() {
 
     let context = harness.ctx.clone();
     texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, "ui.resetUi");
+    harness.run_steps(2);
+    harness.get_by_label("Reset").click();
+    harness.run_steps(2);
     open_window(&mut harness);
 
     assert!(harness.state().ui.windows.project_config.as_ref().is_some_and(|config| config.mesh.is_none()));
@@ -627,7 +629,7 @@ fn uv_tiles_are_shown_read_only() {
     assert!(h.query_by_label("UV Tile settings (UDIMs)").is_some());
     hover_uv_tile_box(&mut h);
     assert!(h.query_by_label_contains("No UV tiles").is_some(), "a project without UV tiles");
-    assert!(h.query_by_label("You can't change UV Tile settings once a project has been created.").is_some());
+    assert!(h.query_by_label("Change the UV tiles of a texture set in Texture Set Settings").is_some());
 
     click(&mut h, Role::Button, "Cancel");
 

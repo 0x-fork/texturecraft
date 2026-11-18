@@ -14,8 +14,8 @@ use crate::dock::info_icon;
 use crate::file_dialogs::{Bound, FileDialog};
 use crate::i18n::{tr, trf};
 use crate::project_form::{
-    FIELD_WIDTH, ROW_INDENT, auto_unwrap_row, check_row, color_management, note, physical_size, row, sub_title, tangent_space_row, unavailable, uv_tile_radios,
-    uv_tile_title,
+    FIELD_WIDTH_POINTS, ROW_INDENT_POINTS, auto_unwrap_row, check_row, color_management, note, physical_size, row, sub_title, tangent_space_row, unavailable,
+    uv_tile_radios,
 };
 use crate::state::ProjectConfig;
 use crate::theme::{Tokens, caption};
@@ -39,6 +39,7 @@ pub(crate) fn open(app: &mut TextureCraftApp) {
     // Layout resets must not reuse an identity held by a pending file picker
     static NEXT_OPENING_ID: AtomicU64 = AtomicU64::new(1);
 
+    app.ui.windows.import_resources = None;
     app.ui.windows.project_config = Some(ProjectConfig {
         mesh: None,
         reimport: false,
@@ -115,38 +116,30 @@ fn format_name(format: NormalFormat) -> &'static str {
 }
 
 pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    let Some(mut config) = app.ui.windows.project_config.clone() else { return };
+    let Some(mut config) = app.ui.windows.project_config.take() else { return };
 
     // Choices for another project cannot be applied here
     if config.project != app.session.project_id {
-        app.ui.windows.project_config = None;
         return;
     }
 
     let project = &app.session.doc.project;
-    let current_mesh_path = project.mesh_path.clone();
+    let current_mesh_path = &project.mesh_path;
 
     // Show the imported name when there is no file path
-    let mesh_label = if current_mesh_path.is_empty() { project.mesh_file.clone() } else { current_mesh_path.clone() };
+    let mesh_label = if current_mesh_path.is_empty() { &project.mesh_file } else { current_mesh_path };
     let source_file_available = app.session.remembered_mesh_path().is_some();
     let current_normal_format = project.normal_format;
 
-    // Keep each texture set's tiles together for the read-only list
-    let texture_set_tiles: Vec<(String, Option<String>)> = project
-        .texture_sets
-        .iter()
-        .map(|set| (set.name.clone(), (!set.uv_tiles.is_empty()).then(|| set.uv_tiles.iter().map(u32::to_string).collect::<Vec<_>>().join(", "))))
-        .collect();
-
     // Re-selecting the current path cancels an earlier choice
-    let chosen_mesh = config.mesh.as_ref().filter(|chosen| **chosen != current_mesh_path).cloned();
+    let chosen_mesh = config.mesh.as_deref().filter(|chosen| *chosen != current_mesh_path);
 
     let mut open = true;
     let (mut ok, mut cancel, mut select) = (std::mem::take(&mut config.confirm), false, false);
 
     // A fixed height keeps the centered window still while its sections lay out
-    let form_height =
-        (ctx.content_rect().height() - DIALOG_VIEWPORT_MARGIN_POINTS - DIALOG_CHROME_HEIGHT_POINTS).clamp(120.0, crate::project_form::FORM_HEIGHT);
+    let form_height = (ctx.content_rect().height() - DIALOG_VIEWPORT_MARGIN_POINTS - DIALOG_CHROME_HEIGHT_POINTS)
+        .clamp(crate::project_form::MIN_FORM_HEIGHT_POINTS, crate::project_form::FORM_HEIGHT_POINTS);
     let dialog = crate::windows::dialog("project_config", tr("Project configuration"), &mut open).default_width(DEFAULT_DIALOG_WIDTH_POINTS);
 
     dialog.show(ctx, |ui| {
@@ -156,10 +149,10 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             ui.label(caption(tr("3D MESH")));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.add_space(ROW_INDENT);
+                ui.add_space(ROW_INDENT_POINTS);
                 ui.label(tr("3D mesh"));
 
-                let display_path = chosen_mesh.clone().unwrap_or_else(|| mesh_label.clone());
+                let display_path = chosen_mesh.unwrap_or(mesh_label);
                 let font = egui::TextStyle::Body.resolve(ui.style());
                 let path_width_points = (ui.available_width() - SELECT_BUTTON_WIDTH_POINTS).max(MIN_FIELD_WIDTH_POINTS);
                 let painter = ui.painter().clone();
@@ -171,7 +164,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     if display_path.is_empty() {
                         ui.weak(tr("Built-in mesh"));
                     } else {
-                        ui.label(elide_start(&display_path, measure)).on_hover_text(&display_path);
+                        ui.label(elide_start(display_path, measure)).on_hover_text(display_path);
                     }
                 });
             });
@@ -206,7 +199,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 Some(tr("Green channel convention of normal maps: OpenGL (Y+) or DirectX (Y-). Imported and exported normal maps follow it.")),
                 |ui| {
                     egui::ComboBox::from_id_salt(tr("Normal map format"))
-                        .width(FIELD_WIDTH)
+                        .width(FIELD_WIDTH_POINTS)
                         .wrap_mode(egui::TextWrapMode::Truncate)
                         .selected_text(format_name(shown_format))
                         .show_ui(ui, |ui| {
@@ -226,26 +219,27 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
 
             // Texture Set Settings owns UV tile changes
             ui.add_space(4.0);
-            uv_tile_title(ui, tr("The UV tiles (UDIMs) of each texture set, shown for reference. Change them in Texture Set Settings."));
-            note(ui, tr("You can't change UV Tile settings once a project has been created."));
-            let has_tiles = texture_set_tiles.iter().any(|(_, tile_text)| tile_text.is_some());
+            sub_title(ui, tr("UV Tile settings (UDIMs)"), Some(tr("View the UV tiles assigned to each texture set")));
             let tiles_hint = tr("Change the UV tiles of a texture set in Texture Set Settings");
+            note(ui, tiles_hint);
+            let mut has_tiles = project.texture_sets.iter().any(|set| !set.uv_tiles.is_empty());
 
-            // The project's tiles are listed in the hover hint, the window shows only the reference's text
-            let mut tile_lines: Vec<String> = texture_set_tiles
-                .iter()
-                .filter_map(|(name, tile_text)| {
-                    let tile_list = tile_text.as_deref()?;
-                    Some(if texture_set_tiles.len() > 1 { trf("{set}: {tiles}", &[("set", name), ("tiles", &tile_list)]) } else { tile_list.to_string() })
-                })
-                .collect();
-            if tile_lines.is_empty() {
-                tile_lines.push(tr("No UV tiles").to_string());
-            }
-            tile_lines.push(tiles_hint.to_string());
-            let tiles_text = tile_lines.join("\n");
-            check_row(ui, None, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut has_tiles.clone(), tr("Use UV Tile workflow"))), |_| {})
-                .on_disabled_hover_text(&tiles_text);
+            check_row(ui, None, |ui| ui.add_enabled(false, egui::Checkbox::new(&mut has_tiles, tr("Use UV Tile workflow"))), |_| {})
+                .on_disabled_hover_ui(|ui| {
+                    ui.set_max_width(ui.spacing().tooltip_width);
+                    if !has_tiles {
+                        ui.label(tr("No UV tiles"));
+                    }
+
+                    for set in project.texture_sets.iter().filter(|set| !set.uv_tiles.is_empty()) {
+                        let tiles = set.uv_tiles.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+                        if project.texture_sets.len() > 1 {
+                            ui.label(trf("{set}: {tiles}", &[("set", &set.name), ("tiles", &tiles)]));
+                        } else {
+                            ui.label(tiles);
+                        }
+                    }
+                });
             uv_tile_radios(ui, false, tiles_hint);
 
             ui.add_space(4.0);
@@ -273,7 +267,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         });
 
         ui.add_space(8.0);
-        ui.label(egui::RichText::new(tr("Please note: Changing any of these settings will cause all channels to be recomputed.")).color(Tokens::get(ui.ctx()).warning));
+        ui.label(egui::RichText::new(tr("Changing the mesh or normal format can recalculate texture channels.")).color(Tokens::get(ui.ctx()).warning));
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -289,17 +283,17 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         app.ask_file(dialog, Bound::Project, move |app, paths| {
             let Some(path) = paths.first().map(|p| p.display().to_string()) else { return };
 
-            let current_mesh_path = app.session.doc.project.mesh_path.clone();
+            let current_mesh_path = &app.session.doc.project.mesh_path;
             if let Some(config) = app.ui.windows.project_config.as_mut().filter(|config| config.opening_id == opening_id) {
                 // Re-selecting the source file drops an earlier choice
-                config.mesh = (path != current_mesh_path).then_some(path);
+                config.mesh = (path != *current_mesh_path).then_some(path);
             }
         });
     }
 
     // Apply the mesh first so a failed mesh change leaves the format untouched
     let mut mesh_applied = false;
-    let done = ok && {
+    let done = ok && !cancel && open && {
         let reimport = config.reimport.then(|| app.session.remembered_mesh_path().map(str::to_string)).flatten();
         mesh_applied = if config.reimport && chosen_mesh.is_none() && reimport.is_none() {
             // Drop a stale reimport tick so the user can retry the remaining settings
@@ -307,7 +301,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             config.reimport = false;
             false
         } else {
-            match mesh_command(chosen_mesh.as_deref(), reimport.as_deref(), config.preserve) {
+            match mesh_command(chosen_mesh, reimport.as_deref(), config.preserve) {
                 Some((command, params)) => app.run(command, params).is_some(),
                 None => true,
             }
@@ -324,17 +318,13 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             }
     };
 
-    if done || cancel || !open {
-        app.ui.windows.project_config = None;
-    } else if let Some(stored) = app.ui.windows.project_config.as_mut() {
-        // A file answer arrives later through the stored state
-        (stored.reimport, stored.preserve, stored.normal_format, stored.color_management, stored.confirm) =
-            (config.reimport, config.preserve, config.normal_format, config.color_management, false);
-
+    if !done && !cancel && open {
         // A format retry must not reimport an already changed mesh
         if ok && mesh_applied {
-            (stored.mesh, stored.reimport) = (None, false);
+            (config.mesh, config.reimport) = (None, false);
         }
+
+        app.ui.windows.project_config = Some(config);
     }
 }
 

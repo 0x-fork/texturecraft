@@ -11,6 +11,8 @@ use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::new_project_advanced::create_command;
 use texturecraft_ui_egui::project_form::{NOT_AVAILABLE, OCIO_NOT_AVAILABLE};
 
+use super::temp_dir::TempDir;
+
 /// A quad whose UVs lie in UV tile 1002 and a camera-free OBJ
 const TILE_1002_QUAD: &str = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 1.1 0.1\nvt 1.9 0.1\nvt 1.9 0.9\nvt 1.1 0.9\nf 1/1 2/2 3/3 4/4\n";
 
@@ -30,12 +32,60 @@ fn harness_sized(size: egui::Vec2) -> Harness<'static, TextureCraftApp> {
     h
 }
 
-fn mesh_file(test: &str, contents: &str) -> String {
-    let dir = std::env::temp_dir().join(format!("texturecraft-np-window-{test}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+fn mesh_file(dir: &std::path::Path, contents: &str) -> String {
     let path = dir.join("tiles.obj");
     std::fs::write(&path, contents).unwrap();
+
     path.display().to_string()
+}
+
+#[test]
+fn cancel_drops_the_selected_mesh_buffer() {
+    let mut h = harness();
+    let bytes = std::sync::Arc::new(vec![0; 1024 * 1024]);
+    let buffer = std::sync::Arc::downgrade(&bytes);
+    h.state_mut().ui.new_project.file = Some("cancel.obj".into());
+    h.state_mut().ui.new_project.file_bytes = Some(bytes);
+    h.run_steps(3);
+
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run_steps(3);
+
+    assert!(!h.state().ui.windows.new_project);
+    assert!(buffer.upgrade().is_none());
+}
+
+#[test]
+fn create_keeps_the_mesh_buffer_for_retry_and_drops_it_after_success() {
+    let dir = TempDir::new("new-project-create-retry");
+    let path = dir.join("retry.obj");
+    let mut h = harness();
+    let bytes = std::sync::Arc::new(vec![0; 2 * 1024 * 1024]);
+    let buffer = std::sync::Arc::downgrade(&bytes);
+    h.state_mut().ui.new_project.resolution = 128;
+    h.state_mut().ui.new_project.file = Some(path.display().to_string());
+    h.state_mut().ui.new_project.file_bytes = Some(bytes);
+    h.run_steps(3);
+
+    h.get_by_role_and_label(Role::Button, "Create").click();
+    h.run_steps(3);
+
+    assert!(h.state().ui.windows.new_project);
+    assert!(buffer.upgrade().is_some());
+    assert_eq!(h.state().session.doc.project.name, "Open");
+
+    std::fs::write(&path, TILE_1002_QUAD).unwrap();
+    let color_map = dir.join("retry_basecolor.png");
+    image::RgbaImage::new(4, 4).save(&color_map).unwrap();
+    texturecraft_ui_egui::pbr_import::begin(h.state_mut(), serde_json::json!({"files": [color_map]}));
+    assert!(h.state().pbr_import.is_some());
+    h.get_by_role_and_label(Role::Button, "Create").click();
+    h.run_steps(3);
+
+    assert!(!h.state().ui.windows.new_project);
+    assert!(buffer.upgrade().is_none());
+    assert!(h.state().pbr_import.is_none());
+    assert_eq!(h.state().session.doc.project.name, "retry");
 }
 
 fn top(h: &Harness<'_, TextureCraftApp>, label: &str) -> f32 {
@@ -51,7 +101,7 @@ fn ticked(h: &Harness<'_, TextureCraftApp>, role: Role, label: &str) -> bool {
 }
 
 #[test]
-fn the_sections_follow_the_reference_order() {
+fn the_sections_follow_the_project_setup_order() {
     let h = harness();
     let order = [
         "BASIC SETTINGS",
@@ -62,20 +112,20 @@ fn the_sections_follow_the_reference_order() {
         "Normal map format",
         "Compute tangent space per fragment",
         "UV Tile settings (UDIMs)",
-        "You won't be able to change UV Tile settings after creating the project.",
+        "You can enable or disable UV tiles later in Texture Set Settings.",
         "Use UV Tile workflow",
-        "Preserve UV Tile layout per material and enable painting across tiles",
-        "Convert UV Tiles into individual Texture Sets (legacy)",
+        "Keep UV tiles together per material",
+        "Use a separate texture set for each tile",
         "Import settings",
         "Import cameras",
         "Auto-unwrap",
         "Import baked maps",
         "Import mesh normal maps and baked maps for all materials.",
-        "Automatic normal maps assignation scheme: $(MATERIAL_NAME)_normal",
+        "Normal map filename: <texture set>_normal",
         "Physical size",
-        "Use mesh file's internal unit scale (recommended)",
+        "Use the mesh file’s unit scale",
         "Custom unit scale",
-        "Switch fill layer scaling to Physical size when assigning materials",
+        "Scale material fills in real-world units",
         "Color management",
         "Working color space",
     ];
@@ -97,12 +147,12 @@ fn the_defaults_match_the_reference() {
     assert!(h.query_by_value("Legacy").is_some());
     assert!(!ticked(&h, Role::CheckBox, "Compute tangent space per fragment"));
     assert!(!ticked(&h, Role::CheckBox, "Use UV Tile workflow"));
-    assert!(ticked(&h, Role::RadioButton, "Preserve UV Tile layout per material and enable painting across tiles"));
-    assert!(disabled(&h, Role::RadioButton, "Preserve UV Tile layout per material and enable painting across tiles"), "greyed while UV tiles are off");
+    assert!(ticked(&h, Role::RadioButton, "Keep UV tiles together per material"));
+    assert!(disabled(&h, Role::RadioButton, "Keep UV tiles together per material"), "greyed while UV tiles are off");
     assert!(ticked(&h, Role::CheckBox, "Import cameras") && !disabled(&h, Role::CheckBox, "Import cameras"));
     assert!(ticked(&h, Role::CheckBox, "Auto-unwrap"));
-    assert!(ticked(&h, Role::RadioButton, "Use mesh file's internal unit scale (recommended)"));
-    assert!(!ticked(&h, Role::CheckBox, "Switch fill layer scaling to Physical size when assigning materials"));
+    assert!(ticked(&h, Role::RadioButton, "Use the mesh file’s unit scale"));
+    assert!(!ticked(&h, Role::CheckBox, "Scale material fills in real-world units"));
 }
 
 #[test]
@@ -121,7 +171,8 @@ fn create_waits_for_a_mesh_file() {
 
     assert!(disabled(&h, Role::Button, "Create"));
 
-    h.state_mut().ui.new_project.file = Some(mesh_file("create-enabled", TILE_1002_QUAD));
+    let dir = TempDir::new("new-project-create-enabled");
+    h.state_mut().ui.new_project.file = Some(mesh_file(&dir, TILE_1002_QUAD));
     h.run_steps(2);
 
     assert!(!disabled(&h, Role::Button, "Create"));
@@ -133,17 +184,16 @@ fn settings_not_available_yet_are_disabled_with_a_hint() {
     let mut h = harness();
     let unavailable = [
         (Role::CheckBox, "Compute tangent space per fragment"),
-        (Role::Button, egui_phosphor::regular::GRADUATION_CAP),
-        (Role::RadioButton, "Convert UV Tiles into individual Texture Sets (legacy)"),
+        (Role::RadioButton, "Use a separate texture set for each tile"),
         (Role::CheckBox, "Auto-unwrap"),
         (Role::Button, "Auto-unwrap options"),
         (Role::RadioButton, "Custom unit scale"),
-        (Role::CheckBox, "Switch fill layer scaling to Physical size when assigning materials"),
+        (Role::CheckBox, "Scale material fills in real-world units"),
     ];
     for (role, label) in unavailable {
         assert!(disabled(&h, role, label), "{label} is disabled");
     }
-    assert!(!disabled(&h, Role::RadioButton, "Use mesh file's internal unit scale (recommended)"));
+    assert!(!disabled(&h, Role::RadioButton, "Use the mesh file’s unit scale"));
 
     for (role, label) in unavailable {
         let center = h.get_by_role_and_label(role, label).rect().center();
@@ -236,13 +286,14 @@ fn the_supported_settings_reach_the_create_command() {
 fn ticking_uv_tiles_creates_a_uv_tile_project() {
     for (tick, expected) in [(false, Vec::<u32>::new()), (true, vec![1002])] {
         let mut h = harness();
-        h.state_mut().ui.new_project.file = Some(mesh_file(&format!("udim-{tick}"), TILE_1002_QUAD));
+        let dir = TempDir::new("new-project-udim");
+        h.state_mut().ui.new_project.file = Some(mesh_file(&dir, TILE_1002_QUAD));
         h.state_mut().ui.new_project.resolution = 128;
         h.run_steps(2);
         if tick {
             h.get_by_role_and_label(Role::CheckBox, "Use UV Tile workflow").click();
             h.run_steps(3);
-            assert!(!disabled(&h, Role::RadioButton, "Preserve UV Tile layout per material and enable painting across tiles"));
+            assert!(!disabled(&h, Role::RadioButton, "Keep UV tiles together per material"));
         }
         h.get_by_role_and_label(Role::CheckBox, "Import cameras").click();
         h.run_steps(2);
@@ -285,4 +336,52 @@ fn picking_a_template_sets_its_resolution_and_normal_map_format() {
     assert!(h.query_by_value("128 x 128").is_some(), "the template's resolution (the open project's 128 px)");
     assert!(h.query_by_value("DirectX").is_some(), "the template's normal map format");
     assert_eq!(h.state().ui.new_project.resolution, 128);
+}
+
+#[test]
+fn create_asks_before_discarding_edits_made_after_the_form_opened() {
+    let dir = TempDir::new("new-project-unsaved");
+    let path = dir.join("tiles.obj");
+    let mut h = harness();
+    h.state_mut().ui.new_project.file = Some(path.display().to_string());
+    h.state_mut().ui.new_project.resolution = 128;
+    h.state_mut().run("layer.add.paint", serde_json::Value::Null).unwrap();
+    h.run_steps(3);
+
+    h.get_by_role_and_label(Role::Button, "Create").click();
+    h.run_steps(3);
+
+    assert!(h.query_by_label("Unsaved changes").is_some());
+    assert_eq!(h.state().session.doc.project.name, "Open");
+
+    h.get_by_role_and_label(Role::Button, "Don't save").click();
+    h.run_steps(3);
+
+    assert!(h.state().ui.windows.new_project);
+    assert!(h.state().session.modified, "a failed replacement keeps the old project dirty");
+    assert_eq!(h.state().session.doc.project.name, "Open");
+
+    std::fs::write(path, TILE_1002_QUAD).unwrap();
+    h.get_by_role_and_label(Role::Button, "Create").click();
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Don't save").click();
+    h.run_steps(3);
+
+    assert_eq!(h.state().session.doc.project.name, "tiles");
+    assert!(!h.state().ui.windows.new_project);
+}
+
+#[test]
+fn a_layout_that_closes_new_project_releases_the_selected_mesh() {
+    let mut h = harness();
+    let bytes = std::sync::Arc::new(vec![0; 1024 * 1024]);
+    let buffer = std::sync::Arc::downgrade(&bytes);
+    let ui = &mut h.state_mut().ui;
+    ui.new_project.file = Some("reset.obj".into());
+    ui.new_project.file_bytes = Some(bytes);
+
+    ui.adopt_layout(texturecraft_ui_egui::UiState::default());
+
+    assert!(!ui.windows.new_project);
+    assert!(buffer.upgrade().is_none());
 }
