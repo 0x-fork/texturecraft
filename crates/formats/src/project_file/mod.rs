@@ -81,9 +81,12 @@ pub struct ProjectFile {
     pub warnings: Vec<String>,
 }
 
+/// Maximum length of a resource name after sanitization.
+pub const MAX_RESOURCE_NAME_LEN: usize = 120;
+
 /// A resource name safe as a zip entry and a file name: `[A-Za-z0-9_.-]`, at most 120 chars.
 pub fn sanitize_resource_name(name: &str) -> String {
-    let s: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '_' }).take(120).collect();
+    let s: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '_' }).take(MAX_RESOURCE_NAME_LEN).collect();
     let s = s.trim_start_matches('.').to_string();
     if s.is_empty() { "resource".into() } else { s }
 }

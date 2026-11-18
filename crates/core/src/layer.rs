@@ -378,6 +378,7 @@ impl ProceduralKind {
         ProceduralKind::KnottyWood,
         ProceduralKind::TileGenerator,
     ];
+
     pub fn label(self) -> &'static str {
         match self {
             ProceduralKind::Clouds => "Clouds",
@@ -425,9 +426,12 @@ impl ProceduralKind {
             ProceduralKind::TileGenerator => "Tile Generator",
         }
     }
-    pub fn parse(s: &str) -> Option<ProceduralKind> {
-        let norm = |x: &str| x.to_ascii_lowercase().replace([' ', '_', '-'], "");
-        ProceduralKind::ALL.into_iter().find(|k| norm(k.label()) == norm(s) || norm(&format!("{k:?}")) == norm(s))
+
+    pub fn parse(name: &str) -> Option<ProceduralKind> {
+        let normalize = |text: &str| text.to_ascii_lowercase().replace([' ', '_', '-'], "");
+        let name = normalize(name);
+
+        ProceduralKind::ALL.into_iter().find(|kind| normalize(kind.label()) == name || normalize(&format!("{kind:?}")) == name)
     }
 }
 
@@ -1596,11 +1600,20 @@ mod tests {
 
     #[test]
     fn generator_kinds_parse() {
-        for k in GeneratorKind::ALL {
-            assert_eq!(GeneratorKind::parse(&format!("{k:?}")), Some(k));
+        for kind in GeneratorKind::ALL {
+            assert_eq!(GeneratorKind::parse(&format!("{kind:?}")), Some(kind));
         }
-        for k in ProceduralKind::ALL {
-            assert_eq!(ProceduralKind::parse(k.label()), Some(k));
+    }
+
+    #[test]
+    fn procedural_kinds_parse_labels_and_saved_names() {
+        for kind in ProceduralKind::ALL {
+            let saved_name = format!("{kind:?}");
+
+            assert_eq!(ProceduralKind::parse(kind.label()), Some(kind));
+            assert_eq!(ProceduralKind::parse(&saved_name), Some(kind));
+            assert_eq!(serde_json::to_value(kind).unwrap(), serde_json::Value::String(saved_name));
+            assert_eq!(serde_json::from_value::<ProceduralKind>(serde_json::to_value(kind).unwrap()).unwrap(), kind);
         }
     }
 }

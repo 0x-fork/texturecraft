@@ -5,7 +5,11 @@ use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_texel::noise;
 
 use crate::pattern_context::PatternContext;
-use crate::{fabric, organic, timber};
+use crate::{
+    fabric,
+    organic::{self, lattice_fbm, smoothstep, unit},
+    timber,
+};
 
 /// Smaller pattern scales are read as this: a pattern stretched over ten thousand repeats of its projection
 const MIN_PATTERN_SCALE: f32 = 1e-4;
@@ -175,22 +179,28 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
 /// and two rows of tiles, a little taller than regular hexagons so that the pattern, tones
 /// included, repeats every unit.
 fn hexagon_tiles(p: Vec3, seed: u32) -> f32 {
-    let p = within_unit(p);
-    const ROW: f32 = 1.732_050_8;
-    // Regular hexagons of width 1 in (u, v), centers on two lattices offset by half a repeat
-    let q = Vec2::new(p.x * 2.0, p.y * ROW);
-    let repeat = Vec2::new(1.0, ROW);
-    let wrap = |q: Vec2| q - repeat * (q / repeat).round();
-    let (a, b) = (wrap(q), wrap(q - repeat * 0.5));
-    let local = if a.length_squared() < b.length_squared() { a } else { b };
+    const VERTICAL_REPEAT: f32 = 1.732_050_8;
+    const SIN_60: f32 = 0.866_025_4;
+    const APOTHEM: f32 = 0.5;
+    const JOINT_WIDTH: f32 = 0.012;
+    const JOINT_FADE_END: f32 = 0.045;
+    let uv = unit(p);
 
-    // Distance to the nearest edge: the apothem is 0.5 and the edge normals sit at 0, 60 and 120 degrees
-    let reach = local.x.abs().max((local.x * 0.5 + local.y * 0.866_025_4).abs()).max((local.x * 0.5 - local.y * 0.866_025_4).abs());
-    let joint = smoothstep(0.012, 0.045, 0.5 - reach);
+    // Regular hexagons of width 1 have centers on two lattices half a repeat apart
+    let point = Vec2::new(uv.x * 2.0, uv.y * VERTICAL_REPEAT);
+    let repeat = Vec2::new(1.0, VERTICAL_REPEAT);
+    let wrap = |point: Vec2| point - repeat * (point / repeat).round();
+    let first = wrap(point);
+    let second = wrap(point - repeat * 0.5);
+    let local = if first.length_squared() < second.length_squared() { first } else { second };
+
+    // Project onto the edge normals at 0, 60 and 120 degrees
+    let reach = local.x.abs().max((local.x * 0.5 + local.y * SIN_60).abs()).max((local.x * 0.5 - local.y * SIN_60).abs());
+    let joint = smoothstep(JOINT_WIDTH, JOINT_FADE_END, APOTHEM - reach);
 
     // Tile centers sit on a half-repeat grid: four columns and two rows of them per unit
-    let center = q - local;
-    let (column, row) = ((center.x * 2.0).round() as i32, (center.y / ROW * 2.0).round() as i32);
+    let center = point - local;
+    let (column, row) = ((center.x * 2.0).round() as i32, (center.y / VERTICAL_REPEAT * 2.0).round() as i32);
     let tone = noise::cell_hash(column.rem_euclid(4), row.rem_euclid(2), 0, seed);
     joint * (0.8 + 0.2 * tone)
 }
@@ -199,22 +209,27 @@ fn hexagon_tiles(p: Vec3, seed: u32) -> f32 {
 /// V grows downwards in texture space, so the row with the largest V covers the others and each
 /// circle shows its top arcs. Repeats every unit.
 fn wave_scales(p: Vec3) -> f32 {
-    let p = within_unit(p);
-    let row = (p.y * 4.0).floor() as i32;
-    // Rows from the last one back: the first circle that reaches the point is the one on top
-    for j in ((row - 2)..=(row + 2)).rev() {
-        let dy = p.y - j as f32 * 0.25;
-        if dy.abs() > 0.5 {
+    const ROW_SPACING: f32 = 0.25;
+    const CIRCLE_RADIUS: f32 = 0.5;
+    const NEIGHBOR_ROWS: i32 = 2;
+    const ARC_COUNT: f32 = 3.5;
+    const RIM_START: f32 = 0.9;
+    let uv = unit(p);
+    let row = (uv.y / ROW_SPACING).floor() as i32;
+
+    // Search from the topmost overlapping row so its circle wins
+    for circle_row in ((row - NEIGHBOR_ROWS)..=(row + NEIGHBOR_ROWS)).rev() {
+        let dy = uv.y - circle_row as f32 * ROW_SPACING;
+        if dy.abs() > CIRCLE_RADIUS {
             continue;
         }
 
-        let shift = if j.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
-        let dx = p.x - ((p.x - shift).round() + shift);
-        let t = (dx * dx + dy * dy).sqrt() / 0.5;
-        if t <= 1.0 {
-            // Concentric arcs, brighter towards the middle, with a dark rim where the next circle begins
-            let arcs = 0.5 + 0.5 * (std::f32::consts::TAU * 3.5 * t).cos();
-            let rim = 1.0 - 0.7 * smoothstep(0.9, 1.0, t);
+        let shift = if circle_row.rem_euclid(2) == 1 { 0.5 } else { 0.0 };
+        let dx = uv.x - ((uv.x - shift).round() + shift);
+        let radial_fraction = (dx * dx + dy * dy).sqrt() / CIRCLE_RADIUS;
+        if radial_fraction <= 1.0 {
+            let arcs = 0.5 + 0.5 * (std::f32::consts::TAU * ARC_COUNT * radial_fraction).cos();
+            let rim = 1.0 - 0.7 * smoothstep(RIM_START, 1.0, radial_fraction);
             return ((0.3 + 0.7 * arcs) * rim).clamp(0.0, 1.0);
         }
     }
@@ -226,27 +241,28 @@ fn wave_scales(p: Vec3) -> f32 {
 /// grain of its own. Six plank widths make a repeat, so the pattern, tones included, repeats
 /// every unit.
 fn herringbone_planks(p: Vec3, seed: u32) -> f32 {
-    let p = within_unit(p);
-    const LENGTH: i32 = 3;
-    const CELLS: i32 = 2 * LENGTH;
-    let (x, y) = (p.x * CELLS as f32, p.y * CELLS as f32);
-    let (i, j) = (x.floor() as i32, y.floor() as i32);
-    let (fx, fy) = (x - i as f32, y - j as f32);
+    const LENGTH_IN_WIDTHS: i32 = 3;
+    const CELLS: i32 = 2 * LENGTH_IN_WIDTHS;
+    const GAP_WIDTH: f32 = 0.015;
+    const GAP_FADE_END: f32 = 0.06;
+    let position = unit(p) * CELLS as f32;
+    let (column, row) = (position.x.floor() as i32, position.y.floor() as i32);
+    let local = position - Vec2::new(column as f32, row as f32);
 
-    // Along the diagonal the planks alternate: LENGTH cells of horizontal plank, then LENGTH of vertical
-    let phase = (i - j).rem_euclid(CELLS);
-    let (along, across, plank) = if phase < LENGTH {
-        (phase as f32 + fx, fy, (i - phase, j, 0))
+    // Alternate a full horizontal plank and a full vertical plank along the diagonal
+    let phase = (column - row).rem_euclid(CELLS);
+    let (along, across, origin_column, origin_row, orientation) = if phase < LENGTH_IN_WIDTHS {
+        (phase as f32 + local.x, local.y, column - phase, row, 0)
     } else {
         let step = CELLS - 1 - phase;
-        (step as f32 + fy, fx, (i, j - step, 1))
+        (step as f32 + local.y, local.x, column, row - step, 1)
     };
-    let along = along / LENGTH as f32;
+    let along = along / LENGTH_IN_WIDTHS as f32;
 
     // Distance to the plank's border, in plank widths
-    let edge = across.min(1.0 - across).min(along.min(1.0 - along) * LENGTH as f32);
-    let body = smoothstep(0.015, 0.06, edge);
-    let tone = noise::cell_hash(plank.0.rem_euclid(CELLS), plank.1.rem_euclid(CELLS), plank.2, seed);
+    let edge = across.min(1.0 - across).min(along.min(1.0 - along) * LENGTH_IN_WIDTHS as f32);
+    let body = smoothstep(GAP_WIDTH, GAP_FADE_END, edge);
+    let tone = noise::cell_hash(origin_column.rem_euclid(CELLS), origin_row.rem_euclid(CELLS), orientation, seed);
     let grain = noise::value([along * 3.0, across * 28.0, tone * 31.0], seed ^ 0x7B);
     body * (0.55 + 0.25 * tone + 0.2 * grain)
 }
@@ -255,63 +271,34 @@ fn herringbone_planks(p: Vec3, seed: u32) -> f32 {
 /// by a cloudy tone. Each dot keeps the tone at its center and the tone repeats every unit, so the
 /// pattern does too.
 fn halftone_dots(p: Vec3, seed: u32) -> f32 {
-    // Even, so that the turned grid lines up again after one unit
-    const DOTS: f32 = 16.0;
-    let p = within_unit(p);
-    let q = Vec2::new(p.x, p.y) * DOTS;
+    // An even grid makes both axes repeat after one unit
+    const GRID_SCALE: f32 = 16.0;
+    const MIN_RADIUS: f32 = 0.12;
+    const RADIUS_VARIATION: f32 = 0.6;
+    const EDGE_FEATHER: f32 = 0.05;
+    const TONE_OCTAVES: [(i32, f32); 3] = [(3, 0.55), (6, 0.3), (12, 0.15)];
+    let point = unit(p) * GRID_SCALE;
 
-    // In (u, v) the turned grid is the integer grid; its points are √2 apart in q. The point lies
-    // in the square of four of them, and the dot that covers it most shows: there is no edge
-    // where the choice of dot jumps, so dots that meet stay continuous
-    const SMALLEST: f32 = 0.12;
-    const GROWTH: f32 = 0.6;
-    const EDGE: f32 = 0.05;
-    let (u, v) = ((q.x + q.y) * 0.5, (q.x - q.y) * 0.5);
+    // Max coverage from the four surrounding centers keeps overlapping dots continuous
+    let cell = Vec2::new((point.x + point.y) * 0.5, (point.x - point.y) * 0.5).floor();
     let mut coverage = 0.0f32;
-    for (du, dv) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-        let (cu, cv) = (u.floor() + du, v.floor() + dv);
-        let center = Vec2::new(cu + cv, cu - cv);
-        let distance = (q - center).length();
-        // Skips the tone, the costly part, where even the largest dot would not reach
-        if distance >= SMALLEST + GROWTH + EDGE {
+    for offset in [Vec2::ZERO, Vec2::X, Vec2::Y, Vec2::ONE] {
+        let corner = cell + offset;
+        let center = Vec2::new(corner.x + corner.y, corner.x - corner.y);
+        let distance = (point - center).length();
+
+        // Skip tone sampling where even the largest dot cannot reach
+        if distance >= MIN_RADIUS + RADIUS_VARIATION + EDGE_FEATHER {
             continue;
         }
 
-        // Stretched, as a sum of octaves gathers around the middle
-        let tone = smoothstep(0.25, 0.75, periodic_fbm(center / DOTS, seed));
-        let radius = SMALLEST + GROWTH * tone;
-        coverage = coverage.max(1.0 - smoothstep(radius - EDGE, radius + EDGE, distance));
+        // Stretch the noise because weighted octaves cluster around the middle
+        let tone = smoothstep(0.25, 0.75, lattice_fbm(center / GRID_SCALE, &TONE_OCTAVES, seed));
+        let radius = MIN_RADIUS + RADIUS_VARIATION * tone;
+        coverage = coverage.max(1.0 - smoothstep(radius - EDGE_FEATHER, radius + EDGE_FEATHER, distance));
     }
 
     coverage
-}
-
-/// `p` moved by whole units into the unit square, for patterns that repeat every unit: their
-/// integer cell indices then stay small, and a large coordinate keeps its precision. A coordinate
-/// that is not finite becomes 0
-fn within_unit(p: Vec3) -> Vec3 {
-    let wrap = |x: f32| if x.is_finite() { x.rem_euclid(1.0) } else { 0.0 };
-    Vec3::new(wrap(p.x), wrap(p.y), p.z)
-}
-
-/// Smooth value noise in 0..1 on a lattice of `cells` × `cells` per unit, whose indices wrap, so
-/// the noise repeats every unit
-fn periodic_value_noise(at: Vec2, cells: i32, seed: u32) -> f32 {
-    let q = at * cells as f32;
-    let (i, j) = (q.x.floor() as i32, q.y.floor() as i32);
-    let f = q - Vec2::new(i as f32, j as f32);
-    let s = f * f * (Vec2::splat(3.0) - 2.0 * f);
-    let corner = |di: i32, dj: i32| noise::cell_hash((i + di).rem_euclid(cells), (j + dj).rem_euclid(cells), 0, seed);
-    let top = corner(0, 0) + (corner(1, 0) - corner(0, 0)) * s.x;
-    let bottom = corner(0, 1) + (corner(1, 1) - corner(0, 1)) * s.x;
-    top + (bottom - top) * s.y
-}
-
-/// Fractal value noise in 0..1 that repeats every unit: octaves of [`periodic_value_noise`] with
-/// a whole number of cells per unit each
-fn periodic_fbm(at: Vec2, seed: u32) -> f32 {
-    const OCTAVES: [(i32, f32); 3] = [(3, 0.55), (6, 0.3), (12, 0.15)];
-    OCTAVES.iter().enumerate().map(|(k, (cells, weight))| weight * periodic_value_noise(at, *cells, seed ^ (k as u32 * 0x9E37))).sum()
 }
 
 /// Raised diamonds on a twill ground, four by four per unit. Each diamond is a set of concentric
@@ -320,21 +307,26 @@ fn diamond_brocade(p: Vec3) -> f32 {
     use std::f32::consts::{PI, TAU};
 
     const DIAMONDS: f32 = 4.0;
-    let p = within_unit(p);
-    let q = Vec2::new(p.x, p.y) * DIAMONDS;
-    let local = q - q.floor() - Vec2::splat(0.5);
-    // 0 at a diamond's center, 0.5 at its corners' edge
-    let d = local.x.abs() + local.y.abs();
+    const RIBS_PER_UNIT: f32 = 40.0;
+    const MOTIF_RADIUS: f32 = 0.46;
+    const MOTIF_FEATHER: f32 = 0.03;
+    const MOTIF_RING_COUNT: f32 = 2.5;
+    let point = unit(p) * DIAMONDS;
+    let local = point - point.floor() - Vec2::splat(0.5);
+    let diamond_distance = local.x.abs() + local.y.abs();
 
-    // The twill ground: fine diagonal ribs, a whole number of them per unit
-    let ribs = 0.5 + 0.5 * (TAU * 40.0 * (q.x + q.y) / DIAMONDS).sin();
+    // The twill has a whole number of diagonal ribs per unit
+    let ribs = 0.5 + 0.5 * (TAU * RIBS_PER_UNIT * (point.x + point.y) / DIAMONDS).sin();
     let ground = 0.22 + 0.12 * ribs;
 
-    // The motif, rising towards the middle in rings, nearly filling its cell
-    const MOTIF: f32 = 0.46;
-    let inside = 1.0 - smoothstep(MOTIF - 0.03, MOTIF, d);
-    let rings = 0.5 + 0.5 * (TAU * 2.5 * d / MOTIF).cos();
-    let rise = (PI * 0.5 * (1.0 - d / MOTIF)).sin().max(0.0);
+    // Only the twill ground is visible beyond the motif
+    if diamond_distance >= MOTIF_RADIUS {
+        return ground;
+    }
+
+    let inside = 1.0 - smoothstep(MOTIF_RADIUS - MOTIF_FEATHER, MOTIF_RADIUS, diamond_distance);
+    let rings = 0.5 + 0.5 * (TAU * MOTIF_RING_COUNT * diamond_distance / MOTIF_RADIUS).cos();
+    let rise = (PI * 0.5 * (1.0 - diamond_distance / MOTIF_RADIUS)).sin().max(0.0);
     let motif = (0.45 + 0.35 * rise + 0.2 * rings) * (0.9 + 0.1 * ribs);
     (ground + (motif - ground) * inside).clamp(0.0, 1.0)
 }
@@ -344,21 +336,18 @@ fn diamond_brocade(p: Vec3) -> f32 {
 /// cells into winding round tubes. The choice comes from the cell's index wrapped to the grid,
 /// so the pattern repeats every unit.
 fn truchet_arcs(p: Vec3, seed: u32) -> f32 {
-    let p = within_unit(p);
     const CELLS: i32 = 8;
-    const TUBE: f32 = 0.13;
-    let q = Vec2::new(p.x, p.y) * CELLS as f32;
-    let (i, j) = (q.x.floor() as i32, q.y.floor() as i32);
-    let local = q - Vec2::new(i as f32, j as f32);
+    const TUBE_RADIUS: f32 = 0.13;
+    let point = unit(p) * CELLS as f32;
+    let (column, row) = (point.x.floor() as i32, point.y.floor() as i32);
+    let local = point - Vec2::new(column as f32, row as f32);
 
-    // Around the top-left and bottom-right corners, or the top-right and bottom-left ones
-    let flipped = noise::cell_hash(i.rem_euclid(CELLS), j.rem_euclid(CELLS), 0, seed) > 0.5;
+    let flipped = noise::cell_hash(column.rem_euclid(CELLS), row.rem_euclid(CELLS), 0, seed) > 0.5;
     let corners = if flipped { [Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)] } else { [Vec2::ZERO, Vec2::ONE] };
     let offset = corners.iter().map(|corner| ((local - *corner).length() - 0.5).abs()).fold(f32::MAX, f32::min);
 
-    // A round tube across, over a dark ground
-    let s = (offset / TUBE).min(1.0);
-    0.05 + 0.9 * (1.0 - s * s).sqrt()
+    let across = (offset / TUBE_RADIUS).min(1.0);
+    0.05 + 0.9 * (1.0 - across * across).sqrt()
 }
 
 /// `values` raised to a triplanar `sharpness` (at least 1): whole sharpnesses up to 16 (the usual
@@ -400,14 +389,9 @@ fn triplanar_weights(nrm: Vec3, sharpness: f32, gain: f32) -> Vec3 {
     if retained == Vec3::ZERO { weights } else { retained }
 }
 
-fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-fn shape(pr: &Procedural, v: f32) -> f32 {
-    let v = ((v - 0.5) * pr.contrast.max(0.0) + 0.5 + pr.balance).clamp(0.0, 1.0);
-    if pr.invert { 1.0 - v } else { v }
+fn shape(pattern: &Procedural, value: f32) -> f32 {
+    let adjusted = ((value - 0.5) * pattern.contrast.max(0.0) + 0.5 + pattern.balance).clamp(0.0, 1.0);
+    if pattern.invert { 1.0 - adjusted } else { adjusted }
 }
 
 /// Evaluate a procedural through a projection, at full resolution and without images
@@ -484,7 +468,8 @@ fn plane_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f
     let Some(cells) = cells else { return pattern_value(pattern, point, context) };
 
     let grid = point.truncate() * cells - 0.5;
-    // A point so far out that the grid overflows has no neighbours to blend: read it exactly
+
+    // Non-finite grid coordinates cannot identify bilinear neighbors
     if !grid.is_finite() {
         return pattern_value(pattern, point, context);
     }
@@ -659,7 +644,7 @@ mod tests {
 
     #[test]
     fn every_pattern_and_projection_stays_in_range() {
-        let projs = [
+        let projections = [
             Projection::default(),
             Projection::Triplanar { scale: 1.0, sharpness: 4.0, offset: [0.0; 3] },
             Projection::Planar { scale: 1.0, axis: 1, offset: [0.0; 3] },
@@ -677,18 +662,21 @@ mod tests {
                 flip: [false; 2],
             }),
         ];
-        for k in ProceduralKind::ALL {
-            let pr = Procedural::new(k);
-            for proj in &projs {
+
+        for kind in ProceduralKind::ALL {
+            let pattern = Procedural::new(kind);
+            for projection in &projections {
                 for i in 0..50 {
                     let t = i as f32 * 0.13;
-                    let c = Coords {
+                    let coords = Coords {
                         uv: Vec2::new(t.fract(), (t * 0.7).fract()),
                         pos: Vec3::new(t.sin(), t.cos(), t * 0.1),
                         nrm: Vec3::new(0.3, 0.9, 0.1).normalize(),
                     };
-                    let v = procedural(&pr, proj, &c);
-                    assert!((0.0..=1.0).contains(&v), "{k:?} {proj:?} {v}");
+
+                    let value = procedural(&pattern, projection, &coords);
+
+                    assert!((0.0..=1.0).contains(&value), "{kind:?} {projection:?} {value}");
                 }
             }
         }
@@ -846,8 +834,6 @@ mod tests {
 
     #[test]
     fn geometric_tilings_repeat_every_unit() {
-        // Shifted points round differently, which shows on the steep edges of a joint, so a seam
-        // is anything above that rounding
         let tilings = [
             ProceduralKind::HexagonTiles,
             ProceduralKind::WaveScales,
@@ -856,11 +842,14 @@ mod tests {
             ProceduralKind::DiamondBrocade,
             ProceduralKind::TruchetArcs,
         ];
+
         for kind in tilings {
-            for i in 0..400 {
-                let p = Vec3::new((i as f32 * 0.137).fract() * 3.0 - 1.0, (i as f32 * 0.071).fract() * 3.0 - 1.0, 0.0);
+            for index in 0..400 {
+                let p = Vec3::new((index as f32 * 0.137).fract() * 3.0 - 1.0, (index as f32 * 0.071).fract() * 3.0 - 1.0, 0.0);
                 for shift in [Vec3::X, Vec3::Y, Vec3::new(-2.0, 3.0, 0.0)] {
                     let (here, there) = (raw(kind, p, 7), raw(kind, p + shift, 7));
+
+                    // Allow coordinate rounding on steep joint edges
                     assert!((here - there).abs() < 2e-3, "{kind:?}: {here} at {p}, {there} at {}", p + shift);
                 }
             }
@@ -868,17 +857,19 @@ mod tests {
     }
 
     #[test]
-    fn a_pattern_read_from_a_coarse_image_takes_extreme_coordinates() {
-        let coarse = PatternContext { pixels: Some(4), ..PatternContext::default() };
+    fn a_non_finite_coarse_grid_falls_back_to_exact_sampling() {
+        let coarse = PatternContext { pixels: Some(16), ..PatternContext::default() };
         let exact = PatternContext::default();
+        let extremes = [f32::MAX, -f32::MAX, f32::INFINITY, f32::NEG_INFINITY, f32::NAN];
+
         for kind in ProceduralKind::ALL {
             let pattern = Procedural::new(kind);
-            for x in [f32::MAX, -f32::MAX, f32::INFINITY, f32::NEG_INFINITY] {
-                let point = Vec3::new(x, 0.125, 0.0);
-                // Whatever a pattern does with such a point exactly, the blend must not make it worse
-                if pattern_value(&pattern, point, &exact).is_finite() {
-                    let value = plane_value(&pattern, point, &coarse);
-                    assert!(value.is_finite(), "{kind:?} at x = {x}: {value}");
+            for extreme in extremes {
+                for point in [Vec3::new(extreme, 0.125, 0.0), Vec3::new(0.125, extreme, 0.0)] {
+                    let expected = plane_value(&pattern, point, &exact);
+                    let actual = plane_value(&pattern, point, &coarse);
+
+                    assert!(actual == expected || (actual.is_nan() && expected.is_nan()), "{kind:?} at {point}: {actual} instead of {expected}");
                 }
             }
         }
@@ -895,6 +886,7 @@ mod tests {
             ProceduralKind::TruchetArcs,
         ];
         let extremes = [0.0, 5.4e8, -5.4e8, f32::MAX, -f32::MAX, f32::INFINITY, f32::NAN];
+
         for kind in tilings {
             for x in extremes {
                 for y in extremes {
@@ -909,11 +901,12 @@ mod tests {
     fn halftone_dots_stay_continuous_where_neighbouring_dots_meet() {
         // Halfway between two dot centers lie the points 1/32 apart on the turned grid
         for seed in 0..32 {
-            for k in 0..64 {
-                let tie = Vec3::new(k as f32 / 32.0, (k * 7 % 32) as f32 / 32.0, 0.0);
+            for index in 0..64 {
+                let tie = Vec3::new(index as f32 / 32.0, (index * 7 % 32) as f32 / 32.0, 0.0);
                 for step in [Vec3::X, Vec3::Y] {
                     let (before, after) =
                         (raw(ProceduralKind::HalftoneDots, tie - step * 1e-4, seed), raw(ProceduralKind::HalftoneDots, tie + step * 1e-4, seed));
+
                     assert!((before - after).abs() < 0.05, "seed {seed}, {tie}: {before} then {after}");
                 }
             }
@@ -928,22 +921,23 @@ mod tests {
         assert!(at(ProceduralKind::HexagonTiles, 0.0, 0.0) >= 0.8);
         assert!(at(ProceduralKind::HexagonTiles, 0.25, 0.0) < 0.05);
 
-        // A unit is six plank widths: a horizontal plank starts at the origin, its middle is a plank and a half to the right
+        // Check the end and midpoint of the horizontal plank starting at the origin
         assert!(at(ProceduralKind::HerringbonePlanks, 0.000_2, 0.5 / 6.0) < 0.05);
         assert!(at(ProceduralKind::HerringbonePlanks, 1.5 / 6.0, 0.5 / 6.0) >= 0.55);
     }
 
     #[test]
     fn every_pattern_varies() {
-        for k in ProceduralKind::ALL {
-            let pr = Procedural::new(k);
-            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+        for kind in ProceduralKind::ALL {
+            let pattern = Procedural::new(kind);
+            let (mut minimum, mut maximum) = (f32::MAX, f32::MIN);
             for i in 0..4096 {
                 let uv = Vec2::new((i % 64) as f32 / 64.0, (i / 64) as f32 / 64.0);
-                let v = procedural(&pr, &Projection::default(), &Coords { uv, pos: Vec3::ZERO, nrm: Vec3::Y });
-                (lo, hi) = (lo.min(v), hi.max(v));
+                let value = procedural(&pattern, &Projection::default(), &Coords { uv, pos: Vec3::ZERO, nrm: Vec3::Y });
+                (minimum, maximum) = (minimum.min(value), maximum.max(value));
             }
-            assert!(hi - lo > 0.3, "{k:?} is flat: {lo}..{hi}");
+
+            assert!(maximum - minimum > 0.3, "{kind:?} is flat: {minimum}..{maximum}");
         }
     }
 }
