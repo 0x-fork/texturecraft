@@ -274,10 +274,23 @@ fn default_split_ratio() -> f32 {
     0.5
 }
 
+/// Saved searches start with this share of the Assets panel's pane column while Filter by path is open too
+pub(crate) fn default_shelf_panes_split() -> f32 {
+    0.45
+}
+
+fn deserialize_shelf_panes_split<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
+    let share = f32::deserialize(deserializer)?;
+
+    // A finite JSON number can overflow f32 and prevent the next settings save
+    Ok(if share.is_finite() { share } else { default_shelf_panes_split() })
+}
+
 /// Settings that start on, for saved states that predate them
 fn default_true() -> bool {
     true
 }
+
 /// The bake layout's version: saved bake docks from an older one load as `Dock::for_baking`
 const BAKE_LAYOUT_VERSION: u32 = 2;
 
@@ -330,6 +343,9 @@ pub struct UiState {
     /// The asset shelf's saved queries, in the order they were saved
     #[serde(default)]
     pub shelf_saved_searches: Vec<SavedSearch>,
+    /// Saved searches' share of the pane column above Filter by path, set by the splitter between them
+    #[serde(default = "default_shelf_panes_split", deserialize_with = "deserialize_shelf_panes_split")]
+    pub shelf_panes_split: f32,
     pub props_tab: PropsTab,
     #[serde(default)]
     pub text: TextUi,
@@ -454,6 +470,7 @@ impl Default for UiState {
             shelf_view: ShelfView::default(),
             shelf_panes: ShelfPanes::default(),
             shelf_saved_searches: Vec::new(),
+            shelf_panes_split: default_shelf_panes_split(),
             props_tab: PropsTab::Brush,
             text: TextUi::default(),
             rename: None,
