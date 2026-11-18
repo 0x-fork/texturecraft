@@ -225,6 +225,11 @@ impl Mesh {
     /// buffers are untouched; only tangent generation looks at the quads.
     fn tangent_faces(&self) -> Vec<TangentFace> {
         let triangles = self.indices.len() / 3;
+        // An empty face table keeps the original constant-space triangle adapter.
+        // Do not allocate a per-triangle table unless a valid quad needs one.
+        if !self.diagonals.contains(&QUAD_FIRST_MARK) || !(0..triangles).any(|t| self.quad_at(t).is_some()) {
+            return Vec::new();
+        }
         let mut faces = Vec::with_capacity(triangles);
         let mut t = 0;
         while t < triangles {
@@ -285,11 +290,14 @@ impl Mesh {
             self.uvs = vec![Vec2::ZERO; self.positions.len()];
         }
         // mikktspace crashes (out-of-bounds) when every triangle is degenerate; skip it then.
-        let usable = !crate::unwrap::all_triangles_degenerate(self);
-        let faces = self.tangent_faces();
-        let mut g = Mikk { mesh: self, faces };
-        if !usable || !mikktspace::generate_tangents(&mut g) {
+        if crate::unwrap::all_triangles_degenerate(self) {
             self.simple_tangents();
+        } else {
+            let faces = self.tangent_faces();
+            let mut g = Mikk { mesh: self, faces };
+            if !mikktspace::generate_tangents(&mut g) {
+                self.simple_tangents();
+            }
         }
         for (t, n) in self.tangents.iter_mut().zip(&self.normals) {
             // Orthonormalize against the normal; repair degenerate results.
@@ -478,13 +486,17 @@ struct Mikk<'a> {
 
 impl Mikk<'_> {
     fn vi(&self, face: usize, vert: usize) -> usize {
-        self.faces.get(face).and_then(|f| f.corners.get(vert)).copied().unwrap_or(0) as usize
+        if self.faces.is_empty() {
+            self.mesh.indices.get(face * 3 + vert).copied().unwrap_or(0) as usize
+        } else {
+            self.faces.get(face).and_then(|f| f.corners.get(vert)).copied().unwrap_or(0) as usize
+        }
     }
 }
 
 impl mikktspace::Geometry for Mikk<'_> {
     fn num_faces(&self) -> usize {
-        self.faces.len()
+        if self.faces.is_empty() { self.mesh.indices.len() / 3 } else { self.faces.len() }
     }
     fn num_vertices_of_face(&self, face: usize) -> usize {
         self.faces.get(face).map_or(3, |f| f.count)
@@ -512,6 +524,19 @@ impl mikktspace::Geometry for Mikk<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmarked_and_invalid_quad_meshes_need_no_face_table() {
+        let mut mesh = quad();
+        assert_eq!(mesh.tangent_faces().capacity(), 0);
+        mesh.diagonals = vec![QUAD_FIRST_MARK, QUAD_SECOND_MARK];
+        assert_eq!(mesh.tangent_faces().len(), 1);
+        mesh.positions.fill(Vec3::ZERO);
+        mesh.normals.fill(Vec3::X);
+        assert_eq!(mesh.tangent_faces().capacity(), 0);
+        mesh.compute_tangents();
+        assert!(mesh.tangents.iter().all(|t| t.is_finite() && t.truncate().dot(Vec3::X).abs() < 1e-6));
+    }
 
     fn quad() -> Mesh {
         Mesh::from_parts(
