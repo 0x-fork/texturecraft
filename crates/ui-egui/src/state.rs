@@ -79,9 +79,6 @@ pub struct Windows {
     /// Browser File › Export Mesh: the download format choice.
     #[serde(default)]
     pub export_mesh: bool,
-    /// The start window: new, open, recent projects (the app opens it at launch).
-    #[serde(skip)]
-    pub start: bool,
     /// Edit > Project Configuration: what is chosen so far, applied by OK.
     #[serde(skip)]
     pub project_config: Option<ProjectConfig>,
@@ -125,8 +122,6 @@ pub struct Prefs {
     pub accent: crate::theme::Accent,
     /// The system draws the window's title bar instead of TextureCraft (desktop; read at startup).
     pub system_title_bar: bool,
-    /// Show the start window at launch.
-    pub start_window: bool,
     /// Where autosaves, smart materials, presets, templates and layouts go (desktop; read at
     /// startup). Empty or relative: `Documents/TextureCraft`.
     pub data_folder: String,
@@ -149,7 +144,6 @@ impl Default for Prefs {
             brightness: crate::theme::Brightness::default(),
             accent: crate::theme::Accent::default(),
             system_title_bar: false,
-            start_window: true,
             data_folder: String::new(),
             reserved_cores: 1,
             project_open_limit_gib: texturecraft_engine::formats::DEFAULT_PROJECT_OPEN_LIMIT_GIB,

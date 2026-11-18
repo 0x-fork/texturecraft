@@ -685,8 +685,7 @@ use unsupported as export_textures;
 use unsupported as export_mesh;
 
 fn close(s: &mut Session, _: &Value) -> Result<Value> {
-    let next = Session::new_project("Untitled", primitives::material_ball(), "builtin:material_ball", None, 2048)?;
-    s.switch_to(next);
+    s.switch_to(Session::closed()?);
     Ok(Value::Null)
 }
 

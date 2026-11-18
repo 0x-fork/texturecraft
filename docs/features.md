@@ -179,8 +179,8 @@ Everything TextureCraft does today, by area. What's still missing is in [`ROADMA
   strip, and Settings › Interface › System title bar for the system's frame instead.
 - **Dockable, tabbed and floating panels**, saved layouts, and panels that reopen where you closed
   them.
-- A **start window** at launch: a new project, a project file, a recent project or the sample
-  (Settings › Interface › Start window).
+- **No project at launch**: empty views, panels and toolbars until you create or open one (File ›
+  New project, Open, Recent projects, Open sample project); File › Close returns to that state.
 - A **data folder** of your choice for autosaves, smart materials, presets, templates and UI
   layouts, on any drive (Settings › Folders; `Documents/TextureCraft` by default).
 - A **shortcut editor** with conflict detection, listing every menu item and every command a key can run (commands that need a path, name or similar are left out), and every shortcut shown in its tooltip.

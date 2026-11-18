@@ -256,7 +256,13 @@ impl TextureCraftApp {
 
         // The first run speaks the OS (or browser) language
         let mut ui_store = ui_state_store::UiStateStore::new(ui_state_store::FILE.get().cloned());
-        let ui = start_ui(ui_store.load(cc.storage), &mut session);
+        let mut ui = start_ui(ui_store.load(cc.storage), &mut session);
+
+        // No window opens by itself with no project (a saved layout may have left Export open)
+        if !session.project_open {
+            ui.windows.export = false;
+        }
+
         let next_autosave = ui.prefs.autosave_minutes as f64 * 60.0;
         ui.prefs.apply_resource_limits();
 
@@ -348,9 +354,17 @@ impl TextureCraftApp {
                     self.thumbs.forget_saved_files();
                 }
 
-                // A pending dialog must not import its old source into the replacement project
-                if matches!(id, "file.open" | "file.close" | "project.new" | "project.sample") {
+                // Pending work and thumbnail snapshots belong to the old project
+                if matches!(id, "file.open" | "file.new" | "file.close" | "project.new" | "project.sample") {
                     self.pbr_import = None;
+                    self.resize = None;
+                    self.layer_panel = Default::default();
+                }
+
+                // The empty state has no baking or rendering to show
+                if id == "file.close" {
+                    self.ui.mode = state::Mode::Painting;
+                    self.ui.windows.export = false;
                 }
 
                 match glide_from {
@@ -585,6 +599,7 @@ impl TextureCraftApp {
         if self.resize.is_some() {
             return;
         }
+
         match self.session.resize_task(ts, resolution) {
             Ok(task) => {
                 let progress = Arc::new(Progress::new());
@@ -598,10 +613,18 @@ impl TextureCraftApp {
     /// Apply a finished resize (after any stroke in progress ends).
     fn poll_resize(&mut self, ctx: &egui::Context) {
         let Some(job) = &self.resize else { return };
+
+        // Nothing to resize without a project (a result that arrives after Close is dropped)
+        if !self.session.project_open {
+            self.resize = None;
+            return;
+        }
+
         ctx.request_repaint_after(std::time::Duration::from_millis(30));
         if self.session.stroke_active() {
             return;
         }
+
         let result = match job.rx.try_recv() {
             Ok(r) => r,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
@@ -843,7 +866,13 @@ impl eframe::App for TextureCraftApp {
     #[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let t0 = now_ms();
+        let started_ms = now_ms();
+
+        // Baking and rendering need a project (a saved layout may start in one of them)
+        if !self.session.project_open {
+            self.ui.mode = state::Mode::Painting;
+        }
+
         if !self.ui.hide_ui {
             titlebar::show(self, ui);
             banner(self, ui);
@@ -854,25 +883,28 @@ impl eframe::App for TextureCraftApp {
                 toolbar::rail(self, ui);
             }
         }
-        let hide = self.ui.hide_ui;
-        let tk = theme::Tokens::get(&ctx);
+
+        let hide_ui = self.ui.hide_ui;
+        let tokens = theme::Tokens::get(&ctx);
 
         // The dock keeps the cards' gutter from the bars and rails around it
-        let panel_frame = if hide { egui::Frame::NONE.fill(tk.viewport) } else { egui::Frame::NONE.fill(tk.chrome).inner_margin(theme::GUTTER) };
-        egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| if hide { viewport::central(self, ui) } else { docking::show(self, ui) });
+        let panel_frame = if hide_ui { egui::Frame::NONE.fill(tokens.viewport) } else { egui::Frame::NONE.fill(tokens.chrome).inner_margin(theme::GUTTER) };
+        egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| if hide_ui { viewport::central(self, ui) } else { docking::show(self, ui) });
         windows::show(self, &ctx);
 
-        // The Layers panel and the source slots have asked for their pictures by now
+        // Finish after the dock and windows have requested their thumbnails
         self.layer_panel.end(&ctx, &self.session);
+
         #[cfg(not(target_arch = "wasm32"))]
         updates_ui::show(self, &ctx);
         toasts(self, &ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.file_dialogs.show_pending(frame);
-        let end = now_ms();
-        let dt = (end - t0) as f32;
-        self.ui_ms = if self.ui_ms == 0.0 { dt } else { self.ui_ms * 0.9 + dt * 0.1 };
-        self.profiler.end_frame(end, dt);
+
+        let ended_ms = now_ms();
+        let elapsed_ms = (ended_ms - started_ms) as f32;
+        self.ui_ms = if self.ui_ms == 0.0 { elapsed_ms } else { self.ui_ms * 0.9 + elapsed_ms * 0.1 };
+        self.profiler.end_frame(ended_ms, elapsed_ms);
     }
 }
 
