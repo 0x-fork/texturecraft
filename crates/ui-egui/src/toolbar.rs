@@ -83,8 +83,10 @@ fn view_buttons_width(button_size: f32, spacing: f32) -> f32 {
 /// View buttons in a right-to-left layout: the layout, then the camera type, then the screenshot and UV checker
 fn view_buttons(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
     let button_size = ui.spacing().interact_size.y;
+
     // Only the layout works without a project: the others act on it
     let project_open = app.session.project_open;
+
     // Right-to-left: the UV checker is added first and sits rightmost
     ui.add_enabled_ui(project_open, |ui| {
         let checker = app.session.view == texturecraft_engine::ViewMode::UvChecker;

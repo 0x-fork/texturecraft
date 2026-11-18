@@ -123,6 +123,7 @@ pub fn load(app: &mut TextureCraftApp, name: &str, bytes: Vec<u8>) {
         app.toast(tr("No project is open"), true);
         return;
     }
+
     if IMAGE_EXTS.contains(&ext.as_str()) {
         match app.session.import_resource_bytes(name, bytes) {
             Ok(res) => {
@@ -133,22 +134,27 @@ pub fn load(app: &mut TextureCraftApp, name: &str, bytes: Vec<u8>) {
         }
         return;
     }
+
     if MATERIAL_EXTS.contains(&ext.as_str()) {
         if let Err(e) = app.session.add_smart_material_bytes(&bytes) {
             app.toast(trf("Couldn't import {name}: {error}", &[("name", &name), ("error", &e)]), true);
         }
         return;
     }
+
     let bytes = std::sync::Arc::new(bytes);
     if crate::windows::ask_to_save(app, crate::state::Unsaved::Load(name.into(), bytes.clone())) {
         return;
     }
+
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled");
     let next = if ext == PROJECT_EXT { Session::from_project_bytes(&bytes) } else { Session::from_mesh_bytes(name, &bytes, MESH_RESOLUTION, stem) };
     match next {
         Ok(next) => {
             app.session.switch_to(next);
             app.pbr_import = None;
+            app.resize = None;
+            app.layer_panel = Default::default();
             app.toast(trf("Opened {name}", &[("name", &name)]), false);
         }
         Err(e) => app.toast(trf("Couldn't open {name}: {error}", &[("name", &name), ("error", &e)]), true),

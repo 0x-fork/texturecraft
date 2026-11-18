@@ -85,32 +85,34 @@ fn parse_args_from<I: IntoIterator<Item = String>>(it: I) -> Result<Option<Args>
 }
 
 fn initial_session(args: &Args) -> Session {
-    if let Some(f) = &args.file {
-        match texturecraft_engine::file_cmds::open_path(f) {
-            Ok(s) => return s,
-            Err(e) => eprintln!("texturecraft: could not open {f}: {e}"),
+    if let Some(path) = &args.file {
+        match texturecraft_engine::file_cmds::open_path(path) {
+            Ok(session) => return session,
+            Err(error) => eprintln!("texturecraft: could not open {path}: {error}"),
         }
     }
-    // A script-driven run (--control) starts with the sample project (or, with --empty, an empty
-    // material ball), as before; an interactive start has no project open, like File > Close
+
+    // Control runs retain their sample project; interactive runs start empty
     if args.control.is_some() {
         if !args.empty
-            && let Ok(s) = texturecraft_engine::sample_session(2048, 512)
+            && let Ok(session) = texturecraft_engine::sample_session(2048, 512)
         {
-            return s;
+            return session;
         }
+
         return match Session::new_project("Untitled", texturecraft_engine::geom::primitives::material_ball(), "builtin:material_ball", None, 2048) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("texturecraft: {e}");
+            Ok(session) => session,
+            Err(error) => {
+                eprintln!("texturecraft: {error}");
                 std::process::exit(1);
             }
         };
     }
+
     match Session::closed() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("texturecraft: {e}");
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("texturecraft: {error}");
             std::process::exit(1);
         }
     }
@@ -188,7 +190,7 @@ fn checks_for_updates_at_start(control: Option<u16>) -> bool {
 }
 
 fn main() {
-    // Windows: the update helper is a copy of this program started with `--finish-update`.
+    // Windows: the update helper is a copy of this program started with `--finish-update`
     #[cfg(windows)]
     if let Some(result) = craft_update::self_update::finish(&texturecraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
         std::process::exit(i32::from(result.is_err()));
@@ -201,14 +203,16 @@ fn main() {
             std::process::exit(2);
         }
     };
+
     // Errors before the window opens speak the system's language; the app then applies the saved one
     texturecraft_ui_egui::i18n::set_language(texturecraft_ui_egui::i18n::os_language());
-    let prev = std::panic::take_hook();
+    let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         // A message box needs the main thread on macOS; other threads' panics are only logged
         fatal(&format!("internal error: {info}"), std::thread::current().name() == Some("main"));
-        prev(info);
+        previous_hook(info);
     }));
+
     // Scripted runs (agents, films, tests) set TEXTURECRAFT_NO_PREFS to keep the user's saved settings untouched: state goes to throwaway files
     let persistence_path =
         std::env::var_os("TEXTURECRAFT_NO_PREFS").map(|_| std::env::temp_dir().join(format!("texturecraft-noprefs-{}.ron", std::process::id())));
@@ -232,7 +236,7 @@ fn main() {
         std::process::exit(2);
     }
     let control = args.control;
-    let r = eframe::run_native(
+    let result = eframe::run_native(
         APP_NAME,
         options,
         Box::new(move |cc| {
@@ -240,7 +244,8 @@ fn main() {
             if let Some(w) = cc.winit_window() {
                 set_taskbar_icon(w);
             }
-            // winit's Quit ends the process without asking; this menu's asks like the close button.
+
+            // winit's Quit ends the process without asking; this menu's asks like the close button
             #[cfg(target_os = "macos")]
             if let Err(e) = craft_menu::mac::install_app_menu(&cc.egui_ctx, APP_NAME) {
                 log::warn!("the app menu could not be installed: {e}");
@@ -260,7 +265,7 @@ fn main() {
             }))
         }),
     );
-    if let Err(e) = r {
+    if let Err(e) = result {
         fatal(&e.to_string(), true);
         std::process::exit(1);
     }

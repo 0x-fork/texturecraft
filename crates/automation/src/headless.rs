@@ -210,6 +210,8 @@ impl Headless {
 
     /// Add a high-definition mesh for baking from `path` (or, with `cage`, set the bake cage).
     pub fn add_bake_mesh(&mut self, path: &str, cage: bool) -> Result<Value, AutomationError> {
+        self.require_project()?;
+
         let f = self.read_mesh(path)?;
         Ok(self.session.add_bake_mesh(f, cage)?)
     }
@@ -311,39 +313,43 @@ impl Headless {
 
     /// Render the session to PNG. The viewport needs a GPU adapter; path tracing (`samples`)
     /// runs on the GPU when it has compute shaders and falls back to the CPU.
-    pub fn render_png(&mut self, o: &RenderOptions) -> Result<Rendered, AutomationError> {
-        let s = &self.session;
-        let kind = match o.view.as_deref().unwrap_or("3d") {
+    pub fn render_png(&mut self, options: &RenderOptions) -> Result<Rendered, AutomationError> {
+        self.require_project()?;
+
+        let session = &self.session;
+        let kind = match options.view.as_deref().unwrap_or("3d") {
             "3d" => ViewKind::Scene,
-            "2d" | "uv" => ViewKind::Uv { ts: s.ts(), zoom: 1.0, pan: [0.0, 0.0] },
+            "2d" | "uv" => ViewKind::Uv { ts: session.ts(), zoom: 1.0, pan: [0.0, 0.0] },
             other => return Err(bad(format!("unknown view `{other}` (3d, 2d or uv)"))),
         };
-        let max = if self.trusted() { MAX_LOCAL_RENDER_SIDE } else { MAX_PNG_SIDE };
-        let side = |v: Option<u32>, d: f32| {
+        let max_side = if self.trusted() { MAX_LOCAL_RENDER_SIDE } else { MAX_PNG_SIDE };
+        let checked_side = |v: Option<u32>, d: f32| {
             let v = v.unwrap_or(d.round() as u32);
-            if (16..=max).contains(&v) { Ok(v) } else { Err(bad(format!("render size {v} must be 16 to {max} pixels"))) }
+            if (16..=max_side).contains(&v) { Ok(v) } else { Err(bad(format!("render size {v} must be 16 to {max_side} pixels"))) }
         };
-        let size = [side(o.width, s.viewport.x)?, side(o.height, s.viewport.y)?];
-        let mut camera = s.camera;
-        for (v, slot, lim) in [(o.yaw, &mut camera.yaw, 1e6), (o.pitch, &mut camera.pitch, 89.0)] {
+        let size = [checked_side(options.width, session.viewport.x)?, checked_side(options.height, session.viewport.y)?];
+        let mut camera = session.camera;
+        for (v, slot, max_degrees) in [(options.yaw, &mut camera.yaw, 1e6), (options.pitch, &mut camera.pitch, 89.0)] {
             if let Some(v) = v {
                 if !v.is_finite() {
                     return Err(bad("camera angles must be finite"));
                 }
-                *slot = v.clamp(-lim, lim).to_radians();
+
+                *slot = v.clamp(-max_degrees, max_degrees).to_radians();
             }
         }
-        if let Some(samples) = o.samples {
-            if !(1..=MAX_TRACE_SAMPLES).contains(&samples) || o.view.as_deref().is_some_and(|v| v != "3d") {
+        if let Some(samples) = options.samples {
+            if !(1..=MAX_TRACE_SAMPLES).contains(&samples) || options.view.as_deref().is_some_and(|v| v != "3d") {
                 return Err(bad(format!("path tracing renders the 3D view with 1 to {MAX_TRACE_SAMPLES} samples")));
             }
-            let settings = texturecraft_render::trace::TraceSettings { bounces: o.bounces.unwrap_or(6).clamp(1, 32) };
+
+            let settings = texturecraft_render::trace::TraceSettings { bounces: options.bounces.unwrap_or(6).clamp(1, 32) };
             let mut traced = None;
             let mut by = "CPU path tracer".to_string();
-            if !o.cpu
+            if !options.cpu
                 && let Ok(gpu) = self.gpu.get_or_insert_with(Gpu::new)
             {
-                // Last-resort guard, as for viewport renders below.
+                // Last-resort guard, as for viewport renders below
                 let session = &mut self.session;
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu.path_trace(session, size, camera, samples, &settings))) {
                     Ok(Ok(px)) => {
@@ -367,11 +373,13 @@ impl Headless {
             }
             return Ok(Rendered { width: w, height: h, png, by });
         }
+
         let gpu = match self.gpu.get_or_insert_with(Gpu::new) {
             Ok(g) => g,
             Err(e) => return Err(AutomationError::Other(format!("cannot render: {e}"))),
         };
-        // Last-resort guard: wgpu panics on device errors; drop the device and report instead.
+
+        // Last-resort guard: wgpu panics on device errors; drop the device and report instead
         let session = &mut self.session;
         let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| gpu.render(session, kind, size, camera)));
         let (w, h, rgba) = match out {
@@ -407,6 +415,25 @@ pub fn batch_reply(results: Vec<Value>, failed: Option<(usize, &str, String)>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closed_session_rejects_bake_mesh_before_reading_it() {
+        let mut client = Headless::new(Session::closed().unwrap(), Filesystem::Denied);
+
+        let error = client.add_bake_mesh("missing.obj", false).unwrap_err();
+
+        assert!(error.to_string().contains("no project is open"), "{error}");
+    }
+
+    #[test]
+    fn closed_session_rejects_render_before_view_validation() {
+        let mut client = Headless::new(Session::closed().unwrap(), Filesystem::Denied);
+        let options = RenderOptions { view: Some("unknown".into()), ..RenderOptions::default() };
+
+        let error = client.render_png(&options).err().unwrap();
+
+        assert!(error.to_string().contains("no project is open"), "{error}");
+    }
 
     #[test]
     fn fresh_headless_session_loads_saved_brushes() {

@@ -364,8 +364,8 @@ pub struct Session {
     pub(crate) path_steps: (Vec<crate::path_tool::PathState>, Vec<crate::path_tool::PathState>),
     pub path: Option<String>,
     /// False in the empty state (the app at start, or after File > Close): the document is a
-    /// tiny placeholder that panels do not show, and only the commands that open or create a
-    /// project run (see [`crate::commands::check_enabled`]).
+    /// tiny placeholder that panels do not show. Project-independent commands remain available
+    /// (see [`crate::commands::check_enabled`]).
     pub project_open: bool,
     pub modified: bool,
     /// Bumps on every document change.
@@ -442,10 +442,12 @@ impl Session {
     }
 
     /// The empty state: no project is open. Holds a tiny placeholder document that the UI never
-    /// shows; every command except opening or creating a project is refused.
+    /// shows; project-dependent commands are refused.
     pub fn closed() -> Result<Session> {
-        let mut session = Session::new_project("", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, 128)?;
+        // The hidden placeholder uses the minimum supported texture resolution
+        let mut session = Session::new_project("", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, texturecraft_core::MIN_RESOLUTION)?;
         session.project_open = false;
+
         Ok(session)
     }
 

@@ -65,6 +65,7 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
         if app.render.is_active() {
             crate::render_mode::stop(app);
         }
+
         // The closed project's last frames must not stay readable (`viewport.screenshot`)
         if let Some(render_state) = app.render_state.as_ref()
             && let Some(gpu) = render_state.renderer.write().callback_resources.get_mut::<crate::gpu::GpuState>()
@@ -77,7 +78,8 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
     }
 
     let stroke_end = ui.scope_id().with("paint_2d_stroke_end");
-    // A cancelled stroke can leave a pending 2D endpoint; do not attach it to a later gesture.
+
+    // A cancelled stroke can leave a pending 2D endpoint; do not attach it to a later gesture
     let pending_2d_endpoint = if !app.session.stroke_active() || !tool_acts(app) {
         ui.data_mut(|data| {
             let endpoint = data.get_temp(stroke_end);
@@ -164,6 +166,7 @@ fn empty_views(app: &mut TextureCraftApp, ui: &mut Ui) {
             ]
         }
     };
+
     for (rect, id) in regions {
         ui.painter().rect_filled(rect, 0.0, tokens.viewport);
         view_header(app, ui, rect, id);
@@ -493,7 +496,8 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
         _ => app.session.view.label(),
     };
     let channels = app.session.doc.project.texture_set(app.session.ts()).map(|texture_set| texture_set.channel_list()).unwrap_or_default();
-    // The picker is greyed with no project: it has nothing to show a project's maps of
+
+    // The picker stays greyed without project maps
     child.add_enabled_ui(project_open, |child| {
         egui::ComboBox::from_id_salt(format!("{id}_mode")).width(VIEW_PICKER_WIDTH).selected_text(tr(&label)).show_ui(child, |ui| {
             if baking && ui.selectable_label(neutral, tr("Neutral Material")).clicked() {
@@ -505,10 +509,12 @@ fn view_header(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, id: &str) {
                 app.ui.bake_visualization.neutral_shown &= !baking;
                 app.run("viewport.view", json!({"mode": "material"}));
             }
+
             // Nothing else to show without a project
             if !project_open {
                 return;
             }
+
             ui.separator();
             if baking {
                 mesh_map_entries(app, ui);

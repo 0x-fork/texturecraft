@@ -485,6 +485,7 @@ pub(crate) fn panel_body(app: &mut TextureCraftApp, ui: &mut Ui, panel: Panel) {
     if !app.session.project_open && !works_empty {
         return;
     }
+
     egui::Frame::new().inner_margin(PANEL_BODY_MARGIN).show(ui, |ui| match panel {
         Panel::MeshMapSettings => crate::bake_mode::mesh_map_settings_panel(app, ui),
         Panel::Assets => crate::shelf::body(app, ui),
@@ -495,6 +496,7 @@ pub(crate) fn panel_body(app: &mut TextureCraftApp, ui: &mut Ui, panel: Panel) {
         Panel::Layers => crate::dock::layers(app, ui),
         Panel::TextureSetSettings => crate::dock::texture_set_settings(app, ui),
         Panel::Properties => crate::dock::properties(app, ui),
+
         // Display and Shader Settings scroll here, as tall as their contents; History and Log scroll their own lists
         Panel::Display => egui::ScrollArea::vertical().id_salt("dock-display").auto_shrink([false, true]).show(ui, |ui| crate::windows::display(app, ui)).inner,
         Panel::Shader => egui::ScrollArea::vertical().id_salt("dock-shader").auto_shrink([false, true]).show(ui, |ui| crate::windows::shader(app, ui)).inner,

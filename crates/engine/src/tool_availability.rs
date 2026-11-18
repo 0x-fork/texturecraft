@@ -10,6 +10,7 @@ impl Session {
         if !self.project_open {
             return false;
         }
+
         match tool {
             // The picker reads the composite under the cursor, whatever is selected
             Tool::ColorPicker => return true,

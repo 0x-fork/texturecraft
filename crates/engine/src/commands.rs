@@ -118,6 +118,7 @@ pub fn check_enabled(spec: &CommandSpec, s: &Session) -> std::result::Result<(),
     if !s.project_open && !works_without_project(spec.id) {
         return Err("no project is open".into());
     }
+
     (spec.enabled)(s)
 }
 

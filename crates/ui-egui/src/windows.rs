@@ -528,13 +528,15 @@ fn settings_resources(ctx: &egui::Context) -> (u32, u64) {
 fn settings(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let tk = Tokens::get(ctx);
     let mut open = app.ui.windows.settings;
-    // A language whose script no font draws is listed by its English name and disabled.
+
+    // A language whose script no font draws is listed by its English name and disabled
     let drawable = LANGUAGES.each_ref().map(|l| crate::fonts::Script::of_language(l.code).is_none_or(|s| app.fonts.covers(s)));
     #[cfg(not(target_arch = "wasm32"))]
     let mut pick_data_folder = false;
     window("settings", tr("Settings"), &mut open).default_width(360.0).show(ctx, |ui| {
         let p = &mut app.ui.prefs;
-        // Every section is a two-column form: labels on the left, controls aligned beside them.
+
+        // Every section is a two-column form: labels on the left, controls aligned beside them
         let form = |id: &str| egui::Grid::new(id).num_columns(2).spacing(vec2(12.0, 8.0)).min_col_width(120.0);
         ui.label(caption(tr("Interface")));
         form("settings_interface").show(ui, |ui| {
@@ -1143,6 +1145,7 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
     if !app.ui.windows.export {
         return;
     }
+
     let mut open = true;
     let mut do_export = false;
     let presets = texturecraft_engine::formats::builtin_presets();
@@ -1152,6 +1155,7 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
             ui.label(tr("No project is open"));
             return;
         }
+
         ui.horizontal(|ui| {
             for (i, t) in [tr("Settings"), tr("Output templates"), tr("List of exports")].iter().enumerate() {
                 if ui.selectable_label(app.ui.export.tab == i as u8, caption(t)).clicked() {
@@ -1166,6 +1170,7 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 crate::export_templates::tab(app, ui, &presets);
                 return;
             }
+
             ui.vertical(|ui| {
                 ui.set_width(180.0);
                 ui.label(RichText::new(tr("Texture sets")).strong());

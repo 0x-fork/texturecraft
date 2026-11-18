@@ -74,6 +74,12 @@ pub(crate) fn encode_png(w: u32, h: u32, rgba: Vec<u8>) -> Option<(u32, u32, Vec
 
 pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, params: &Value) -> Value {
     app.ui.prefs.apply_resource_limits();
+
+    // These direct control jobs bypass the engine command availability check
+    if !app.session.project_open && matches!(method, "ui.bake.start" | "debug.paintTest") {
+        return err("no project is open");
+    }
+
     match method {
         "ping" => ok(json!("pong")),
         "ui.resize" => {
@@ -99,6 +105,13 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                 Ok(value) => {
                     if matches!(id, "brush.preset.store" | "brush.preset.rename" | "brush.preset.delete") {
                         app.thumbs.forget_saved_files();
+                    }
+
+                    // Work from the old project must not reach its replacement
+                    if matches!(id, "file.open" | "file.new" | "file.close" | "project.new" | "project.sample") {
+                        app.resize = None;
+                        app.pbr_import = None;
+                        app.layer_panel = Default::default();
                     }
 
                     ok(value)
@@ -206,6 +219,10 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
 
 /// Encode a rendered view as PNG.
 pub fn screenshot(app: &TextureCraftApp, view: u64) -> Option<(u32, u32, Vec<u8>)> {
+    if !app.session.project_open {
+        return None;
+    }
+
     let rs = app.render_state.as_ref()?;
     let renderer = rs.renderer.read();
     let gpu = renderer.callback_resources.get::<crate::gpu::GpuState>()?;

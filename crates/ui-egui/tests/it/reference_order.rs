@@ -8,14 +8,14 @@ use texturecraft_engine::Session;
 use texturecraft_ui_egui::{TextureCraftApp, menus};
 
 fn harness(session: Session) -> Harness<'static, TextureCraftApp> {
-    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
-    h.state_mut().ui.prefs.language = "en".into();
-    h.run_steps(4);
-    h
+    let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
+    harness.run_steps(4);
+    harness
 }
 
-fn buttons_in(h: &Harness<'static, TextureCraftApp>, x: std::ops::Range<f32>) -> Vec<(f32, String, bool)> {
-    let mut found: Vec<(f32, String, bool)> = h
+fn buttons_in(harness: &Harness<'static, TextureCraftApp>, x: std::ops::Range<f32>) -> Vec<(f32, String, bool)> {
+    let mut found: Vec<(f32, String, bool)> = harness
         .get_all_by_role(Role::Button)
         .filter(|button| x.contains(&button.rect().min.x))
         .filter_map(|button| {
@@ -64,47 +64,53 @@ fn every_menu_lists_its_items_in_the_reference_order() {
 
 #[test]
 fn the_tool_shelf_keeps_the_reference_order() {
-    let h = harness(texturecraft_engine::sample_session(256, 64).unwrap());
-    let shelf = buttons_in(&h, 0.0..60.0);
+    let harness = harness(texturecraft_engine::sample_session(256, 64).unwrap());
+    let shelf = buttons_in(&harness, 0.0..60.0);
     let order = ["Paint", "Eraser", "Path", "Projection", "Polygon fill", "Smudge", "Clone", "Material picker", "Geometry mask"];
-    let ys: Vec<f32> = order.iter().map(|name| named(&shelf, name).unwrap_or_else(|| panic!("{name} on the shelf: {shelf:?}")).0).collect();
-    assert!(ys.windows(2).all(|pair| pair[0] < pair[1]), "{ys:?}");
+    let row_positions: Vec<f32> = order.iter().map(|name| named(&shelf, name).unwrap_or_else(|| panic!("{name} on the shelf: {shelf:?}")).0).collect();
+
+    assert!(row_positions.windows(2).all(|pair| pair[0] < pair[1]), "{row_positions:?}");
 }
 
 #[test]
 fn the_right_bar_keeps_the_reference_order() {
-    let h = harness(texturecraft_engine::sample_session(256, 64).unwrap());
-    let bar = buttons_in(&h, 1562.0..1600.0);
+    let harness = harness(texturecraft_engine::sample_session(256, 64).unwrap());
+    let bar = buttons_in(&harness, 1562.0..1600.0);
     let order = ["Export textures", "Log", "Display Settings", "Shader Settings", "History"];
-    let ys: Vec<f32> = order.iter().map(|name| named(&bar, name).unwrap_or_else(|| panic!("{name} on the bar: {bar:?}")).0).collect();
-    assert!(ys.windows(2).all(|pair| pair[0] < pair[1]), "{ys:?}");
+    let row_positions: Vec<f32> = order.iter().map(|name| named(&bar, name).unwrap_or_else(|| panic!("{name} on the bar: {bar:?}")).0).collect();
+
+    assert!(row_positions.windows(2).all(|pair| pair[0] < pair[1]), "{row_positions:?}");
 }
 
 #[test]
 fn the_blank_screen_enables_what_the_reference_enables() {
-    let h = harness(Session::closed().unwrap());
-    let shelf = buttons_in(&h, 0.0..60.0);
+    let harness = harness(Session::closed().unwrap());
+    let shelf = buttons_in(&harness, 0.0..60.0);
     for name in ["Paint", "Eraser", "Path", "Projection", "Polygon fill", "Smudge", "Clone", "Material picker", "Geometry mask"] {
         assert!(named(&shelf, name).unwrap().2, "{name} should be disabled with no project");
     }
-    let bar = buttons_in(&h, 1562.0..1600.0);
+    let bar = buttons_in(&harness, 1562.0..1600.0);
     for name in ["Export textures", "Log", "Display Settings", "Shader Settings", "History"] {
         assert!(!named(&bar, name).unwrap().2, "{name} on the right bar stays enabled");
     }
 
     // Top bar: layout stays on; camera type and the three modes are greyed, Painting shown as the current mode
-    let top = buttons_in(&h, 600.0..1562.0);
+    let top = buttons_in(&harness, 600.0..1562.0);
     let on = |name: &str| !named(&top, name).unwrap_or_else(|| panic!("{name}: {top:?}")).2;
+
     assert!(on("3D/2D views"), "the layout selector works without a project");
     assert!(!on("Perspective") && !on("Painting") && !on("Bake Mesh Maps") && !on("Rendering (path traced)"));
-    let painting = h.get_all_by_role(Role::Button).find(|button| button.accesskit_node().label().is_some_and(|label| label.starts_with("Painting"))).unwrap();
+
+    let painting =
+        harness.get_all_by_role(Role::Button).find(|button| button.accesskit_node().label().is_some_and(|label| label.starts_with("Painting"))).unwrap();
+
     assert_eq!(painting.accesskit_node().toggled(), Some(egui::accesskit::Toggled::True), "Painting is the shown mode");
 }
 
 #[test]
 fn the_blank_screen_menus_match_the_measured_enabled_states() {
-    let h = harness(Session::closed().unwrap());
-    let app = h.state();
+    let harness = harness(Session::closed().unwrap());
+    let app = harness.state();
     let disabled = [
         "file.close",
         "file.save",
@@ -167,8 +173,8 @@ fn the_blank_screen_menus_match_the_measured_enabled_states() {
 
 #[test]
 fn opening_a_project_enables_the_same_items() {
-    let h = harness(texturecraft_engine::sample_session(256, 64).unwrap());
-    let app = h.state();
+    let harness = harness(texturecraft_engine::sample_session(256, 64).unwrap());
+    let app = harness.state();
     for id in [
         "file.close",
         "file.save",
