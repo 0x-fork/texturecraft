@@ -10,23 +10,33 @@ use crate::session::StackTarget;
 fn source_json(source: &Source) -> Value {
     match source {
         Source::Uniform(value) => json!({ "uniform": value }),
-        Source::Procedural { pattern, low, high } => {
-            let mut out = json!({
+        Source::Procedural { pattern, low, high, ramp } => {
+            let mut report = json!({
                 "procedural": pattern.kind.label(), "scale": pattern.scale, "seed": pattern.seed, "contrast": pattern.contrast, "low": low, "high": high
             });
+
             if !pattern.resolution.is_default() {
-                out["resolution"] =
+                report["resolution"] =
                     json!({ "mode": format!("{:?}", pattern.resolution.mode), "custom": pattern.resolution.custom, "factor": pattern.resolution.factor });
             }
             if let Some(tile) = &pattern.tile {
-                out["tile"] = crate::procedural_params::tile_report(tile);
+                report["tile"] = crate::procedural_params::tile_report(tile);
             }
-            out
+
+            with_ramp(report, ramp)
         }
         Source::Image { name, normal_format: NormalFormat::OpenGl } => json!({ "image": name }),
         Source::Image { name, normal_format: NormalFormat::DirectX } => json!({ "image": name, "normalFormat": "directX" }),
-        Source::Anchor { anchor, channel } => json!({ "anchor": anchor.0, "channel": channel.id() }),
+        Source::Anchor { anchor, channel, ramp } => with_ramp(json!({ "anchor": anchor.0, "channel": channel.id() }), ramp),
     }
+}
+
+/// `v` with the gradient map stops of its source as `colors`, when it has any.
+fn with_ramp(mut v: Value, ramp: &[[f32; 3]]) -> Value {
+    if !ramp.is_empty() {
+        v["colors"] = json!(ramp);
+    }
+    v
 }
 
 fn fill_json(f: &Fill) -> Value {
@@ -203,10 +213,12 @@ pub fn session(s: &Session) -> Value {
         "bakeMeshes": crate::bake::meshes_json(s),
         "activeTextureSet": ts,
         "selectedLayer": s.selected_layer().map(|l| l.0),
+        "selectedLayers": crate::layer_selection::ids_json(&s.selected_layers()),
         "target": match s.target { StackTarget::Content => json!("content"), StackTarget::Mask => json!("mask"), StackTarget::Effect(e) => json!(e.0) },
         "layers": stack(s, ts),
         "tool": { "tool": s.tool.tool.id(), "brush": crate::tool_cmds::brush_json(s) },
         "view": s.view.label(),
+        "solo": s.solo.map(|solo| json!({ "layer": solo.layer.0, "ignoreMask": solo.ignore_mask })),
         "bakePreview": crate::bake_preview::preview_json(s),
         "camera": crate::view_cmds::camera_json(s),
         "display": s.doc.project.display,

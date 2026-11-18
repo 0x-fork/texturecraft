@@ -277,3 +277,44 @@ fn a_coarser_pattern_resolution_changes_the_composite() {
     let changed = exact.iter().zip(&coarse).filter(|(exact, coarse)| (**exact - **coarse).abs() > 0.05).count();
     assert!(changed > 0, "an eighth of the resolution blurs the bricks' bevels");
 }
+
+#[test]
+fn a_tile_generator_gradient_map_reads_the_image_input() {
+    let mut session = session();
+    let input = import_gray(&mut session, "plate.png");
+    tile_fill(&mut session);
+    let colors = [[0.0; 3], [1.0, 0.0, 0.0]];
+    execute(
+        &mut session,
+        "layer.fill.set",
+        &json!({"channel": "baseColor", "tile": {"shape": "Image", "inputs": [input], "amount": [1, 1]}, "colors": colors}),
+    )
+    .unwrap();
+
+    let red = base_colors(&mut session);
+
+    let mid_red = red.iter().filter(|value| (**value - 0.5).abs() < 0.05).count();
+    assert!(mid_red > red.len() / 2, "the gradient map recolors the input image's gray: {mid_red} of {}", red.len());
+    assert_eq!(session.caches[0].composite.value(Channel::BaseColor, 64, 64)[1], 0.0);
+}
+
+#[test]
+fn a_tile_generator_gradient_map_keeps_the_selected_resolution() {
+    let mut session = session();
+    let layer = tile_fill(&mut session);
+    let colors = [[0.0; 3], [1.0, 0.0, 0.0]];
+    execute(&mut session, "layer.fill.set", &json!({"channel": "baseColor", "colors": colors})).unwrap();
+    let exact = base_colors(&mut session);
+
+    execute(&mut session, "layer.fill.set", &json!({"channel": "baseColor", "resolution": "uvTile", "resolutionFactor": -3})).unwrap();
+    let coarse = base_colors(&mut session);
+    let inspected = execute(&mut session, "project.inspect", &Value::Null).unwrap();
+    let row = inspected["layers"].as_array().unwrap().iter().find(|row| row["id"] == layer).unwrap();
+    let source = &row["fill"]["sources"]["baseColor"];
+
+    assert_ne!(exact, coarse, "the gradient map samples the coarser pattern");
+    assert_eq!(source["colors"], json!(colors));
+    assert_eq!(source["resolution"]["mode"], "UvTile");
+    assert_eq!(source["resolution"]["factor"], -3);
+    assert_eq!(source["tile"]["amount"], json!(TileGenerator::default().amount));
+}

@@ -83,7 +83,7 @@ fn shown(app: &mut TextureCraftApp, ctx: &egui::Context, source: &Source) -> (St
             let picture = app.session.images.get(name).cloned().map(|image| app.thumbs.image(ctx, name, &image).id());
             (name.clone(), picture)
         }
-        Source::Anchor { anchor, channel } => {
+        Source::Anchor { anchor, channel, .. } => {
             let name = format!("{} · {}", layer_name(app, *anchor), tr(read_label(app, *anchor, *channel)));
             (name, app.layer_panel.texture_outside(ctx, &app.session, ThumbTarget::Stage { effect: *anchor, channel: *channel }))
         }

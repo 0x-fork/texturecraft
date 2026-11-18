@@ -273,11 +273,12 @@ pub(crate) fn anchor_source(s: &Session, cmd: &str, reader: LayerId, anchor: Lay
         Some((owner, e)) if matches!(e.kind, EffectKind::Anchor) => owner,
         _ => return Err(bad(cmd, format!("{} is not an anchor point", anchor.0))),
     };
+
     let (ts, _, _) = s.doc.project.locate(reader).ok_or_else(|| bad(cmd, "layer not in a stack"))?;
     let order: Vec<LayerId> = s.doc.project.walk(ts).into_iter().map(|(id, _)| id).collect();
     let pos = |id: LayerId| order.iter().position(|x| *x == id);
     match (pos(owner), pos(reader)) {
-        (Some(o), Some(r)) if o < r => Ok(Source::Anchor { anchor, channel }),
+        (Some(o), Some(r)) if o < r => Ok(Source::Anchor { anchor, channel, ramp: Vec::new() }),
         _ => Err(bad(cmd, "the anchor point must be on a layer below this one in the same texture set")),
     }
 }
@@ -326,7 +327,8 @@ fn add_fill(session: &mut Session, params: &Value) -> Result<Value> {
             let mut pattern = Procedural::new(kind);
             crate::procedural_params::pattern_basics_from(params, &mut pattern);
             crate::procedural_params::pattern_settings_from(CMD, params, &mut pattern)?;
-            Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3] }
+
+            Source::Procedural { pattern, low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() }
         }
         None => Source::Uniform([f32p(params, "value").unwrap_or(1.0).clamp(0.0, 1.0); 3]),
     };
@@ -574,7 +576,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
     let anchor = match session.doc.project.effect(effect) {
         Some((owner, Effect { kind: EffectKind::Fill { source, .. }, .. })) => {
             let (current, channel) = match source {
-                Source::Anchor { anchor, channel } => (Some(*anchor), *channel),
+                Source::Anchor { anchor, channel, .. } => (Some(*anchor), *channel),
                 _ => (None, Channel::Height),
             };
             let channel_param = channel_param(CMD, params, "anchorChannel")?;
@@ -715,7 +717,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
 /// The pattern a mask fill reads after `params`: `procedural` picks one (a pattern of the kind it already reads keeps its settings), pattern settings alone edit the current one
 fn fill_pattern(command: &str, params: &Value, current: &Source) -> Result<Option<Source>> {
     let (current, range) = match current {
-        Source::Procedural { pattern, low, high } => (Some(pattern), (*low, *high)),
+        Source::Procedural { pattern, low, high, .. } => (Some(pattern), (*low, *high)),
         _ => (None, ([0.0; 3], [1.0; 3])),
     };
     let mut pattern = match strp(params, "procedural") {
@@ -738,7 +740,8 @@ fn fill_pattern(command: &str, params: &Value, current: &Source) -> Result<Optio
 
     crate::procedural_params::pattern_basics_from(params, &mut pattern);
     crate::procedural_params::pattern_settings_from(command, params, &mut pattern)?;
-    Ok(Some(Source::Procedural { pattern, low: range.0, high: range.1 }))
+
+    Ok(Some(Source::Procedural { pattern, low: range.0, high: range.1, ramp: Vec::new() }))
 }
 
 /// The library id of the filter effect `effect` is, if it is one
