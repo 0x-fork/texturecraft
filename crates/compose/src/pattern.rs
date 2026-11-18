@@ -1,10 +1,14 @@
 //! Procedural patterns and projections.
 
-use texturecraft_core::{Decal, Procedural, ProceduralKind, Projection};
+use texturecraft_core::{Decal, DecalFlip, Procedural, ProceduralKind, Projection};
 use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_texel::noise;
 
+use crate::pattern_context::PatternContext;
 use crate::{fabric, organic, timber};
+
+/// Smaller pattern scales are read as this: a pattern stretched over ten thousand repeats of its projection
+const MIN_PATTERN_SCALE: f32 = 1e-4;
 
 /// Where a texel is, for pattern evaluation.
 #[derive(Clone, Copy, Debug)]
@@ -28,7 +32,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             ((n - 0.45) * 4.0 + 0.5).clamp(0.0, 1.0)
         }
         ProceduralKind::Scratches => {
-            // Long thin streaks: noise stretched along one axis, sharpened to lines.
+            // Stretch noise along one axis to make thin streaks
             let q = Vec3::new(p.x * 0.15, p.y * 6.0, p.z * 6.0);
             let n = noise::perlin(q.to_array(), seed);
             let line = 1.0 - ((n - 0.5).abs() * 40.0).min(1.0);
@@ -45,8 +49,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
         }
         ProceduralKind::Gradient => p.x.rem_euclid(1.0),
         ProceduralKind::Wood => {
-            // Rings across Y (warped by low-frequency noise), latewood darkening sharply before
-            // each ring boundary; fine fibers stretched along X.
+            // Warp ring boundaries and add fine fibers along X
             let warp = noise::fbm([p.x * 0.18, p.y * 0.6, p.z], 3, seed, noise::perlin);
             let t = ((p.y + (warp - 0.5) * 0.9) * 5.0).rem_euclid(1.0);
             let ring = 1.0 - smoothstep(0.45, 1.0, t);
@@ -55,8 +58,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             (ring * 0.6 + fiber * 0.25 + tone * 0.15).clamp(0.0, 1.0)
         }
         ProceduralKind::Bricks => {
-            // Bricks 1 × 0.5 in running bond; per-brick tone in the top 15 % so low/high map to
-            // mortar/brick colors without washing the bricks out.
+            // Keep per-brick tone near its high value so mortar stays distinct
             let row = (p.y * 2.0).floor();
             let x = p.x + if (row as i32).rem_euclid(2) == 1 { 0.5 } else { 0.0 };
             let (col, fx, fy) = (x.floor(), x.rem_euclid(1.0), (p.y * 2.0).rem_euclid(1.0));
@@ -70,10 +72,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             smoothstep(0.015, 0.035, d) * (0.9 + 0.1 * noise::cell_hash(c.x as i32, c.y as i32, 0, seed))
         }
         ProceduralKind::Weave | ProceduralKind::Twill => {
-            // Warp along X, weft along Y: in each cell the thread on top shows its round
-            // cross-section, bulging mid-span. A plain weave alternates every cell; a 2/2 twill
-            // floats over two cells and steps one cell per row, so the floats line up in diagonal
-            // ribs, the weft darker than the warp.
+            // Alternate top threads for plain weave or step them into twill ribs
             let c = (p * 2.0).floor();
             let f = p * 2.0 - c;
             let pi = std::f32::consts::PI;
@@ -114,8 +113,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
         }
         ProceduralKind::Voronoi => noise::cellular(a, seed).2,
         ProceduralKind::Streaks => {
-            // Drips: thin columns along Y, each segment starting at a random height and fading
-            // as it runs down (Y is up), over two offset column grids.
+            // Offset column grids make sparse drips that fade downwards
             let drip = |x: f32, salt: u32| {
                 let cx = x * 6.0;
                 let col = cx.floor() as i32;
@@ -131,7 +129,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             (drip(p.x, 0).max(drip(p.x + 0.37, 1) * 0.8) * (0.6 + 0.4 * fine)).clamp(0.0, 1.0)
         }
         ProceduralKind::Smudges => {
-            // Sparse elliptical prints with concentric ridges, over soft greasy smudges.
+            // Blend ridged elliptical prints with soft smudges
             let w = noise::perlin((p * 1.3).to_array(), seed ^ 0x61) - 0.5;
             let q = Vec3::new(p.x * 1.15 + w * 0.3, p.y * 0.85 + w * 0.3, p.z);
             let (f1, _, id) = noise::cellular(q.to_array(), seed);
@@ -145,6 +143,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             let (g1, _, _) = noise::cellular((p * 2.7 + Vec3::splat(13.0)).to_array(), seed ^ 0x6B);
             smoothstep(0.08, 0.16, f1).min(smoothstep(0.06, 0.12, g1))
         }
+        ProceduralKind::TileGenerator => crate::tile_pattern::value(&crate::tile_pattern::DEFAULT, p.truncate(), seed, None),
         ProceduralKind::Chips => {
             let (f1, _, _) = noise::cellular((p * 2.0).to_array(), seed ^ 0x45);
             let n = noise::fbm(a, 5, seed, noise::perlin) + (f1 - 0.5) * 0.25;
@@ -411,16 +410,22 @@ fn shape(pr: &Procedural, v: f32) -> f32 {
     if pr.invert { 1.0 - v } else { v }
 }
 
-/// Evaluate a procedural through a projection.
+/// Evaluate a procedural through a projection, at full resolution and without images
 pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords) -> f32 {
-    let pattern_scale = pattern.scale.max(1e-4);
+    procedural_in(pattern, projection, coords, &PatternContext::default())
+}
+
+/// Evaluate a procedural through a projection with what `context` gives it: its resolution and the images it reads
+pub fn procedural_in(pattern: &Procedural, projection: &Projection, coords: &Coords, context: &PatternContext) -> f32 {
+    let pattern_scale = pattern.scale.max(MIN_PATTERN_SCALE);
+    let sample = |point: Vec3| plane_value(pattern, point, context);
     let value = match projection {
         Projection::Uv { scale, rotation, offset } => {
             let (sn, cs) = rotation.to_radians().sin_cos();
             let uv = Vec2::new(coords.uv.x * cs - coords.uv.y * sn, coords.uv.x * sn + coords.uv.y * cs) * Vec2::from(*scale) + Vec2::from(*offset);
 
             // Evaluate two-dimensional patterns on a slice of the volume
-            raw(pattern.kind, (uv * pattern_scale).extend(0.0), pattern.seed)
+            sample((uv * pattern_scale).extend(0.0))
         }
         Projection::Triplanar { scale, sharpness, offset } => {
             let p = coords.pos * *scale * pattern_scale + Vec3::from(*offset);
@@ -428,7 +433,7 @@ pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords
             // Shape scales the blend by the contrast
             let w = triplanar_weights(coords.nrm, *sharpness, pattern.contrast);
             let planes = [(w.x, Vec3::new(p.z, p.y, 0.0)), (w.y, Vec3::new(p.x, p.z, 0.0)), (w.z, Vec3::new(p.x, p.y, 0.0))];
-            planes.into_iter().filter(|(w, _)| *w > 0.0).map(|(w, q)| raw(pattern.kind, q, pattern.seed) * w).sum()
+            planes.into_iter().filter(|(w, _)| *w > 0.0).map(|(w, q)| sample(q) * w).sum()
         }
         Projection::Planar { scale, axis, offset } => {
             let p = coords.pos * *scale * pattern_scale + Vec3::from(*offset);
@@ -437,13 +442,13 @@ pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords
                 1 => Vec3::new(p.x, p.z, 0.0),
                 _ => Vec3::new(p.x, p.y, 0.0),
             };
-            raw(pattern.kind, q, pattern.seed)
+            sample(q)
         }
         Projection::Spherical { scale } => {
             let d = coords.pos.try_normalize().unwrap_or(Vec3::Y);
             let u = d.z.atan2(d.x) / std::f32::consts::TAU + 0.5;
             let v = d.y.clamp(-1.0, 1.0).acos() / std::f32::consts::PI;
-            raw(pattern.kind, Vec3::new(u * 4.0, v * 2.0, 0.0) * *scale * pattern_scale, pattern.seed)
+            sample(Vec3::new(u * 4.0, v * 2.0, 0.0) * *scale * pattern_scale)
         }
         Projection::Cylindrical { scale, axis } => {
             let p = coords.pos;
@@ -453,13 +458,48 @@ pub fn procedural(pattern: &Procedural, projection: &Projection, coords: &Coords
                 _ => (p.x, p.y, p.z),
             };
             let u = b.atan2(a) / std::f32::consts::TAU + 0.5;
-            raw(pattern.kind, Vec3::new(u * 4.0, h, 0.0) * *scale * pattern_scale, pattern.seed)
+            sample(Vec3::new(u * 4.0, h, 0.0) * *scale * pattern_scale)
         }
+
         // The decal already supplied coordinates in its local frame
-        Projection::Decal(_) => raw(pattern.kind, (coords.uv * pattern_scale).extend(0.0), pattern.seed),
+        Projection::Decal(_) => sample((coords.uv * pattern_scale).extend(0.0)),
     };
 
     shape(pattern, value)
+}
+
+/// The texels per side `pattern`'s resolution draws it at for a UV tile of `uv_tile` texels per side in a texture set of `texture_set`, when that is coarser than the UV tile (a finer image changes nothing: patterns are evaluated per texel)
+pub fn pattern_pixels(pattern: &Procedural, uv_tile: u32, texture_set: u32) -> Option<u32> {
+    if !pattern.resolution.can_reduce() {
+        return None;
+    }
+
+    let size = pattern.resolution.output_size(uv_tile, texture_set);
+    (size < uv_tile).then_some(size)
+}
+
+/// The pattern at `point` of its plane, read from an image of `context.pixels` texels per repeat (bilinear) when given
+fn plane_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f32 {
+    let cells = context.pixels.map(|pixels| pixels as f32 / pattern.scale.max(MIN_PATTERN_SCALE)).filter(|cells| cells.is_finite() && *cells > 0.0);
+    let Some(cells) = cells else { return pattern_value(pattern, point, context) };
+
+    let grid = point.truncate() * cells - 0.5;
+    let base = grid.floor();
+    let fraction = grid - base;
+    let at = |dx: f32, dy: f32| pattern_value(pattern, ((base + Vec2::new(dx, dy) + 0.5) / cells).extend(point.z), context);
+    let top_left = at(0.0, 0.0);
+    let bottom_left = at(0.0, 1.0);
+    let top = top_left + (at(1.0, 0.0) - top_left) * fraction.x;
+    let bottom = bottom_left + (at(1.0, 1.0) - bottom_left) * fraction.x;
+    top + (bottom - top) * fraction.y
+}
+
+/// The pattern at `point` of its plane, exactly
+fn pattern_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f32 {
+    match (&pattern.tile, pattern.kind) {
+        (Some(tile), ProceduralKind::TileGenerator) => crate::tile_pattern::value(tile, point.truncate(), pattern.seed, context.images),
+        _ => raw(pattern.kind, point, pattern.seed),
+    }
 }
 
 /// Texture coordinates (and blend weights) at which an image is sampled for a projection
@@ -543,8 +583,38 @@ pub fn decal_uv(d: &Decal, p: Vec3, nrm: Vec3) -> Option<(Vec2, f32)> {
     if facing <= 0.0 || lx.abs() > 0.5 || ly.abs() > 0.5 || lz > depth || !(lx.is_finite() && ly.is_finite()) {
         return None;
     }
+
     let w = smoothstep(0.0, 0.3, facing) * (1.0 - smoothstep(0.75 * depth, depth, lz));
-    Some((Vec2::new(lx + 0.5, 0.5 - ly), w))
+    Some((flip_uv(Vec2::new(lx + 0.5, 0.5 - ly), d.flip), w))
+}
+
+/// `uv` with the image mirrored left to right (`flip[0]`) and/or top to bottom (`flip[1]`) inside the frame.
+fn flip_uv(uv: Vec2, flip: [bool; 2]) -> Vec2 {
+    Vec2::new(if flip[0] { 1.0 - uv.x } else { uv.x }, if flip[1] { 1.0 - uv.y } else { uv.y })
+}
+
+/// [`decal_uv`] for a decal with a mirrored copy: whichever of the decal and its copy covers the
+/// point more. The copy is the decal reflected through the plane across `center` (the mesh
+/// center), so a point is looked up as its reflection (the plane is `offset` away from the center) and the image flipped as asked.
+pub fn decal_uv_symmetric(d: &Decal, p: Vec3, nrm: Vec3, center: Vec3) -> Option<(Vec2, f32)> {
+    let direct = decal_uv(d, p, nrm);
+    let Some(symmetry) = d.symmetry else { return direct };
+    let axis = usize::from(symmetry.axis.min(2));
+    let (mut mirrored_position, mut mirrored_normal) = (p, nrm);
+    mirrored_position[axis] = 2.0 * (center[axis] + symmetry.offset) - p[axis];
+    mirrored_normal[axis] = -nrm[axis];
+    let mirrored = decal_uv(d, mirrored_position, mirrored_normal).map(|(uv, w)| {
+        let uv = match symmetry.flip {
+            DecalFlip::None => uv,
+            DecalFlip::U => Vec2::new(1.0 - uv.x, uv.y),
+            DecalFlip::V => Vec2::new(uv.x, 1.0 - uv.y),
+        };
+        (uv, w)
+    });
+    match (direct, mirrored) {
+        (Some(a), Some(b)) => Some(if b.1 > a.1 { b } else { a }),
+        (a, b) => a.or(b),
+    }
 }
 
 /// World-space noise used by generators (seamless across UV islands).
@@ -555,6 +625,32 @@ pub fn world_noise(pos: Vec3, scale: f32, seed: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use texturecraft_core::{OutputResolution, ResolutionMode};
+
+    #[test]
+    fn a_pattern_is_drawn_coarser_only_below_the_uv_tiles_resolution() {
+        let with = |resolution: OutputResolution| pattern_pixels(&Procedural { resolution, ..Procedural::new(ProceduralKind::Clouds) }, 1024, 2048);
+        assert_eq!(with(OutputResolution::default()), None, "by default a pattern is evaluated per texel");
+        assert_eq!(with(OutputResolution { factor: -1, ..OutputResolution::default() }), Some(512));
+        assert_eq!(with(OutputResolution { mode: ResolutionMode::Custom, custom: 256, factor: 0 }), Some(256));
+        assert_eq!(with(OutputResolution { mode: ResolutionMode::Custom, custom: 2048, factor: 0 }), None, "a finer image than the UV tile changes nothing");
+    }
+
+    #[test]
+    fn a_coarser_pattern_reads_its_cells_bilinearly() {
+        let pattern = Procedural { scale: 1.0, ..Procedural::new(ProceduralKind::Clouds) };
+        let coarse = PatternContext { pixels: Some(4), ..PatternContext::default() };
+        let at = |x: f32, context: &PatternContext| {
+            procedural_in(&pattern, &Projection::default(), &Coords { uv: Vec2::new(x, 0.375), pos: Vec3::ZERO, nrm: Vec3::Y }, context)
+        };
+        let exact = PatternContext::default();
+
+        // Coarse reads are exact at cell centers and blend between them
+        assert!((at(0.375, &coarse) - at(0.375, &exact)).abs() < 1e-5);
+        let blended = (at(0.125, &exact) + at(0.375, &exact)) * 0.5;
+        assert!((at(0.25, &coarse) - blended).abs() < 1e-5, "{} vs {blended}", at(0.25, &coarse));
+        assert!((at(0.25, &exact) - blended).abs() > 1e-3, "the exact pattern is not the blend, so the coarse read shows");
+    }
 
     #[test]
     fn every_pattern_and_projection_stays_in_range() {
@@ -572,6 +668,8 @@ mod tests {
                 rotation: 0.0,
                 offset: [0.0; 2],
                 depth: 1.0,
+                symmetry: None,
+                flip: [false; 2],
             }),
         ];
         for k in ProceduralKind::ALL {
@@ -672,14 +770,25 @@ mod tests {
 
     #[test]
     fn decals_cover_their_frame_facing_them() {
-        let d = Decal { center: [0.0; 3], normal: [0.0, 0.0, 1.0], up: [0.0, 1.0, 0.0], size: [2.0, 1.0], rotation: 0.0, offset: [0.0; 2], depth: 0.5 };
+        let d = Decal {
+            center: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            up: [0.0, 1.0, 0.0],
+            size: [2.0, 1.0],
+            rotation: 0.0,
+            offset: [0.0; 2],
+            depth: 0.5,
+            symmetry: None,
+            flip: [false; 2],
+        };
         let z = Vec3::Z;
         let (uv, w) = decal_uv(&d, Vec3::new(0.5, 0.25, 0.0), z).unwrap();
         assert!((uv - Vec2::new(0.75, 0.25)).length() < 1e-5 && (w - 1.0).abs() < 1e-5, "{uv} {w}");
         assert!(decal_uv(&d, Vec3::new(1.1, 0.0, 0.0), z).is_none(), "outside the frame");
         assert!(decal_uv(&d, Vec3::ZERO, -z).is_none(), "back faces");
         assert!(decal_uv(&d, Vec3::new(0.0, 0.0, 0.6), z).is_none(), "beyond the depth");
-        // Rotated a quarter turn and shifted: the frame turns with it.
+
+        // Rotated a quarter turn and shifted: the frame turns with it
         let r = Decal { rotation: 90.0, offset: [1.0, 0.0], ..d };
         let (uv, _) = decal_uv(&r, Vec3::new(1.0, 0.9, 0.0), z).unwrap();
         assert!((uv.x - 0.95).abs() < 1e-4 && (uv.y - 0.5).abs() < 1e-4, "{uv}");
@@ -687,6 +796,32 @@ mod tests {
         assert!((c[0] - Vec3::new(-1.0, 0.5, 0.0)).length() < 1e-5 && (c[2] - Vec3::new(1.0, -0.5, 0.0)).length() < 1e-5);
         assert!(decal_axes(&Decal { normal: [0.0; 3], ..d }).is_none());
         assert!(decal_uv(&Decal { size: [f32::NAN; 2], ..d }, Vec3::ZERO, z).is_none());
+    }
+
+    #[test]
+    fn decals_mirror_their_image_inside_the_frame() {
+        let d = Decal {
+            center: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            up: [0.0, 1.0, 0.0],
+            size: [2.0, 1.0],
+            rotation: 0.0,
+            offset: [0.0; 2],
+            depth: 0.5,
+            symmetry: None,
+            flip: [false; 2],
+        };
+        let (left, top) = (Vec3::new(-0.5, 0.25, 0.0), Vec3::Z);
+        let uv = |flip: [bool; 2]| decal_uv(&Decal { flip, ..d }, left, top).unwrap().0;
+        assert!((uv([false, false]) - Vec2::new(0.25, 0.25)).length() < 1e-5);
+        assert!((uv([true, false]) - Vec2::new(0.75, 0.25)).length() < 1e-5, "Flip U mirrors left to right only");
+        assert!((uv([false, true]) - Vec2::new(0.25, 0.75)).length() < 1e-5, "Flip V mirrors top to bottom only");
+        assert!((uv([true, true]) - Vec2::new(0.75, 0.75)).length() < 1e-5);
+
+        // The frame itself does not move: coverage is the same flipped or not
+        let covered = |flip: [bool; 2], p: Vec3| decal_uv(&Decal { flip, ..d }, p, top).map(|(_, w)| w);
+        assert_eq!(covered([true, true], left), covered([false, false], left));
+        assert_eq!(covered([true, true], Vec3::new(1.1, 0.0, 0.0)), None);
     }
 
     #[test]
