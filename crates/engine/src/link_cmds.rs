@@ -377,6 +377,7 @@ impl Session {
         if maps.is_empty() {
             return Err(EngineError::Other(format!("{} has no maps TextureCraft can paint with", m.manifest.name)));
         }
+
         let label = format!("Add {}", m.manifest.name);
         let (id, names) = self.edit(&label, |s| {
             let ts = s.ts();
@@ -402,7 +403,7 @@ impl Session {
             let name = s.doc.project.next_layer_name(ts, &m.manifest.name);
             let lid = crate::layer_cmds::insert_selected(s, Layer::new(lid, name, LayerKind::Fill(fill), &channels))?;
             place.apply(s, lid)?;
-            s.selected.insert(ts, lid);
+            s.select_one(ts, lid);
             s.target = crate::session::StackTarget::Content;
             Ok((lid, names))
         })?;
