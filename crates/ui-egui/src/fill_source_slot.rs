@@ -40,6 +40,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ui: &mut Ui, fill: &FillSourceTarg
     let (name, picture) = shown(app, &ctx, source);
 
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), SLOT_HEIGHT), Sense::click());
+
     // Read as a dropdown named for what it fills, its value the source
     response.widget_info(|| egui::WidgetInfo { current_text_value: Some(name.clone()), ..egui::WidgetInfo::labeled(egui::Role::ComboBox, true, caption) });
     let popup = ui.make_persistent_id(("fill_source_picker", fill_key(fill)));
@@ -60,11 +61,12 @@ pub(crate) fn show(app: &mut TextureCraftApp, ui: &mut Ui, fill: &FillSourceTarg
             name: name.clone(),
             layer: layer_name(app, *anchor),
             channel: read_label(app, *anchor, channel),
-            picture: app.layer_panel.texture_outside(&ctx, &app.session, ThumbTarget::Stage { effect: *anchor, channel }),
         })
         .collect();
     let current = current_key(source);
-    let picked = resource_picker::show_sources(&response, popup, &mut app.thumbs, (current.as_deref(), source.anchor()), tiles, anchors);
+    let picked = resource_picker::show_sources(&response, popup, &mut app.thumbs, (current.as_deref(), source.anchor()), tiles, anchors, |ui, anchor| {
+        app.layer_panel.texture_outside(ui.ctx(), &app.session, ThumbTarget::Stage { effect: anchor, channel })
+    });
     match picked {
         Some(ResourcePickerChoice::Resource(key)) if Some(&key) != current.as_ref() => pick_resource(app, fill, &key),
         Some(ResourcePickerChoice::Anchor(anchor)) if source.anchor() != Some(anchor) => pick_anchor(app, fill, anchor, channel),
@@ -135,19 +137,20 @@ fn tiles(app: &mut TextureCraftApp, ctx: &egui::Context) -> Vec<ResourcePickerTi
             label: tr(kind.label()).to_string(),
             group: tr("Patterns"),
             thumbnail: app.thumbs.procedural(ctx, kind),
+            image: None,
             preview: Box::new(move || ShelfPreview::Procedural(kind)),
         })
         .collect();
     let mut names: Vec<(String, Arc<ImageRes>)> = app.session.images.iter().map(|(name, image)| (name.clone(), image.clone())).collect();
     names.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, image) in names {
-        let thumbnail = Some(app.thumbs.image(ctx, &name, &image));
         let preview_name = name.clone();
         tiles.push(ResourcePickerTile {
             key: format!("{IMAGE_PREFIX}{name}"),
             label: name,
             group: tr("Images"),
-            thumbnail,
+            thumbnail: None,
+            image: Some(image.clone()),
             preview: Box::new(move || ShelfPreview::Image(preview_name.clone(), image.clone())),
         });
     }
@@ -156,6 +159,7 @@ fn tiles(app: &mut TextureCraftApp, ctx: &egui::Context) -> Vec<ResourcePickerTi
         label: tr("Uniform value").to_string(),
         group: tr("Uniform"),
         thumbnail: Some(app.thumbs.image(ctx, UNIFORM_SWATCH_NAME, &UNIFORM_SWATCH)),
+        image: None,
         preview: Box::new(|| ShelfPreview::Image(UNIFORM_SWATCH_NAME.to_string(), UNIFORM_SWATCH.clone())),
     });
     tiles
@@ -206,5 +210,148 @@ fn pattern_range(channel: Channel) -> ([f32; 3], [f32; 3]) {
         Channel::BaseColor => ([0.15; 3], [0.85; 3]),
         Channel::Height => ([-0.05; 3], [0.05; 3]),
         _ => ([0.2; 3], [0.8; 3]),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::{Harness, kittest::Queryable};
+    use texturecraft_engine::core::LayerKind;
+    use texturecraft_engine::{Session, execute, geom::primitives};
+
+    use super::*;
+
+    fn picker_harness(session: Session, anchors: Vec<(LayerId, String)>) -> Harness<'static, (TextureCraftApp, Vec<(LayerId, String)>)> {
+        let creation_context = eframe::CreationContext::_new_kittest(egui::Context::default());
+        let app = TextureCraftApp::new(&creation_context, session);
+        Harness::builder().with_size(vec2(500.0, 700.0)).with_context_setup(crate::theme::install).build_ui_state(
+            |ui, (app, anchors)| {
+                let layer = app.session.selected_layer().unwrap();
+                let LayerKind::Fill(fill) = &app.session.doc.project.layers[&layer].kind else { panic!("a fill layer") };
+                let source = fill.source(Channel::Height);
+                let target = FillSourceTarget::Channel { base: json!({"layer": layer.0}), channel: Channel::Height };
+                show(app, ui, &target, &source, (anchors, "Source"));
+                app.layer_panel.end(ui.ctx(), &app.session);
+            },
+            (app, anchors),
+        )
+    }
+
+    fn image_preview_count(context: &egui::Context) -> usize {
+        context.tex_manager().read().allocated().filter(|(_, metadata)| metadata.name.starts_with("res_picker-image-")).count()
+    }
+
+    fn settle_anchor_previews(harness: &mut Harness<'_, (TextureCraftApp, Vec<(LayerId, String)>)>) {
+        // Allow the worker to finish on a busy machine
+        const ATTEMPTS: usize = 500;
+        const WAIT: std::time::Duration = std::time::Duration::from_millis(10);
+        for _ in 0..ATTEMPTS {
+            if !harness.state().0.layer_panel.service().busy() {
+                return;
+            }
+
+            std::thread::sleep(WAIT);
+            harness.run_steps(2);
+        }
+
+        assert!(!harness.state().0.layer_panel.service().busy(), "the anchor preview queue should settle");
+    }
+
+    #[test]
+    fn source_picker_images_render_on_scroll_and_release_on_removal() {
+        const IMAGE_COUNT: usize = 128;
+        let mut session = Session::new_project("picker", primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
+        execute(&mut session, "layer.add.fill", &json!({"height": 0.5})).unwrap();
+        for index in 0..IMAGE_COUNT {
+            let name = format!("picker-image-{index:03}.png");
+            session.doc.resources.insert(name.clone(), Arc::new(vec![0]));
+            session.images.insert(name, Arc::new(ImageRes { width: 64, height: 64, rgba: vec![[0.5; 4]; 64 * 64], srgb: false }));
+        }
+        let mut harness = picker_harness(session, Vec::new());
+
+        harness.get_by_role_and_label(egui::Role::ComboBox, "Source").click();
+        harness.run_steps(30);
+        let initial_previews = image_preview_count(&harness.ctx);
+
+        assert!(initial_previews > 0 && initial_previews < IMAGE_COUNT, "only visible images should have previews: {initial_previews}");
+        harness.run_steps(3);
+        assert_eq!(image_preview_count(&harness.ctx), initial_previews, "warm frames reuse image previews");
+
+        let first_name = "picker-image-000.png";
+        harness.get_by_role_and_label(egui::Role::Button, first_name).scroll_to_me();
+        harness.run_steps(30);
+        let scrolled_previews = image_preview_count(&harness.ctx);
+        harness.get_by_role_and_label(egui::Role::Button, first_name).click();
+        harness.run_steps(3);
+
+        assert!(scrolled_previews > initial_previews, "scrolling must render newly visible image tiles");
+        let app = &mut harness.state_mut().0;
+        let layer = app.session.selected_layer().unwrap();
+        let LayerKind::Fill(fill) = &app.session.doc.project.layers[&layer].kind else { panic!("a fill layer") };
+        assert_eq!(fill.source(Channel::Height), Source::image(first_name));
+
+        app.session.images.clear();
+        app.thumbs.sync_images(&app.session.images, app.session.revision + 1);
+
+        assert_eq!(image_preview_count(&harness.ctx), 0, "removed images release all picker preview textures");
+        eprintln!("picker image previews: initial {initial_previews}, after scroll {scrolled_previews}, after removal 0");
+    }
+
+    #[test]
+    fn source_picker_renders_only_visible_anchors() {
+        const ANCHOR_COUNT: usize = 128;
+        let mut session = Session::new_project("picker", primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
+        execute(&mut session, "layer.add.fill", &json!({"height": 0.5})).unwrap();
+        let mut anchors = Vec::new();
+        for index in 0..ANCHOR_COUNT {
+            let name = format!("anchor-{index:03}");
+            let result = execute(&mut session, "effect.add.anchor", &json!({"name": name})).unwrap();
+            anchors.push((LayerId(result["effect"].as_u64().unwrap()), name));
+        }
+        execute(&mut session, "layer.add.fill", &json!({"height": 0.0})).unwrap();
+        let mut harness = picker_harness(session, anchors);
+
+        harness.get_by_role_and_label(egui::Role::ComboBox, "Source").click();
+        harness.run_steps(3);
+        settle_anchor_previews(&mut harness);
+        let service = harness.state().0.layer_panel.service();
+        eprintln!("hidden anchor previews: rendered {}, retained {}", service.rendered, service.cached());
+
+        assert_eq!(service.rendered, 0, "the hidden Anchor points tab must not render its targets");
+        assert_eq!(service.cached(), 0);
+
+        harness.get_by_role_and_label(egui::Role::Tab, "Anchor points").click();
+        harness.run_steps(3);
+        settle_anchor_previews(&mut harness);
+        let initial_previews = harness.state().0.layer_panel.service().rendered;
+
+        assert!(initial_previews > 0 && initial_previews < ANCHOR_COUNT as u64);
+        assert_eq!(harness.state().0.layer_panel.service().cached() as u64, initial_previews);
+
+        harness.get_by_role_and_label(egui::Role::Button, "anchor-100").scroll_to_me();
+        harness.run_steps(30);
+        settle_anchor_previews(&mut harness);
+        let scrolled_previews = harness.state().0.layer_panel.service().rendered;
+
+        assert!(scrolled_previews > initial_previews && scrolled_previews < ANCHOR_COUNT as u64);
+        eprintln!("visible anchor previews: initial {initial_previews}, after scroll {scrolled_previews}");
+    }
+
+    #[test]
+    fn source_tiles_defer_image_previews_until_drawn() {
+        let mut session = texturecraft_engine::sample_session(128, 64).unwrap();
+        for index in 0..128 {
+            let name = format!("picker-{index:03}.png");
+            session.images.insert(name, Arc::new(ImageRes { width: 64, height: 64, rgba: vec![[0.5; 4]; 64 * 64], srgb: false }));
+        }
+        let creation_context = eframe::CreationContext::_new_kittest(egui::Context::default());
+        let mut app = TextureCraftApp::new(&creation_context, session);
+        let context = egui::Context::default();
+
+        let tiles = tiles(&mut app, &context);
+        let image_previews = context.tex_manager().read().allocated().filter(|(_, metadata)| metadata.name.starts_with("res_picker-")).count();
+
+        assert_eq!(tiles.iter().filter(|tile| tile.key.starts_with(IMAGE_PREFIX)).count(), 128);
+        assert_eq!(image_previews, 0, "opening the picker must not resample all project images");
     }
 }

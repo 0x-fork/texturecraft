@@ -52,17 +52,17 @@ const POLL_INTERVAL_MS: u64 = 40;
 impl LayerPanel {
     /// Start drawing the panel for this frame.
     pub(crate) fn begin(&mut self, session: &Session, now: f64) {
-        self.frame += 1;
         self.begin_pictures(session, now);
 
         // Deleted layer IDs must not accumulate in panel state
         self.folded.retain(|(layer, _)| session.doc.project.layers.contains_key(&texturecraft_engine::core::LayerId(*layer)));
     }
 
-    /// Notice document changes once per frame, whether the panel or a picture outside it asks first
+    /// Advance the picture frame once, whether the panel or a picture outside it asks first
     fn begin_pictures(&mut self, session: &Session, now: f64) {
         if !self.pictures_begun {
             self.pictures_begun = true;
+            self.frame += 1;
             self.service.begin_frame(session, now);
         }
     }
@@ -157,6 +157,34 @@ mod tests {
     }
 
     #[test]
+    fn outside_pictures_release_old_textures_while_the_panel_is_hidden() {
+        let session = Session::new_project("thumb", primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
+        let context = Context::default();
+        let initial_textures = context.tex_manager().read().num_allocated();
+        let mut panel = LayerPanel::default();
+
+        // Outside pictures begin frames even when the Layers panel never does
+        let missing = ThumbTarget::Content { layer: LayerId(u64::MAX), channel: Channel::BaseColor };
+        panel.texture_outside(&context, &session, missing);
+        for index in 0..CACHE_ENTRIES * 2 + 1 {
+            let target = ThumbTarget::Content { layer: LayerId(index as u64), channel: Channel::BaseColor };
+            let image = egui::ColorImage::filled([64, 64], egui::Color32::WHITE);
+            let texture = context.load_texture("layer-thumb", image, TextureOptions::LINEAR);
+            panel.textures.insert(target, (1, texture, panel.frame));
+        }
+        assert_eq!(context.tex_manager().read().num_allocated(), initial_textures + CACHE_ENTRIES * 2 + 1);
+        panel.end(&context, &session);
+
+        for _ in 0..2 {
+            panel.texture_outside(&context, &session, missing);
+            panel.end(&context, &session);
+        }
+
+        assert_eq!(panel.textures.len(), 0, "old outside pictures should leave the GPU cache");
+        assert_eq!(context.tex_manager().read().num_allocated(), initial_textures);
+    }
+
+    #[test]
     fn evicted_and_dropped_thumbnail_handles_release_textures() {
         let session = Session::new_project("thumb", primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
         let context = Context::default();
@@ -174,7 +202,9 @@ mod tests {
             panel.textures.insert(target, (1, texture, panel.frame));
         }
         let kept = evicted.pop().unwrap();
+        panel.end(&context, &session);
         panel.begin(&session, 1.0);
+        panel.end(&context, &session);
         panel.begin(&session, 2.0);
         panel.textures.values_mut().find(|(_, texture, _)| texture.id() == kept).unwrap().2 = panel.frame;
         panel.end(&context, &session);

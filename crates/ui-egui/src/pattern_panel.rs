@@ -160,6 +160,7 @@ fn restore_defaults(app: &mut TextureCraftApp, target: &PatternTarget, pattern: 
         "customResolution": defaults.resolution.custom,
         "resolutionFactor": defaults.resolution.factor,
     });
+
     // The images stay: Restore defaults puts back the parameters, not the inputs
     if let Some(tile) = pattern.tile.as_deref() {
         extra["tileDefaults"] = json!(true);
@@ -268,6 +269,7 @@ fn size_section(ui: &mut Ui, edits: &mut TileEdits, tile: &TileGenerator) {
             }
         }
         TileSizeMode::NormalSize => edits.pair(ui, [tr("Size X"), tr("Size Y")], "size", tile.size, 0.0..=1.0),
+
         // The shape is the largest square its cell holds: no size of its own
         TileSizeMode::KeepRatio => {}
         TileSizeMode::Absolute => edits.pair(ui, [tr("Size X"), tr("Size Y")], "sizeAbsolute", tile.size_absolute, 0.0..=1.0),
@@ -327,6 +329,7 @@ fn image_inputs(app: &mut TextureCraftApp, ui: &mut Ui, target: &PatternTarget, 
             }
             changed = true;
         }
+
         // Inputs fill in order: one empty slot after the last image
         if current.is_none() {
             break;

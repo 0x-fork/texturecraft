@@ -41,6 +41,7 @@ pub(crate) fn images_used(project: &Project, id: LayerId, out: &mut Vec<String>,
     if depth > texturecraft_core::project::MAX_DEPTH {
         return;
     }
+
     let Some(layer) = project.layers.get(&id) else { return };
 
     if let LayerKind::Fill(fill) = &layer.kind {

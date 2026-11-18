@@ -375,6 +375,7 @@ impl Procedural {
 
     pub fn new(kind: ProceduralKind) -> Procedural {
         let tile = (kind == ProceduralKind::TileGenerator).then(Box::default);
+
         // The Tile Generator lays its whole grid over one projection unit, as its tile counts set its frequency
         let scale = if tile.is_some() { 1.0 } else { 4.0 };
         Procedural { kind, scale, seed: 1, contrast: 1.0, balance: 0.0, invert: false, tile, resolution: OutputResolution::default() }
@@ -1253,11 +1254,14 @@ mod tests {
     #[test]
     fn patterns_saved_before_tile_settings_keep_their_form() {
         let saved = serde_json::json!({"kind": "Clouds", "scale": 4.0, "seed": 1, "contrast": 1.0, "balance": 0.0, "invert": false});
+
         let loaded: Procedural = serde_json::from_value(saved.clone()).unwrap();
+
         assert_eq!(loaded, Procedural::new(ProceduralKind::Clouds));
         assert_eq!(serde_json::to_value(&loaded).unwrap(), saved, "a pattern at its defaults saves as before");
 
         let tile = serde_json::to_value(Procedural::new(ProceduralKind::TileGenerator)).unwrap();
+
         assert!(
             tile.get("tile").is_some() && tile.get("resolution").is_none(),
             "only the Tile Generator carries tile settings, and a default resolution is not saved"
@@ -1268,8 +1272,10 @@ mod tests {
     fn tile_settings_saved_with_missing_or_hostile_values_load_in_range() {
         let tile = serde_json::json!({"amount": [0, 4000], "specific": 7.0, "quarter_turns": 6, "inputs": ["a", "b", "c", "d", "e", "f", "g"]});
         let saved = serde_json::json!({"kind": "TileGenerator", "scale": 1.0, "seed": 1, "contrast": 1.0, "balance": 0.0, "invert": false, "tile": tile});
+
         let loaded: Procedural = serde_json::from_value(saved).unwrap();
         let tile = loaded.tile.unwrap();
+
         assert_eq!(tile.amount, [1, 64]);
         assert_eq!(tile.specific, 1.0);
         assert_eq!(tile.quarter_turns, 2);
@@ -1277,6 +1283,7 @@ mod tests {
         assert_eq!(tile.middle_size, TileGenerator::default().middle_size, "a missing setting reads its default");
 
         let not_finite = TileGenerator { scale: f32::NAN, rotation: f32::INFINITY, ..TileGenerator::default() }.clamped();
+
         assert_eq!((not_finite.scale, not_finite.rotation), (1.0, 0.0));
     }
 

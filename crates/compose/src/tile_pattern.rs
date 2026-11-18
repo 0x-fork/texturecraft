@@ -82,6 +82,7 @@ fn shape(kind: TileShape, u: f32, v: f32, specific: f32) -> f32 {
             let distance = (u.abs() - half_length).max(0.0).hypot(v);
             (1.0 - (distance / CAPSULE_RADIUS).powi(2)).clamp(0.0, 1.0)
         }
+
         // The image shape draws an input image instead (see `pattern`): without one it is empty
         TileShape::Image => 0.0,
     }
@@ -104,7 +105,7 @@ fn pattern(tile: &TileGenerator, mut local: Vec2, input: Option<&ImageRes>) -> f
     }
 
     if tile.shape_tiling > 1 {
-        // The shape repeats tiling × tiling times, but one copy shows: the one at index ceil(tiling / 2) − 1 from the top left
+        // Tiling shows the copy just above and left of center
         let count = tile.shape_tiling as f32;
         let shown = (tile.shape_tiling.div_ceil(2) - 1) as f32;
         let cell = (local + 1.0) * 0.5 * count;
@@ -156,8 +157,10 @@ fn sampled_shape(tile: &TileGenerator, local: Vec2, samples: Vec2) -> f32 {
         let texel = (base + Vec2::new(dx, dy) + 0.5) / samples * 2.0 - 1.0;
         shape(tile.shape, texel.x, texel.y, tile.specific)
     };
-    let top = at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * fraction.x;
-    let bottom = at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * fraction.x;
+    let top_left = at(0.0, 0.0);
+    let bottom_left = at(0.0, 1.0);
+    let top = top_left + (at(1.0, 0.0) - top_left) * fraction.x;
+    let bottom = bottom_left + (at(1.0, 1.0) - bottom_left) * fraction.x;
     top + (bottom - top) * fraction.y
 }
 
@@ -304,6 +307,7 @@ fn reach(tile: &TileGenerator, counts: Vec2) -> Vec2 {
 fn near(position: f32, reach: f32, count: i32) -> impl Iterator<Item = i32> {
     let first = (position - reach - 0.5).floor();
     let last = (position + reach - 0.5).ceil();
+
     // A reach past the whole grid visits each cell once; float math keeps a hostile reach from overflowing
     let span = (last - first + 1.0).min(count as f32).max(1.0) as i32;
     let first = first as i32;
@@ -352,7 +356,7 @@ pub(crate) fn value(tile: &TileGenerator, point: Vec2, seed: u32, images: Option
         }
     };
 
-    // Lines (rows, or columns with a vertical offset) shift their tiles along them, so the tiles near the texel are found per line
+    // Each shifted line needs its own nearby tile search
     if tile.vertical_offset {
         for column in near(cell.x, reach.x, columns) {
             for row in near(cell.y - line_shift(tile, column), reach.y, rows) {
@@ -380,6 +384,7 @@ fn finish(tile: &TileGenerator, sum: f32, colored: f32, background: f32) -> f32 
     let color = colored.clamp(0.0, 1.0) * tile.opacity;
     let value = (background * (1.0 - alpha) + color).clamp(0.0, 1.0);
     let windowed = window(value, tile.position, tile.contrast);
+
     // Out-of-range settings drawn as they are must not leave a non-number in the texture
     if windowed.is_finite() { windowed } else { 0.0 }
 }
@@ -413,6 +418,7 @@ mod tests {
     #[test]
     fn tile_centers_follow_the_amounts() {
         let tile = bells([4, 2]);
+
         // Cell (i, j) of a 4 × 2 grid is centered at ((i + 0.5) / 4, (j + 0.5) / 2)
         for (x, y) in [(0.125, 0.25), (0.375, 0.75), (0.875, 0.25)] {
             assert!(at(&tile, x, y) > 0.99, "a tile center at ({x}, {y})");
@@ -423,6 +429,7 @@ mod tests {
     #[test]
     fn the_offset_shifts_each_row_along_by_its_share_of_a_cell() {
         let tile = TileGenerator { offset: 0.5, ..bells([4, 4]) };
+
         // Row 0 stays; row 1 (y 0.375) moves half a cell (0.125) to the right
         assert!(at(&tile, 0.125, 0.125) > 0.99);
         assert!(at(&tile, 0.25, 0.375) > 0.99, "row 1's first tile is centered at x 0.25");
@@ -460,7 +467,7 @@ mod tests {
         let square = TileGenerator { size_mode: TileSizeMode::KeepRatio, ..halved.clone() };
         assert!(first_disc_covers(&square, 0.2, 0.0) && first_disc_covers(&square, 0.0, 0.2) && !first_disc_covers(&square, 0.0, 0.3));
 
-        // A fifth of the pattern: the disc ends 0.1 from its center, in a share of the pattern or in pixels of the 2048 reference
+        // A fifth of the pattern has the same extent in absolute and reference pixels
         let absolute = TileGenerator { size_mode: TileSizeMode::Absolute, size_absolute: [0.2, 0.2], ..discs.clone() };
         let pixel = TileGenerator { size_mode: TileSizeMode::Pixel, size_pixel: [0.2 * PIXEL_REFERENCE; 2], ..discs.clone() };
         for sized in [&absolute, &pixel] {
@@ -549,6 +556,7 @@ mod tests {
             input_distribution: TileInputDistribution::ByNumber,
             ..TileGenerator::default()
         };
+
         // Tile 0 (left) draws the first input, tile 1 the second
         let left = value(&tile, Vec2::new(0.25, 0.5), 1, Some(&images));
         let right = value(&tile, Vec2::new(0.75, 0.5), 1, Some(&images));
@@ -568,6 +576,7 @@ mod tests {
     fn the_background_image_shows_between_the_shapes() {
         let images: ImageStore = [("ground".to_string(), halves(0.4, 0.4))].into();
         let tile = TileGenerator { background_image: Some("ground".into()), interstice: [0.5, 0.5], ..bells([2, 2]) };
+
         // Between the bells only the background is left
         assert!((value(&tile, Vec2::new(0.0, 0.0), 1, Some(&images)) - 0.4).abs() < 0.01);
         assert_eq!(value(&tile, Vec2::new(0.0, 0.0), 1, None), 0.0, "without the image the background value stays");

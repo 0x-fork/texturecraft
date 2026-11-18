@@ -146,7 +146,7 @@ fn a_mask_fill_picks_and_edits_a_pattern_with_effect_set() {
     execute(&mut session, "effect.set", &json!({"effect": effect, "tileDefaults": true})).unwrap();
     assert_eq!(tile(&mask_pattern(&session, effect)), TileGenerator::default(), "Restore defaults puts every tile setting back");
 
-    // A value takes the mask fill back from the pattern only through a uniform source pick, so a stray value is ignored as before
+    // Only an explicit uniform pick replaces an active pattern
     execute(&mut session, "effect.set", &json!({"effect": effect, "value": 0.3})).unwrap();
     assert_eq!(mask_pattern(&session, effect).kind, ProceduralKind::TileGenerator);
 
@@ -244,6 +244,7 @@ fn the_compositor_draws_a_tile_generators_image_input() {
     let mut session = session();
     let input = import_gray(&mut session, "plate.png");
     tile_fill(&mut session);
+
     // One tile with no gap: the image covers the whole texture
     execute(&mut session, "layer.fill.set", &json!({"channel": "baseColor", "tile": {"shape": "Image", "inputs": [input], "amount": [1, 1]}})).unwrap();
 

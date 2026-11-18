@@ -76,6 +76,7 @@ fn settle(harness: &mut Harness<'_, TextureCraftApp>) {
 fn drag_slider(harness: &mut Harness<'_, TextureCraftApp>, label: &str) {
     harness.get_by_label(label).scroll_to_me();
     harness.run_steps(3);
+
     // The track runs under the label: grab it near its left end and drag well to the right
     let rect = harness.get_by_label(label).rect();
     let start = egui::pos2(rect.left() + TRACK_GRAB_INSET, rect.bottom() + TRACK_BELOW_LABEL);
@@ -105,6 +106,7 @@ fn the_anchor_points_tab_picks_an_anchor() {
     harness.run_steps(3);
     harness.get_by_label("Anchor points").click();
     harness.run_steps(3);
+
     // An anchor tile is labelled "<layer> / <anchor>", as the anchors below a layer are listed
     let project = &harness.state().session.doc.project;
     let owner = project.layers.values().find(|layer| layer.content_effects.iter().any(|effect| effect.name == "Height")).unwrap();
@@ -160,6 +162,7 @@ fn a_gray_value_typed_in_its_field_applies() {
     let (mut harness, effect) = harness(false);
     execute(&mut harness.state_mut().session, "effect.set", &json!({"effect": effect.0, "procedural": "Tile Generator"})).unwrap();
     harness.run_steps(3);
+
     // A section's title can also be a control's label above it: the title is the last one
     harness.get_all_by_label("Color").last().unwrap().scroll_to_me();
     harness.run_steps(12);
@@ -228,6 +231,7 @@ fn tile_generator_snapshots() {
         for section in sections {
             // A section's title can also be a control's label above it ("Position"): the title is the last one
             harness.get_all_by_label(section).last().unwrap().scroll_to_me();
+
             // The scroll animates: the title must be on screen before the click
             harness.run_steps(12);
             harness.get_all_by_label(section).last().unwrap().click();

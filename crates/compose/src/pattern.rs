@@ -31,7 +31,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             ((n - 0.45) * 4.0 + 0.5).clamp(0.0, 1.0)
         }
         ProceduralKind::Scratches => {
-            // Long thin streaks: noise stretched along one axis, sharpened to lines.
+            // Stretch noise along one axis to make thin streaks
             let q = Vec3::new(p.x * 0.15, p.y * 6.0, p.z * 6.0);
             let n = noise::perlin(q.to_array(), seed);
             let line = 1.0 - ((n - 0.5).abs() * 40.0).min(1.0);
@@ -48,8 +48,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
         }
         ProceduralKind::Gradient => p.x.rem_euclid(1.0),
         ProceduralKind::Wood => {
-            // Rings across Y (warped by low-frequency noise), latewood darkening sharply before
-            // each ring boundary; fine fibers stretched along X.
+            // Warp ring boundaries and add fine fibers along X
             let warp = noise::fbm([p.x * 0.18, p.y * 0.6, p.z], 3, seed, noise::perlin);
             let t = ((p.y + (warp - 0.5) * 0.9) * 5.0).rem_euclid(1.0);
             let ring = 1.0 - smoothstep(0.45, 1.0, t);
@@ -58,8 +57,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             (ring * 0.6 + fiber * 0.25 + tone * 0.15).clamp(0.0, 1.0)
         }
         ProceduralKind::Bricks => {
-            // Bricks 1 × 0.5 in running bond; per-brick tone in the top 15 % so low/high map to
-            // mortar/brick colors without washing the bricks out.
+            // Keep per-brick tone near its high value so mortar stays distinct
             let row = (p.y * 2.0).floor();
             let x = p.x + if (row as i32).rem_euclid(2) == 1 { 0.5 } else { 0.0 };
             let (col, fx, fy) = (x.floor(), x.rem_euclid(1.0), (p.y * 2.0).rem_euclid(1.0));
@@ -73,10 +71,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             smoothstep(0.015, 0.035, d) * (0.9 + 0.1 * noise::cell_hash(c.x as i32, c.y as i32, 0, seed))
         }
         ProceduralKind::Weave | ProceduralKind::Twill => {
-            // Warp along X, weft along Y: in each cell the thread on top shows its round
-            // cross-section, bulging mid-span. A plain weave alternates every cell; a 2/2 twill
-            // floats over two cells and steps one cell per row, so the floats line up in diagonal
-            // ribs, the weft darker than the warp.
+            // Alternate top threads for plain weave or step them into twill ribs
             let c = (p * 2.0).floor();
             let f = p * 2.0 - c;
             let pi = std::f32::consts::PI;
@@ -117,8 +112,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
         }
         ProceduralKind::Voronoi => noise::cellular(a, seed).2,
         ProceduralKind::Streaks => {
-            // Drips: thin columns along Y, each segment starting at a random height and fading
-            // as it runs down (Y is up), over two offset column grids.
+            // Offset column grids make sparse drips that fade downwards
             let drip = |x: f32, salt: u32| {
                 let cx = x * 6.0;
                 let col = cx.floor() as i32;
@@ -134,7 +128,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
             (drip(p.x, 0).max(drip(p.x + 0.37, 1) * 0.8) * (0.6 + 0.4 * fine)).clamp(0.0, 1.0)
         }
         ProceduralKind::Smudges => {
-            // Sparse elliptical prints with concentric ridges, over soft greasy smudges.
+            // Blend ridged elliptical prints with soft smudges
             let w = noise::perlin((p * 1.3).to_array(), seed ^ 0x61) - 0.5;
             let q = Vec3::new(p.x * 1.15 + w * 0.3, p.y * 0.85 + w * 0.3, p.z);
             let (f1, _, id) = noise::cellular(q.to_array(), seed);
@@ -256,6 +250,7 @@ pub fn procedural_in(pattern: &Procedural, projection: &Projection, coords: &Coo
             let u = b.atan2(a) / std::f32::consts::TAU + 0.5;
             sample(Vec3::new(u * 4.0, h, 0.0) * *scale * pattern_scale)
         }
+
         // The decal already supplied coordinates in its local frame
         Projection::Decal(_) => sample((coords.uv * pattern_scale).extend(0.0)),
     };
@@ -282,8 +277,10 @@ fn plane_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f
     let base = grid.floor();
     let fraction = grid - base;
     let at = |dx: f32, dy: f32| pattern_value(pattern, ((base + Vec2::new(dx, dy) + 0.5) / cells).extend(point.z), context);
-    let top = at(0.0, 0.0) + (at(1.0, 0.0) - at(0.0, 0.0)) * fraction.x;
-    let bottom = at(0.0, 1.0) + (at(1.0, 1.0) - at(0.0, 1.0)) * fraction.x;
+    let top_left = at(0.0, 0.0);
+    let bottom_left = at(0.0, 1.0);
+    let top = top_left + (at(1.0, 0.0) - top_left) * fraction.x;
+    let bottom = bottom_left + (at(1.0, 1.0) - bottom_left) * fraction.x;
     top + (bottom - top) * fraction.y
 }
 
@@ -407,7 +404,8 @@ mod tests {
             procedural_in(&pattern, &Projection::default(), &Coords { uv: Vec2::new(x, 0.375), pos: Vec3::ZERO, nrm: Vec3::Y }, context)
         };
         let exact = PatternContext::default();
-        // Cell centres of a 4-texel image sit at 0.125, 0.375…: there the coarse pattern is exact, between them it blends them
+
+        // Coarse reads are exact at cell centers and blend between them
         assert!((at(0.375, &coarse) - at(0.375, &exact)).abs() < 1e-5);
         let blended = (at(0.125, &exact) + at(0.375, &exact)) * 0.5;
         assert!((at(0.25, &coarse) - blended).abs() < 1e-5, "{} vs {blended}", at(0.25, &coarse));

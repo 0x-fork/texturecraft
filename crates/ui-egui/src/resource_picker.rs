@@ -92,11 +92,12 @@ pub(crate) fn show(
                 label: item.label.to_string(),
                 group: item.group,
                 thumbnail: item.thumbnail.clone(),
+                image: None,
                 preview: Box::new(move || preview(id)),
             }
         })
         .collect();
-    match popup(slot, popup_id, thumbs, (current, None), tiles, None) {
+    match popup(slot, popup_id, thumbs, (current, None), tiles, None, |_, _| None) {
         Some(ResourcePickerChoice::Resource(key)) => items.iter().find(|item| item.id == key).map(|item| item.id),
         _ => None,
     }
@@ -110,12 +111,13 @@ pub(crate) fn show_sources(
     (current, current_anchor): (Option<&str>, Option<LayerId>),
     tiles: Vec<ResourcePickerTile<'_>>,
     anchors: Vec<ResourcePickerAnchor>,
+    picture: impl FnMut(&Ui, LayerId) -> Option<egui::TextureId>,
 ) -> Option<ResourcePickerChoice> {
     if !is_open(&slot.ctx, popup_id) {
         return None;
     }
 
-    popup(slot, popup_id, thumbs, (current, current_anchor), tiles, Some(anchors))
+    popup(slot, popup_id, thumbs, (current, current_anchor), tiles, Some(anchors), picture)
 }
 
 /// The popup: the tabs when there are anchors to offer, the search field, then the tiles of the shown tab
@@ -126,6 +128,7 @@ fn popup(
     (current, current_anchor): (Option<&str>, Option<LayerId>),
     tiles: Vec<ResourcePickerTile<'_>>,
     anchors: Option<Vec<ResourcePickerAnchor>>,
+    mut picture: impl FnMut(&Ui, LayerId) -> Option<egui::TextureId>,
 ) -> Option<ResourcePickerChoice> {
     let ctx = slot.ctx.clone();
     let mut picked = None;
@@ -147,7 +150,9 @@ fn popup(
                 // A search that leaves few tiles must not shrink the popup, or egui moves it
                 ui.set_min_height(PICKER_HEIGHT);
                 picked = match (tab, &anchors) {
-                    (ResourcePickerTab::Anchors, Some(anchors)) => anchor_grid(ui, anchors, &query, current_anchor).map(ResourcePickerChoice::Anchor),
+                    (ResourcePickerTab::Anchors, Some(anchors)) => {
+                        anchor_grid(ui, anchors, &query, current_anchor, &mut picture).map(ResourcePickerChoice::Anchor)
+                    }
                     _ => grid(ui, thumbs, &tiles, &query, current, just_opened).map(ResourcePickerChoice::Resource),
                 };
             });
@@ -234,7 +239,14 @@ fn grid(ui: &mut Ui, thumbs: &mut Thumbs, tiles: &[ResourcePickerTile<'_>], quer
         group_header(ui, group);
         shelf::tiles(ui, |ui| {
             for tile in shown.iter().filter(|tile| tile.group == group) {
-                let response = shelf::tile(ui, thumbs, tile.thumbnail.as_ref(), || (tile.preview)(), &tile.label, None);
+                let response = shelf::tile(
+                    ui,
+                    thumbs,
+                    |ui, thumbs| tile.image.as_ref().map(|image| thumbs.image(ui.ctx(), &tile.label, image)).or_else(|| tile.thumbnail.clone()),
+                    || (tile.preview)(),
+                    &tile.label,
+                    None,
+                );
                 if current == Some(tile.key.as_str()) {
                     if reveal_current {
                         response.scroll_to_me(Some(egui::Align::Center));
@@ -251,7 +263,13 @@ fn grid(ui: &mut Ui, thumbs: &mut Thumbs, tiles: &[ResourcePickerTile<'_>], quer
 }
 
 /// The anchor points matching `query` as tiles: a picture of what each reads, an anchor badge, the layer and the channel
-fn anchor_grid(ui: &mut Ui, anchors: &[ResourcePickerAnchor], query: &str, current: Option<LayerId>) -> Option<LayerId> {
+fn anchor_grid(
+    ui: &mut Ui,
+    anchors: &[ResourcePickerAnchor],
+    query: &str,
+    current: Option<LayerId>,
+    picture: &mut impl FnMut(&Ui, LayerId) -> Option<egui::TextureId>,
+) -> Option<LayerId> {
     let tokens = Tokens::get(ui.ctx());
     if anchors.is_empty() {
         ui.label(egui::RichText::new(tr("No anchor point below this layer.")).color(tokens.text_dim));
@@ -262,7 +280,7 @@ fn anchor_grid(ui: &mut Ui, anchors: &[ResourcePickerAnchor], query: &str, curre
     let mut picked = None;
     shelf::tiles(ui, |ui| {
         for anchor in shown {
-            let response = anchor_tile(ui, anchor);
+            let response = anchor_tile(ui, anchor, picture);
             if current == Some(anchor.anchor) {
                 ui.painter().rect_stroke(response.rect, TILE_ROUNDING, Stroke::new(CURRENT_OUTLINE_WIDTH, tokens.accent), egui::StrokeKind::Inside);
             }
@@ -275,10 +293,17 @@ fn anchor_grid(ui: &mut Ui, anchors: &[ResourcePickerAnchor], query: &str, curre
 }
 
 /// One anchor tile, the shelf tile's size: the picture, the anchor badge in its corner, the layer's name and the channel under it
-fn anchor_tile(ui: &mut Ui, anchor: &ResourcePickerAnchor) -> Response {
+fn anchor_tile(ui: &mut Ui, anchor: &ResourcePickerAnchor, picture: &mut impl FnMut(&Ui, LayerId) -> Option<egui::TextureId>) -> Response {
     let tokens = Tokens::get(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(ANCHOR_TILE_SIZE, Sense::click());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &anchor.name));
+
+    // Offscreen tiles must not queue composition of their anchor stacks
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let texture = picture(ui, anchor.anchor);
     let painter = ui.painter();
     if response.hovered() {
         painter.rect_filled(rect, TILE_ROUNDING, tokens.row_hover);
@@ -288,7 +313,7 @@ fn anchor_tile(ui: &mut Ui, anchor: &ResourcePickerAnchor) -> Response {
         vec2(ANCHOR_PICTURE_SIZE, ANCHOR_PICTURE_SIZE),
     );
     painter.rect_filled(picture, TILE_ROUNDING, tokens.field);
-    if let Some(texture) = anchor.picture {
+    if let Some(texture) = texture {
         painter.image(texture, picture, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
     let badge = egui::Rect::from_min_size(

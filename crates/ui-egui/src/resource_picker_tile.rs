@@ -1,6 +1,9 @@
 //! One tile of a resource picker's Resources tab
 
+use std::sync::Arc;
+
 use egui::TextureHandle;
+use texturecraft_engine::compose::ImageRes;
 
 use crate::shelf_preview::ShelfPreview;
 
@@ -10,5 +13,6 @@ pub(crate) struct ResourcePickerTile<'a> {
     pub label: String,
     pub group: &'static str,
     pub thumbnail: Option<TextureHandle>,
+    pub image: Option<Arc<ImageRes>>,
     pub preview: Box<dyn Fn() -> ShelfPreview + 'a>,
 }

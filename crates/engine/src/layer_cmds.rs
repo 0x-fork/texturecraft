@@ -315,6 +315,7 @@ fn fill_set(session: &mut Session, params: &Value) -> Result<Value> {
     const CMD: &str = "layer.fill.set";
     let target = fill_target(session, params, CMD)?;
     let channel = channel_param(CMD, params, "channel")?.ok_or_else(|| bad(CMD, "`channel` is required"))?;
+
     // `solo`: this channel on, every other one off
     let solo = boolp(params, "solo") == Some(true);
     let enabled = if solo { Some(true) } else { boolp(params, "enabled") };
@@ -335,6 +336,7 @@ fn fill_set(session: &mut Session, params: &Value) -> Result<Value> {
     let touches_channel = source.is_some() || enabled.is_some();
     session.edit("Set fill", |session| {
         let fill = fill_mut(session, target)?;
+
         // `normalFormat` alone: the convention of the channel's image
         if let (None, Some(format)) = (&source, normal_format) {
             match fill.sources.get_mut(&channel) {
@@ -390,6 +392,7 @@ fn fill_source_from(
         let kind = ProceduralKind::parse(name).ok_or_else(|| bad(CMD, format!("unknown procedural `{name}`")))?;
         let mut pattern = Procedural::new(kind);
         crate::procedural_params::pattern_basics_from(params, &mut pattern);
+
         // A pattern of the kind the channel already has keeps its resolution and Tile Generator settings
         if let Some(Source::Procedural { pattern: current, .. }) = current
             && current.kind == kind
@@ -404,9 +407,11 @@ fn fill_source_from(
     if let Some(color) = uniform {
         return Ok(Some(Source::Uniform(color)));
     }
+
     if let Some(name) = strp(params, "image") {
         return Ok(Some(Source::Image { name: name.to_string(), normal_format: normal_format.unwrap_or_default() }));
     }
+
     if let Some(anchor) = u64p(params, "anchor") {
         let reader = match target {
             FillTarget::Layer(id) => Some(id),
@@ -416,6 +421,7 @@ fn fill_source_from(
         let anchor_channel = channel_param(CMD, params, "anchorChannel")?.unwrap_or(channel);
         return Ok(Some(crate::mask_cmds::anchor_source(session, CMD, reader, LayerId(anchor), anchor_channel)?));
     }
+
     if !crate::procedural_params::has_pattern_settings(params) {
         return Ok(None);
     }

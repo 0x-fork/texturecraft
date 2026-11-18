@@ -11,8 +11,6 @@ mod angle_dial;
 mod bake_job;
 pub mod bake_mode;
 mod bake_scene;
-#[cfg(not(target_arch = "wasm32"))]
-mod brush_preset_save;
 mod color_selection_editor;
 pub mod control;
 mod decal_drop;
@@ -165,8 +163,6 @@ pub struct TextureCraftApp {
     pub fps: f32,
     /// User smart materials found in the library folder (refreshed on demand).
     pub library: Option<Vec<std::path::PathBuf>>,
-    /// User brush presets found in the brushes folder (refreshed on demand).
-    pub brushes: Option<Vec<std::path::PathBuf>>,
     /// Rendering mode's path tracer.
     pub render: render_mode::RenderView,
     /// Smoothed CPU time spent building the UI per frame (ms).
@@ -255,7 +251,6 @@ impl TextureCraftApp {
             ui_ms: 0.0,
             profiler: profile::Profiler::default(),
             library: None,
-            brushes: None,
             render: render_mode::RenderView::default(),
             last_paint_point: None,
             last_paint_uv: None,
@@ -298,6 +293,11 @@ impl TextureCraftApp {
 
             let skipped = app.session.load_templates(user_dir("templates"));
             app.session.log.extend(skipped.into_iter().map(|warning| format!("Project template skipped: {warning}")));
+
+            // Load presets before control commands can access the session
+            for warning in app.session.load_brush_presets(user_dir("brushes")) {
+                app.toast(warning, true);
+            }
         }
 
         app
@@ -310,19 +310,25 @@ impl TextureCraftApp {
         // Going to a saved camera glides there; the control channel and CLI jump straight away
         let glide_from = (id.starts_with("camera.select") || id.starts_with("camera.bookmark")).then_some(self.session.camera);
         match texturecraft_engine::execute(&mut self.session, id, &params) {
-            Ok(v) => {
+            Ok(value) => {
+                if matches!(id, "brush.preset.store" | "brush.preset.rename" | "brush.preset.delete") {
+                    self.thumbs.forget_saved_files();
+                }
+
                 // A pending dialog must not import its old source into the replacement project
                 if matches!(id, "file.open" | "file.close" | "project.new" | "project.sample") {
                     self.pbr_import = None;
                 }
-                if let Some(from) = glide_from.filter(|f| *f != self.session.camera) {
+
+                if let Some(from) = glide_from.filter(|camera| *camera != self.session.camera) {
                     self.camera_glide = Some(CameraGlide { from, to: self.session.camera, start: self.last_time });
                     self.session.camera = from;
                 }
-                Some(v)
+
+                Some(value)
             }
-            Err(e) => {
-                self.toast(e.to_string(), true);
+            Err(error) => {
+                self.toast(error.to_string(), true);
                 None
             }
         }
@@ -784,10 +790,12 @@ impl eframe::App for TextureCraftApp {
         }
         let hide = self.ui.hide_ui;
         let tk = theme::Tokens::get(&ctx);
+
         // The dock keeps the cards' gutter from the bars and rails around it
         let panel_frame = if hide { egui::Frame::NONE.fill(tk.viewport) } else { egui::Frame::NONE.fill(tk.chrome).inner_margin(theme::GUTTER) };
         egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| if hide { viewport::central(self, ui) } else { docking::show(self, ui) });
         windows::show(self, &ctx);
+
         // The Layers panel and the source slots have asked for their pictures by now
         self.layer_panel.end(&ctx, &self.session);
         #[cfg(not(target_arch = "wasm32"))]

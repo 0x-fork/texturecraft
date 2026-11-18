@@ -95,6 +95,7 @@ fn choice_id(command: &str, field: &str, value: &Value) -> Result<Value> {
         "blending" => find(&TileBlending::ALL, TileBlending::label, text),
         _ => return Ok(value.clone()),
     };
+
     id.map(Value::String).ok_or_else(|| bad(command, format!("unknown {} `{text}`", camel_case(field))))
 }
 

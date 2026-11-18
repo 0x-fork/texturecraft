@@ -383,6 +383,7 @@ fn generator_from(command: &str, params: &Value, generator: &mut Generator) -> R
     if mode.is_none() && weights.is_none() {
         return Ok(());
     }
+
     if !matches!(generator.kind, GeneratorKind::Curvature | GeneratorKind::EdgeWear) {
         return Err(bad(command, "only curvature and edge wear generators have a mode and detail sizes"));
     }
