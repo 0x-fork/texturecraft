@@ -687,6 +687,13 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
 
     if response.hovered() {
         size_brush_by_ctrl_wheel(app, ui);
+        if ui.input(|input| input.multi_touch().is_none()) {
+            let pinch = trackpad_pinch(ui);
+            if pinch != 1.0 {
+                app.session.camera.zoom(pinch.ln());
+            }
+        }
+
         let scroll = wheel_scroll(ui, shift);
         if scroll != 0.0 {
             if shift && wheel_sizes_brush(app) {
@@ -1807,16 +1814,46 @@ fn wheel_scroll(ui: &Ui, shift: bool) -> f32 {
     })
 }
 
-/// egui's wheel travel per unit of `ln(zoom_delta)` for a Ctrl+wheel (its `scroll_zoom_speed` is 1/200)
-const CTRL_WHEEL_POINTS_PER_LN_ZOOM: f32 = 200.0;
-
-/// Ctrl (Cmd on macOS) + wheel sizes the brush like the reference app: wheel up makes it smaller, down larger,
-/// with the same step as Shift+wheel. egui reports it as a zoom gesture, not as a scroll.
+/// Only command-wheel input resizes the brush. A pinch zooms the viewport.
 fn size_brush_by_ctrl_wheel(app: &mut TextureCraftApp, ui: &Ui) {
-    let zoom = ui.input(|input| input.zoom_delta());
-    if zoom != 1.0 && zoom.is_finite() && zoom > 0.0 && wheel_sizes_brush(app) {
-        scale_brush_by_wheel(app, -zoom.ln() * CTRL_WHEEL_POINTS_PER_LN_ZOOM);
+    if !wheel_sizes_brush(app) {
+        return;
     }
+
+    let line = ui.ctx().options(|options| options.input_options.line_scroll_speed);
+    let points: f32 = ui.input(|input| {
+        input
+            .raw
+            .events
+            .iter()
+            .filter_map(|event| {
+                let egui::Event::MouseWheel { unit, delta, modifiers, .. } = event else { return None };
+                let scale = match unit {
+                    egui::MouseWheelUnit::Point => 1.0,
+                    egui::MouseWheelUnit::Line => line,
+                    egui::MouseWheelUnit::Page => input.viewport_rect().height(),
+                };
+                modifiers.command.then_some(delta.y * scale)
+            })
+            .sum()
+    });
+    if points.is_finite() && points != 0.0 {
+        scale_brush_by_wheel(app, -points);
+    }
+}
+
+fn trackpad_pinch(ui: &Ui) -> f32 {
+    ui.input(|input| {
+        input
+            .raw
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                egui::Event::Zoom(factor) if factor.is_finite() && *factor > 0.0 => Some(*factor),
+                _ => None,
+            })
+            .product()
+    })
 }
 
 /// Shift+wheel sizes the brush while a brush tool can act; otherwise the wheel zooms as usual.
@@ -2061,10 +2098,13 @@ fn view_2d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
         let scroll = wheel_scroll(ui, shift);
         if scroll != 0.0 && shift && wheel_sizes_brush(app) {
             scale_brush_by_wheel(app, scroll);
-        } else if scroll != 0.0 {
+        } else {
+            let pinch = ui.input(|input| input.multi_touch().map(|touch| touch.zoom_delta)).unwrap_or_else(|| trackpad_pinch(ui));
             let old_zoom = app.ui.uv_zoom;
-            let new_zoom = (old_zoom * (1.0 + scroll * UV_WHEEL_ZOOM_PER_POINT)).clamp(UV_VIEW_MIN_ZOOM, UV_VIEW_MAX_ZOOM);
-            if let Some(hover_pos) = response.hover_pos() {
+            let new_zoom = (old_zoom * pinch * (1.0 + scroll * UV_WHEEL_ZOOM_PER_POINT)).clamp(UV_VIEW_MIN_ZOOM, UV_VIEW_MAX_ZOOM);
+            if old_zoom != new_zoom
+                && let Some(hover_pos) = response.hover_pos()
+            {
                 let cursor = [(hover_pos.x - rect.left()) / size.x * 2.0 - 1.0, 1.0 - (hover_pos.y - rect.top()) / size.y * 2.0];
                 for axis in 0..2 {
                     app.ui.uv_pan[axis] = cursor[axis] - (cursor[axis] - app.ui.uv_pan[axis]) * new_zoom / old_zoom;

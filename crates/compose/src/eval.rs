@@ -93,6 +93,8 @@ pub struct StrokePreview {
     pub stencil: Option<Stencil>,
     /// Clone and smudge: straight values per channel carried by the stroke (replace `values`).
     pub carried: BTreeMap<Channel, TileImage>,
+    /// Mask coverage sampled by a mask pickup.
+    pub carried_mask: Option<TileImage>,
 }
 
 /// Everything the evaluator reads.
@@ -1647,7 +1649,7 @@ impl<'a, 'b> Texel<'a, 'b> {
                             coverage *= 1.0 - stroke;
                         } else {
                             // Clone and smudge show the values they carry instead of the mask gray
-                            let deposited = preview.carried.get(&MASK_CHANNEL).map_or(preview.mask_value, |carried| from_u16(carried.get(self.x, self.y)[0]));
+                            let deposited = preview.carried_mask.as_ref().map_or(preview.mask_value, |carried| from_u16(carried.get(self.x, self.y)[0]));
                             painted = deposited * stroke + painted * (1.0 - stroke);
                             coverage = stroke + coverage * (1.0 - stroke);
                         }
@@ -2502,10 +2504,15 @@ pub fn mask_image(inputs: &Inputs, id: LayerId, size: u32) -> Option<Vec<u8>> {
 /// (uncovered texels read zero). Clone and smudge read it. Unlike [`mask_image`] it also reads a
 /// disabled mask; None when the layer has no mask.
 pub fn mask_values(inputs: &Inputs, id: LayerId, tiles: &[(u32, u32)]) -> Option<TileImage> {
-    let mask = layer_mask(inputs.project, id)?;
-    let channels = inputs.project.texture_set(inputs.ts).map(|set| set.channel_list()).unwrap_or_default();
-    let (width, height) = (inputs.gbuf.width, inputs.gbuf.height);
+    let mut image = TileImage::new(inputs.gbuf.width, inputs.gbuf.height, 1);
+    mask_values_into(inputs, id, tiles, &mut image)?;
+    Some(image)
+}
 
+/// Evaluate requested tiles directly into the stroke's mask image.
+pub fn mask_values_into(inputs: &Inputs, id: LayerId, tiles: &[(u32, u32)], image: &mut TileImage) -> Option<()> {
+    let mask = layer_mask(inputs.project, id)?;
+    let channels = inputs.project.texture_set(inputs.ts).ok()?.channel_list();
     prepare_mask_curvature_sizes(inputs, std::iter::once(mask));
 
     let fields = neighbourhood_fields(inputs, &channels, tiles);
@@ -2522,11 +2529,10 @@ pub fn mask_values(inputs: &Inputs, id: LayerId, tiles: &[(u32, u32)]) -> Option
         })
         .collect();
 
-    let mut image = TileImage::new(width, height, 1);
     for ((tx, ty), values) in computed {
         image.set_tile(tx, ty, Some(std::sync::Arc::new(values)));
     }
-    Some(image)
+    Some(())
 }
 
 /// Mask values at texture-set coordinates, in request order; None without an enabled mask
@@ -2954,6 +2960,7 @@ mod tests {
             mask_value: 1.0,
             stencil: None,
             carried: BTreeMap::new(),
+            carried_mask: None,
         };
         let out = run(&f, Some(&pv));
         assert!(close(out.value(Channel::BaseColor, 4, 3), [0.0, 0.0, 1.0]));

@@ -122,7 +122,8 @@ pub fn apply(app: &mut TextureCraftApp, asset: &Asset) {
         Asset::Material(id) if texturecraft_engine::materials::brush_values(id).is_some() => ("tool.material", json!({"material": id})),
 
         // A smart material (several layers) is no brush material: a click only highlights its tile, dragging adds the layers
-        Asset::Material(_) | Asset::Library(_) => return,
+        Asset::Material(_) => return,
+        Asset::Library(path) => ("material.load", json!({"path": path})),
         Asset::SmartMask(id) => ("mask.smart.apply", json!({"name": id})),
         Asset::SavedMask(path) => ("mask.smart.apply", json!({"path": path})),
         Asset::Filter(id) => {

@@ -2,19 +2,22 @@
 //! painting the tool's material. The carried values are kept straight (not premultiplied) per
 //! channel next to the stroke alpha, so the live preview and the commit read them directly.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use texturecraft_compose::eval::FlatTile;
-use texturecraft_compose::{Composite, MASK_CHANNEL};
+use texturecraft_compose::{Composite, MASK_CHANNEL, PaintTarget};
 use texturecraft_core::Channel;
 use texturecraft_geom::{NO_TRI, UvGBuffer};
-use texturecraft_texel::{TILE_AREA, TileImage, from_u16, to_u16};
+use texturecraft_texel::{TILE, TILE_AREA, TileImage, from_u16, to_u16};
 
 use crate::StampSource;
 use crate::commit::{dec, enc};
 
 mod lane;
+mod pickup_snapshot;
+
+pub use pickup_snapshot::PickupSnapshot;
 
 use lane::Lane;
 
@@ -37,6 +40,9 @@ pub struct Pickup {
     /// How much of `source` there is to read per texel (a single layer's coverage); None reads
     /// everywhere.
     coverage: Option<TileImage>,
+    mask: bool,
+    snapshot: Option<Arc<PickupSnapshot>>,
+    loaded: BTreeSet<(u32, u32)>,
     /// Texels outside the texture set's UV islands are never read.
     gbuf: Arc<UvGBuffer>,
     /// Straight values per painted channel; the stroke alpha lives in the stroke canvas.
@@ -64,7 +70,21 @@ impl Pickup {
     /// A pickup reading `source` (whose resolution is the stroke's) for `channels`.
     pub fn new(mode: PickupMode, source: Composite, gbuf: Arc<UvGBuffer>, channels: impl IntoIterator<Item = Channel>) -> Pickup {
         let values = channels.into_iter().map(|c| (c, TileImage::new(source.resolution, source.height, c.components()))).collect();
-        Pickup { mode, source, coverage: None, gbuf, values, prev: None, isolated: false, lanes: Vec::new(), reads: Vec::new(), read_values: Vec::new() }
+        Pickup {
+            mode,
+            source,
+            coverage: None,
+            mask: false,
+            snapshot: None,
+            loaded: BTreeSet::new(),
+            gbuf,
+            values,
+            prev: None,
+            isolated: false,
+            lanes: Vec::new(),
+            reads: Vec::new(),
+            read_values: Vec::new(),
+        }
     }
 
     /// A pickup reading one layer alone, from its flattened tiles (premultiplied values plus
@@ -72,10 +92,18 @@ impl Pickup {
     /// layer is empty the stroke deposits nothing.
     pub fn from_layer(mode: PickupMode, flat: &[FlatTile], size: (u32, u32), gbuf: Arc<UvGBuffer>, channels: impl IntoIterator<Item = Channel>) -> Pickup {
         let channels: Vec<Channel> = channels.into_iter().collect();
-        let mut source = Composite::with_size(&channels, size.0, size.1);
-        let mut coverage = TileImage::new(size.0, size.1, 1);
+        let source = Composite::with_size(&channels, size.0, size.1);
+        let mut pickup = Self::new(mode, source, gbuf, channels);
+        pickup.coverage = Some(TileImage::new(size.0, size.1, 1));
+        pickup.add_layer_tiles(flat);
+        pickup
+    }
+
+    fn add_layer_tiles(&mut self, flat: &[FlatTile]) {
+        let Some(coverage) = self.coverage.as_mut() else { return };
+
         for (c, (tx, ty), data) in flat {
-            let Some(img) = source.channels.get_mut(c) else { continue };
+            let Some(img) = self.source.channels.get_mut(c) else { continue };
             let (n, kind) = (c.components(), c.kind());
             let mut straight = vec![0u16; TILE_AREA * n];
             let Some(cov) = coverage.tile_mut(*tx, *ty, &[0]) else { continue };
@@ -96,9 +124,6 @@ impl Pickup {
             }
             img.set_tile(*tx, *ty, Some(Arc::new(straight)));
         }
-        let mut p = Pickup::new(mode, source, gbuf, channels);
-        p.coverage = Some(coverage);
-        p
     }
 
     /// A pickup reading mask `values` (one component per texel, at the stroke's size): the stroke
@@ -106,7 +131,63 @@ impl Pickup {
     pub fn from_mask(mode: PickupMode, values: TileImage, gbuf: Arc<UvGBuffer>) -> Pickup {
         let mut source = Composite::with_size(&[MASK_CHANNEL], values.width(), values.height());
         source.channels.insert(MASK_CHANNEL, values);
-        Pickup::new(mode, source, gbuf, [MASK_CHANNEL])
+        let mut pickup = Pickup::new(mode, source, gbuf, [MASK_CHANNEL]);
+        pickup.mask = true;
+        pickup
+    }
+
+    /// Evaluate only the source tiles read by this stroke, sharing each tile across its stamps.
+    pub fn from_snapshot(mode: PickupMode, snapshot: PickupSnapshot, gbuf: Arc<UvGBuffer>, channels: impl IntoIterator<Item = Channel>) -> Self {
+        let mask = matches!(snapshot.target, PaintTarget::Mask(_));
+        let channels = if mask { vec![MASK_CHANNEL] } else { channels.into_iter().collect() };
+        let source = Composite::with_size(&channels, gbuf.width, gbuf.height);
+        let coverage = (!mask).then(|| TileImage::new(gbuf.width, gbuf.height, 1));
+        let mut pickup = Self::new(mode, source, gbuf, channels);
+        pickup.coverage = coverage;
+        pickup.mask = mask;
+        pickup.snapshot = Some(Arc::new(snapshot));
+        pickup
+    }
+
+    /// Only a mask pickup can supply coverage to a mask preview or commit.
+    pub fn mask_values(&self) -> Option<&TileImage> {
+        self.mask.then(|| self.values.get(&MASK_CHANNEL)).flatten()
+    }
+
+    fn load_tiles(&mut self, texels: &[(u32, u32, f32)], shift: [i64; 2]) {
+        let Some(snapshot) = &self.snapshot else { return };
+        let mut missing = Vec::new();
+        let mut previous = None;
+        for &(x, y, alpha) in texels {
+            let Ok(x) = u32::try_from(i64::from(x).saturating_add(shift[0])) else { continue };
+            let Ok(y) = u32::try_from(i64::from(y).saturating_add(shift[1])) else { continue };
+            let tile = (x / TILE, y / TILE);
+            if previous == Some(tile) || alpha <= 0.0 || !covered(&self.gbuf, x, y) {
+                continue;
+            }
+
+            previous = Some(tile);
+            if self.loaded.insert(tile) {
+                missing.push(tile);
+            }
+        }
+        if missing.is_empty() {
+            return;
+        }
+
+        let Some(inputs) = snapshot.inputs(&self.gbuf) else { return };
+        match snapshot.target {
+            PaintTarget::Layer(id) => {
+                if let Some(flat) = texturecraft_compose::flatten_layer(&inputs, id, &missing) {
+                    self.add_layer_tiles(&flat);
+                }
+            }
+            PaintTarget::Mask(owner) => {
+                if let Some(output) = self.source.channels.get_mut(&MASK_CHANNEL) {
+                    texturecraft_compose::eval::mask_values_into(&inputs, owner, &missing, output);
+                }
+            }
+        }
     }
 
     /// Smudge with symmetry: every copy of the stamp (told apart by its [`StampSource`]) drags
@@ -146,6 +227,7 @@ impl Pickup {
                 ([-(d[0].round() as i64), -(d[1].round() as i64)], strength.clamp(0.0, 1.0), true)
             }
         };
+        self.load_tiles(texels, shift);
         let (w, h) = (i64::from(self.source.resolution), i64::from(self.source.height));
         self.reads.clear();
         self.read_values.clear();
@@ -207,8 +289,12 @@ impl Pickup {
 }
 
 fn covered(gbuf: &UvGBuffer, x: u32, y: u32) -> bool {
-    let i = y as usize * gbuf.width as usize + x as usize;
-    x < gbuf.width && gbuf.tri.get(i).is_some_and(|t| *t != NO_TRI)
+    if x >= gbuf.width || y >= gbuf.height {
+        return false;
+    }
+
+    let i = u64::from(y) * u64::from(gbuf.width) + u64::from(x);
+    usize::try_from(i).ok().and_then(|i| gbuf.tri.get(i)).is_some_and(|t| *t != NO_TRI)
 }
 
 /// Blend the texels `reads` `(x, y, alpha)` with their `read_values` (one entry per channel of
@@ -268,6 +354,48 @@ mod tests {
             }
         }
         v
+    }
+
+    #[test]
+    fn layer_and_mask_pickups_only_evaluate_the_shifted_tiles_the_stroke_reads() {
+        use texturecraft_core::{Fill, Layer, LayerKind, Mask, MaskBackground, Project, Source, TextureSet};
+
+        let size = 4 * TILE;
+        let mesh = Arc::new(primitives::plane(2.0, 4));
+        let gbuf = Arc::new(UvGBuffer::new(&mesh, 0, size, size));
+        let mut project = Project::new("test", "builtin:plane");
+        project.texture_sets.push(TextureSet::new("Set", 0, size));
+        let id = project.alloc_id();
+        let fill = Fill { sources: [(Channel::Roughness, Source::Uniform([0.25; 3]))].into(), projection: Default::default(), link: None };
+        let mut layer = Layer::new(id, "fill", LayerKind::Fill(fill), &[Channel::Roughness]);
+        layer.mask = Some(Mask::new(MaskBackground::White));
+        project.insert_layer(0, layer, None, false).unwrap();
+
+        for (target, expected) in [(PaintTarget::Layer(id), 0.25), (PaintTarget::Mask(id), 1.0)] {
+            let snapshot = PickupSnapshot {
+                project: project.clone(),
+                ts: 0,
+                target,
+                mesh: mesh.clone(),
+                bounds: mesh.bounds(),
+                pixels: Default::default(),
+                baked: Default::default(),
+                images: Default::default(),
+            };
+            let mut pickup = Pickup::from_snapshot(PickupMode::Clone { offset: [i64::from(TILE), 0] }, snapshot, gbuf.clone(), [Channel::Roughness]);
+            let mut alpha = TileImage::new(size, size, 1);
+            assert!(pickup.loaded.is_empty());
+
+            for x in [8, 12, TILE + 8] {
+                assert!(pickup.stamp(&mut alpha, &[(x, 8, 1.0)], [x as f32, 8.0], None));
+                let image = &pickup.values[&Channel::Roughness];
+                assert!((from_u16(image.get(x, 8)[0]) - expected).abs() < 1e-4);
+                assert_eq!(pickup.mask_values().is_some(), matches!(target, PaintTarget::Mask(_)));
+            }
+
+            assert_eq!(pickup.loaded, [(1, 0), (2, 0)].into());
+            assert_eq!(pickup.source.channels[&Channel::Roughness].allocated_count(), 2);
+        }
     }
 
     #[test]

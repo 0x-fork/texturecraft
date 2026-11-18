@@ -55,3 +55,24 @@ fn a_click_on_a_smart_material_adds_no_layer_and_leaves_the_brush() {
     assert_eq!(app.session.history_labels(), history, "no history entry");
     assert_eq!(serde_json::to_value(&app.session.tool).unwrap(), serde_json::to_value(&tool).unwrap(), "the brush is untouched");
 }
+
+#[test]
+fn clicking_a_saved_material_loads_it_above_the_selected_layer() {
+    let mut harness = shelf(SMART_TYPE, "SavedFixture");
+    let layer = harness.state().session.selected_layer().unwrap();
+    let bytes = harness.state().session.smart_material_bytes(layer, "Saved fixture").unwrap();
+    let file = std::env::temp_dir().join(format!("SavedFixture-{}.tcmat", std::process::id()));
+    std::fs::write(&file, bytes).unwrap();
+    harness.state_mut().library = Some(vec![file.clone()]);
+    harness.state_mut().ui.shelf_path = vec!["user".into()];
+    harness.run_steps(3);
+    let before = stack_sizes(&harness);
+
+    harness.get_by_label_contains("SavedFixture-").click();
+    harness.run_steps(3);
+    std::fs::remove_file(file).unwrap();
+
+    let ts = harness.state().session.ts();
+    assert_eq!(stack_sizes(&harness)[ts], before[ts] + 1);
+    assert_ne!(harness.state().session.selected_layer(), Some(layer));
+}

@@ -207,7 +207,7 @@ impl Session {
         let mut holder = Layer::new(id, name, LayerKind::Paint, &set.channel_list());
 
         // The mask comes back switched on whatever state it was saved in
-        holder.mask = Some(Mask { enabled: true, ..copy_mask(&self.doc, &mask, &mut mini, set.size()) });
+        holder.mask = Some(Mask { enabled: true, ..copy_mask(&self.doc, &mask, &mut mini, set.size())? });
         mini.project.insert_layer(0, holder, None, false)?;
         self.file_bytes(mini, id)
     }
@@ -215,6 +215,10 @@ impl Session {
     /// Replace layer `layer`'s mask with the one in a user smart mask file (one undo step).
     pub fn apply_smart_mask_bytes(&mut self, layer: LayerId, bytes: &[u8]) -> Result<()> {
         let pf = texturecraft_formats::load_project_bytes(bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+        self.apply_smart_mask_file(layer, pf)
+    }
+
+    fn apply_smart_mask_file(&mut self, layer: LayerId, pf: texturecraft_formats::ProjectFile) -> Result<()> {
         let mask = pf
             .project
             .texture_sets
@@ -251,7 +255,7 @@ impl Session {
                     renames.insert(name.clone(), taken);
                 }
             }
-            let mut new = copy_mask(&src, &mask, &mut s.doc, size);
+            let mut new = copy_mask(&src, &mask, &mut s.doc, size)?;
             for source in new.effects.iter_mut().flat_map(|effect| sources_mut(&mut effect.kind)) {
                 if let Source::Image { name, .. } = source
                     && let Some(renamed) = renames.get(name.as_str())
@@ -282,13 +286,15 @@ fn sources_mut(kind: &mut EffectKind) -> Vec<&mut Source> {
 }
 
 /// `mask` of document `src` with fresh effect ids from `dst` (anchor sources follow), its painted pixels moved to `dst` at `size`.
-fn copy_mask(src: &crate::session::Document, mask: &Mask, dst: &mut crate::session::Document, size: (u32, u32)) -> Mask {
+fn copy_mask(src: &crate::session::Document, mask: &Mask, dst: &mut crate::session::Document, size: (u32, u32)) -> Result<Mask> {
     let mut copy = mask.clone();
     let mut moved = BTreeMap::new();
     for e in &mut copy.effects {
         let old = e.id;
         e.id = dst.project.alloc_id();
-        moved.insert(old, e.id);
+        if matches!(e.kind, EffectKind::Anchor) {
+            moved.insert(old, e.id);
+        }
         if let Some(img) = src.pixels.masks.get(&old) {
             dst.pixels.masks.insert(e.id, crate::layer_ops::fit(img, size, &[0, 0]));
         }
@@ -296,13 +302,11 @@ fn copy_mask(src: &crate::session::Document, mask: &Mask, dst: &mut crate::sessi
 
     // Sources that read an anchor effect of this mask follow it to its new id
     for source in copy.effects.iter_mut().flat_map(|effect| sources_mut(&mut effect.kind)) {
-        if let Source::Anchor { anchor, .. } = source
-            && let Some(new) = moved.get(anchor)
-        {
-            *anchor = *new;
+        if let Source::Anchor { anchor, .. } = source {
+            *anchor = *moved.get(anchor).ok_or_else(|| EngineError::Other(format!("smart mask refers to anchor {} outside this mask", anchor.0)))?;
         }
     }
-    copy
+    Ok(copy)
 }
 
 fn apply_cmd(s: &mut Session, p: &Value) -> Result<Value> {
@@ -318,8 +322,8 @@ fn apply_cmd(s: &mut Session, p: &Value) -> Result<Value> {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn apply_file(s: &mut Session, layer: LayerId, path: &str) -> Result<()> {
-    let bytes = std::fs::read(path).map_err(|e| bad("mask.smart.apply", format!("cannot read {path}: {e}")))?;
-    s.apply_smart_mask_bytes(layer, &bytes)
+    let file = texturecraft_formats::load_project(std::path::Path::new(path)).map_err(|e| bad("mask.smart.apply", format!("cannot read {path}: {e}")))?;
+    s.apply_smart_mask_file(layer, file)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -337,8 +341,8 @@ fn create_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(dir) = std::path::Path::new(&path).parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(|e| bad("mask.smart.create", format!("cannot create {}: {e}", dir.display())))?;
     }
-    let tmp = format!("{path}.tmp");
-    std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)).map_err(|e| bad("mask.smart.create", format!("cannot write {path}: {e}")))?;
+
+    texturecraft_formats::write_atomic(std::path::Path::new(&path), &bytes).map_err(|e| bad("mask.smart.create", format!("cannot write {path}: {e}")))?;
     Ok(json!({ "path": path }))
 }
 

@@ -342,18 +342,15 @@ fn move_stacked(project: &mut Project, ids: &[LayerId], target: Option<LayerId>,
     Ok(())
 }
 
-/// Apply `change` to a copy of the project and, when it moved anything, make it one undo step;
-/// a move that leaves every layer where it was records nothing.
-fn apply_move(s: &mut Session, change: impl FnOnce(&mut Project) -> Result<()>) -> Result<Value> {
-    let mut moved = s.doc.project.clone();
-    change(&mut moved)?;
-    if moved != s.doc.project {
-        s.edit("Move layer", |s| {
-            s.doc.project = moved;
-            Ok(())
-        })?;
-    }
-    Ok(Value::Null)
+/// The positions of the moved layers determine whether a reorder needs an undo step.
+fn apply_move(s: &mut Session, ids: &[LayerId], change: impl FnOnce(&mut Project) -> Result<()>) -> Result<Value> {
+    s.edit_if_changed("Move layer", s.merge_edits, |s| {
+        let project = &mut s.doc.project;
+        let previous: Vec<_> = ids.iter().map(|id| project.locate(*id)).collect();
+        change(project)?;
+        let changed = ids.iter().map(|id| project.locate(*id)).ne(previous);
+        Ok((Value::Null, changed))
+    })
 }
 
 /// `layer.move {layers, index | above}`: the listed layers move together, keeping their order.
@@ -362,7 +359,7 @@ fn move_layers(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(i) = u64p(p, "index") {
         // The lowest one goes to `index` of the texture set's stack, the others right above it in their order
         let to = usize::try_from(i).unwrap_or(usize::MAX);
-        apply_move(s, |project| {
+        apply_move(s, &ids, |project| {
             let mut below = None;
             for id in ids.iter().rev() {
                 match below {
@@ -383,7 +380,7 @@ fn move_layers(s: &mut Session, p: &Value) -> Result<Value> {
         }
 
         let inside = boolp(p, "inside").unwrap_or(false);
-        apply_move(s, |project| move_stacked(project, &ids, above, inside))
+        apply_move(s, &ids, |project| move_stacked(project, &ids, above, inside))
     } else {
         Err(bad("layer.move", "give `index` or `above` with `layers`"))
     }
@@ -395,7 +392,7 @@ fn move_layer(s: &mut Session, p: &Value) -> Result<Value> {
     }
 
     let id = layer_param(s, "layer.move", p)?;
-    apply_move(s, |project| {
+    apply_move(s, &[id], |project| {
         if let Some(d) = p.get("delta").and_then(Value::as_i64) {
             let (_, _, i) = project.locate(id).ok_or(EngineError::Other("layer not in a stack".into()))?;
 

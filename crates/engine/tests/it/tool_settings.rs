@@ -132,3 +132,19 @@ fn settings_saved_before_the_clone_aligned_switch_load_with_it_on() {
     let loaded: ToolSettings = serde_json::from_value(saved).unwrap();
     assert!(loaded.clone_aligned);
 }
+
+#[test]
+fn restored_stencil_and_smudge_settings_use_the_tool_limits() {
+    let mut session = another_project();
+    let mut settings = ToolSettings::default();
+    settings.smudge_strength = 2.0;
+    settings.stencil.center = [-20.0, 30.0];
+    settings.stencil.opacity = -1.0;
+    settings.stencil.scale = 0.0;
+    settings.stencil.rotation = -15.0;
+    settings.apply(&mut session.tool);
+
+    assert_eq!(session.tool.smudge_strength, 1.0);
+    let look = session.tool.stencil_look;
+    assert_eq!((look.center, look.scale, look.opacity, look.rotation), ([-4.0, 4.0], 0.01, 0.0, 345.0));
+}

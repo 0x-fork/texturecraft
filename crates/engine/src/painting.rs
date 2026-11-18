@@ -126,16 +126,6 @@ impl Session {
         }
     }
 
-    /// The mask that paint effect `effect` belongs to as values per texel (zero everywhere when
-    /// the layer has no mask yet), for a clone or smudge stroke to read.
-    fn mask_values_before(&self, ts: usize, effect: LayerId) -> Option<texturecraft_texel::TileImage> {
-        let (owner, _) = self.doc.project.effect(effect)?;
-        let cache = self.caches.get(ts)?;
-        let tiles: Vec<(u32, u32)> = cache.covered_tiles.iter().copied().collect();
-        let empty = || texturecraft_texel::TileImage::new(cache.gbuf.width, cache.gbuf.height, 1);
-        Some(self.with_inputs(ts, |inputs| texturecraft_compose::mask_values(inputs, owner, &tiles)).unwrap_or_else(empty))
-    }
-
     /// What a stroke paints while non-paint effect `effect` of layer `owner` is selected: the
     /// nearest paint effect below it in the same stack, else the paint layer's own pixels (for
     /// content) or a new paint effect inserted just below it (for a mask).
@@ -171,7 +161,7 @@ impl Session {
     /// in world space, so it stays fixed to the surface and continuous across stamps and strokes.
     /// Its size follows the brush size ([`BRUSH_PATTERN_SIZE`] is the natural size). Channels the
     /// material lacks carry the tool's value. None without a brush material.
-    fn brush_pattern(&mut self, values: &BTreeMap<Channel, [f32; 3]>, size: (u32, u32)) -> Option<Pickup> {
+    fn brush_pattern(&self, values: &BTreeMap<Channel, [f32; 3]>) -> Option<Pickup> {
         let id = self.tool.material.clone()?;
         let mut sources = crate::materials::brush_sources(&id)?;
         sources.retain(|(channel, _)| values.contains_key(channel));
@@ -181,17 +171,22 @@ impl Session {
             }
         }
         let ts = self.ts();
-        self.update();
-        let gbuf = self.caches.get(ts)?.gbuf.clone();
-        let next_id = self.doc.project.next_id;
-        let layer_id = self.doc.project.alloc_id();
+        let set = self.doc.project.texture_sets.get(ts)?;
+        let mut project = crate::material_lib::one_set_document(set, "Brush material").project;
+        let layer_id = project.alloc_id();
         let scale = BRUSH_PATTERN_SIZE / self.tool.brush.size.max(MIN_PATTERN_BRUSH_SIZE);
-        let layer = crate::materials::brush_fill(layer_id, sources, scale);
-        self.doc.project.insert_layer(ts, layer, None, false).ok()?;
-        let flat = self.flatten(ts, layer_id);
-        let _ = self.doc.project.remove_layer(layer_id);
-        self.doc.project.next_id = next_id;
-        Some(Pickup::from_layer(PickupMode::Clone { offset: [0; 2] }, &flat?, size, gbuf, values.keys().copied()))
+        project.insert_layer(0, crate::materials::brush_fill(layer_id, sources, scale), None, false).ok()?;
+        let snapshot = texturecraft_paint::pickup::PickupSnapshot {
+            project,
+            ts: 0,
+            target: PaintTarget::Layer(layer_id),
+            mesh: self.mesh.clone(),
+            bounds: self.mesh.bounds(),
+            pixels: Default::default(),
+            baked: self.doc.baked.get(&ts).cloned().unwrap_or_default(),
+            images: Default::default(),
+        };
+        Some(Pickup::from_snapshot(PickupMode::Clone { offset: [0; 2] }, snapshot, self.caches.get(ts)?.gbuf.clone(), values.keys().copied()))
     }
 
     fn stroke_values(&self, target: PaintTarget) -> BTreeMap<Channel, [f32; 3]> {
@@ -223,8 +218,9 @@ impl Session {
         let ts = self.ts();
         let size = self.caches.get(ts).map(|c| c.size).unwrap_or((1024, 1024));
         let pickup = if quick_mask { None } else { self.pickup_mode(first_uv)? };
-        if pickup.is_some() {
-            // Clone and smudge read the current composite
+        let composite_pickup = tool == Tool::Smudge || (tool == Tool::Clone && self.tool.clone_from == CloneFrom::Composite);
+        if pickup.is_some() && composite_pickup && !self.paints_mask() && self.solo.is_none() {
+            // Only a composite pickup reads the viewport cache
             self.update();
         }
 
@@ -250,8 +246,8 @@ impl Session {
         let values = target.map(|t| self.stroke_values(t)).unwrap_or_default();
 
         // Clone and smudge on a mask read the mask as it was before the stroke
-        let mask_source = match target {
-            Some(PaintTarget::Mask(effect)) if pickup.is_some() => self.mask_values_before(ts, effect),
+        let mask_owner = match target {
+            Some(PaintTarget::Mask(effect)) if pickup.is_some() => self.doc.project.effect(effect).map(|(owner, _)| owner),
             _ => None,
         };
         let stencil = if tool == Tool::Projection && !quick_mask { self.capture_stencil(viewport) } else { None };
@@ -282,11 +278,28 @@ impl Session {
                 }
                 m => m,
             };
-            let mut pickup = match (&layer_source, mask_source) {
+            let mut pickup = match (&layer_source, mask_owner) {
                 // On a mask the stroke reads the mask's own values
-                (_, Some(values)) => Pickup::from_mask(mode, values, cache.gbuf.clone()),
+                (_, Some(owner)) => {
+                    let snapshot = texturecraft_paint::pickup::PickupSnapshot {
+                        project: self.doc.project.clone(),
+                        ts,
+                        target: PaintTarget::Mask(owner),
+                        mesh: self.mesh.clone(),
+                        bounds: self.mesh.bounds(),
+                        pixels: self.doc.pixels.clone(),
+                        baked: self.doc.baked.get(&ts).cloned().unwrap_or_default(),
+                        images: self.images.clone(),
+                    };
+                    Pickup::from_snapshot(mode, snapshot, cache.gbuf.clone(), [])
+                }
                 (Some(flat), None) => Pickup::from_layer(mode, flat, size, cache.gbuf.clone(), values.keys().copied()),
-                (None, None) => Pickup::new(mode, cache.composite.clone(), cache.gbuf.clone(), values.keys().copied()),
+                (None, None) => Pickup::new(
+                    mode,
+                    self.document_composite(ts, &cache.covered_tiles).ok_or_else(|| EngineError::Other("texture set not ready".into()))?.into_owned(),
+                    cache.gbuf.clone(),
+                    values.keys().copied(),
+                ),
             };
             if tool == Tool::Smudge && stroke.settings.symmetry.any() {
                 // Every mirrored copy of a smudge drags its own trail, in the 3D and the 2D view
@@ -301,7 +314,7 @@ impl Session {
             }
         }
         if canvas.pickup.is_none() && tool == Tool::Paint && matches!(target, Some(PaintTarget::Layer(_))) {
-            canvas.pickup = self.brush_pattern(&values, size);
+            canvas.pickup = self.brush_pattern(&values);
         }
         let label = if quick_mask {
             QUICK_MASK_STROKE_LABEL.to_string()
@@ -635,7 +648,7 @@ impl Session {
     pub(crate) fn paint_fill(&mut self, ts: usize, canvas: &StrokeCanvas) -> Result<()> {
         let size = (canvas.alpha.width(), canvas.alpha.height());
         let opacity = self.tool.brush.opacity;
-        let source = CommitSource { alpha: &canvas.alpha, tiles: &canvas.dirty, opacity, erase: false, per_texel: None, carried: None };
+        let source = CommitSource { alpha: &canvas.alpha, tiles: &canvas.dirty, opacity, erase: false, per_texel: None, carried: None, carried_mask: None };
         if self.quick_mask.editing {
             self.commit_quick_mask(ts, size, source);
             return Ok(());
@@ -659,13 +672,11 @@ impl Session {
         let (width, height) = (cache.size.0 as f32, cache.size.1 as f32);
         let (x, y) = ((hit.uv.x * width).clamp(0.0, width - 1.0) as u32, (hit.uv.y * height).clamp(0.0, height - 1.0) as u32);
 
-        let mut picked = BTreeMap::new();
-        for channel in cache.composite.channels.keys() {
-            let value = cache.composite.value(*channel, x, y);
-            self.tool.values.insert(*channel, value);
-            self.tool.material = None;
-            picked.insert(*channel, value);
-        }
+        let tile = (x / texturecraft_texel::TILE, y / texturecraft_texel::TILE);
+        let source = self.document_composite(texture_set, &[tile]).ok_or_else(|| EngineError::Other("texture set not ready".into()))?;
+        let picked: BTreeMap<_, _> = source.channels.keys().map(|&channel| (channel, source.value(channel, x, y))).collect();
+        self.tool.values.extend(&picked);
+        self.tool.material = None;
         Ok(picked)
     }
 
@@ -724,5 +735,6 @@ fn with_commit_source<R>(
     };
     let per_texel: Option<texturecraft_paint::TexelFn> = if st.stencil.is_some() { Some(&stencil_fn) } else { None };
     let carried = st.canvas.pickup.as_ref().map(|p| &p.values);
-    f(CommitSource { alpha: &st.canvas.alpha, tiles, opacity: st.stroke.settings.opacity, erase: st.erase, per_texel, carried })
+    let carried_mask = st.canvas.pickup.as_ref().and_then(|p| p.mask_values());
+    f(CommitSource { alpha: &st.canvas.alpha, tiles, opacity: st.stroke.settings.opacity, erase: st.erase, per_texel, carried, carried_mask })
 }

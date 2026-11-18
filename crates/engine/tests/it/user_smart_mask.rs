@@ -184,3 +184,27 @@ fn effects_reading_an_anchor_of_the_mask_follow_it() {
     });
     assert_eq!(reads, Some(new_anchor), "the fill reads the copied anchor, not the old one");
 }
+
+#[test]
+fn an_external_anchor_cannot_be_saved_or_rebound_in_another_project() {
+    let mut s = session(128);
+    let (source, _) = multi_effect_mask(&mut s);
+    let external = layer(&mut s);
+    let anchor = execute(&mut s, "effect.add.anchor", &json!({"layer": external.0, "target": "mask"})).unwrap()["effect"].as_u64().unwrap();
+    let source_ref = Source::Anchor { anchor: LayerId(anchor), channel: texturecraft_engine::core::Channel::Height, ramp: Vec::new() };
+    let mut file = texturecraft_engine::formats::load_project_bytes(&s.smart_mask_bytes(source, "Preset").unwrap()).unwrap();
+    let holder = file.project.texture_sets[0].stack[0];
+    for (project, id) in [(&mut file.project, holder), (&mut s.doc.project, source)] {
+        let mask = project.layer_mut(id).unwrap().mask.as_mut().unwrap();
+        let fill = mask.effects.iter_mut().find(|effect| matches!(effect.kind, EffectKind::Fill { .. })).unwrap();
+        fill.kind = EffectKind::Fill { source: source_ref.clone(), projection: Default::default() };
+    }
+
+    assert!(s.smart_mask_bytes(source, "Preset").unwrap_err().to_string().contains("outside this mask"));
+    let bytes = texturecraft_engine::formats::save_project_bytes(&file).unwrap();
+    let before = s.doc.project.clone();
+    let history = s.history_labels();
+    assert!(s.apply_smart_mask_bytes(external, &bytes).unwrap_err().to_string().contains("outside this mask"));
+    assert_eq!(s.doc.project, before);
+    assert_eq!(s.history_labels(), history);
+}

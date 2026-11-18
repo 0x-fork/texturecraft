@@ -244,7 +244,7 @@ impl Staging {
     /// the same arguments will write.
     pub fn stage_mask(&mut self, pixels: &PixelStore, effect: LayerId, value: f32, src: &CommitSource) {
         let value = [value.clamp(0.0, 1.0)];
-        let b = Blend { kind: ChannelKind::Scalar, value: &value, stencil_color: false, carried: mask_carried(src) };
+        let b = Blend { kind: ChannelKind::Scalar, value: &value, stencil_color: false, carried: src.carried_mask };
         self.images.entry(None).or_default().stage(pixels.masks.get(&effect), 2, &b, src);
     }
 
@@ -290,6 +290,8 @@ pub struct CommitSource<'a> {
     pub per_texel: Option<TexelFn<'a>>,
     /// Clone and smudge: straight values per channel carried by the stroke (replace `values`).
     pub carried: Option<&'a BTreeMap<Channel, TileImage>>,
+    /// Scalar values sampled from a mask by clone or smudge.
+    pub carried_mask: Option<&'a TileImage>,
 }
 
 /// Commit a stroke into paint layer `layer` (channels in `values`; erase clears every painted
@@ -307,16 +309,11 @@ pub fn commit_layer(pixels: &mut PixelStore, layer: LayerId, size: (u32, u32), v
     images.into_par_iter().for_each(|(c, img, staged)| over(img, &layer_blend(c, values, &src), &src, staged));
 }
 
-/// The mask values a clone or smudge stroke carries (see [`texturecraft_compose::MASK_CHANNEL`]).
-fn mask_carried<'a>(src: &CommitSource<'a>) -> Option<&'a TileImage> {
-    src.carried.and_then(|m| m.get(&texturecraft_compose::MASK_CHANNEL))
-}
-
 /// Commit a stroke into the paint effect `effect` of a mask, painting gray `value`.
 pub fn commit_mask(pixels: &mut PixelStore, effect: LayerId, size: (u32, u32), value: f32, src: CommitSource, staging: &mut Staging) {
     let img = pixels.mask_mut(effect, size);
     let value = [value.clamp(0.0, 1.0)];
-    over(img, &Blend { kind: ChannelKind::Scalar, value: &value, stencil_color: false, carried: mask_carried(&src) }, &src, staging.take(None));
+    over(img, &Blend { kind: ChannelKind::Scalar, value: &value, stencil_color: false, carried: src.carried_mask }, &src, staging.take(None));
 }
 
 /// Commit a stroke into a coverage-only image (1 component), e.g. the quick mask.
@@ -329,7 +326,7 @@ mod tests {
     use super::*;
 
     fn src<'a>(alpha: &'a TileImage, tiles: &'a BTreeSet<(u32, u32)>, opacity: f32, erase: bool) -> CommitSource<'a> {
-        CommitSource { alpha, tiles, opacity, erase, per_texel: None, carried: None }
+        CommitSource { alpha, tiles, opacity, erase, per_texel: None, carried: None, carried_mask: None }
     }
 
     fn alpha(v: f32) -> (TileImage, BTreeSet<(u32, u32)>) {
@@ -398,6 +395,20 @@ mod tests {
 
     fn source<'a>(a: &'a TileImage, tiles: &'a BTreeSet<(u32, u32)>, carried: Option<&'a BTreeMap<Channel, TileImage>>, erase: bool) -> CommitSource<'a> {
         CommitSource { carried, ..src(a, tiles, 0.8, erase) }
+    }
+
+    #[test]
+    fn layer_roughness_does_not_override_mask_coverage() {
+        let (alpha, tiles) = alpha(1.0);
+        let mut roughness = TileImage::new(64, 64, 1);
+        roughness.set(5, 5, &[to_u16(0.25)]);
+        let carried = [(Channel::Roughness, roughness)].into();
+        let source = CommitSource { carried: Some(&carried), ..src(&alpha, &tiles, 1.0, false) };
+        let mut pixels = PixelStore::default();
+
+        commit_mask(&mut pixels, LayerId(1), (64, 64), 1.0, source, &mut Staging::default());
+
+        assert_eq!(pixels.masks[&LayerId(1)].get(5, 5)[0], u16::MAX);
     }
 
     #[test]

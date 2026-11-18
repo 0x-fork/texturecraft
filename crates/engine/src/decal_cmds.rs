@@ -97,7 +97,7 @@ fn decal_up(s: &Session, cmd: &str, p: &Value, normal: Vec3) -> Result<Vec3> {
 /// starting from `current` for what the params leave out
 fn symmetry_param(cmd: &str, p: &Value, current: Option<DecalSymmetry>, bounds: (Vec3, Vec3)) -> Result<Option<DecalSymmetry>> {
     let axis = match strp(p, "symmetry").map(str::to_ascii_lowercase).as_deref() {
-        None => current.map(|symmetry| symmetry.axis),
+        None => current.map(|symmetry| symmetry.axis.min(2)),
         Some("off" | "none") => None,
         Some("x") => Some(0),
         Some("y") => Some(1),

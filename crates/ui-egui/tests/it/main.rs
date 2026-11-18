@@ -18,7 +18,6 @@ mod display_post_effects;
 mod effect_decal;
 mod effect_rows;
 mod effect_sliders;
-mod export_materialx;
 mod export_template_guards;
 mod file_dialogs;
 mod fill_channel_image;

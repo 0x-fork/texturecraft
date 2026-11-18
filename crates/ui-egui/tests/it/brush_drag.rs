@@ -148,3 +148,26 @@ fn ctrl_wheel_sizes_the_brush_in_both_views_up_smaller_and_does_not_zoom() {
         assert_eq!(h.state().ui.uv_zoom, zoom, "{layout:?}: no 2D zoom");
     }
 }
+
+#[test]
+fn a_trackpad_pinch_zooms_each_view_and_keeps_the_brush_size() {
+    use texturecraft_ui_egui::state::ViewLayout;
+    for layout in [ViewLayout::Only3D, ViewLayout::Only2D] {
+        let mut h = app(layout);
+        let at = if layout == ViewLayout::Only3D { h.state().viewport_rect.center() } else { egui::pos2(800.0, 480.0) };
+        let size = h.state().session.tool.brush.size;
+        let distance = h.state().session.camera.distance;
+        let zoom = h.state().ui.uv_zoom;
+
+        h.hover_at(at);
+        h.event(Event::Zoom(1.25));
+        h.run_steps(2);
+
+        assert_eq!(h.state().session.tool.brush.size, size);
+        if layout == ViewLayout::Only3D {
+            assert!(h.state().session.camera.distance < distance);
+        } else {
+            assert!(h.state().ui.uv_zoom > zoom);
+        }
+    }
+}

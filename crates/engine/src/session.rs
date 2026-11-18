@@ -258,7 +258,7 @@ pub struct ToolState {
     pub path: crate::path_tool::PathState,
 }
 
-fn default_smudge_strength() -> f32 {
+pub(crate) fn default_smudge_strength() -> f32 {
     0.5
 }
 
@@ -609,17 +609,28 @@ impl Session {
 
     /// [`Session::edit`] that, with `merge`, continues the previous undo step when it has the same label (a viewport drag is one step however many updates it makes).
     pub fn edit_merging<T>(&mut self, label: &str, merge: bool, change: impl FnOnce(&mut Session) -> Result<T>) -> Result<T> {
+        self.edit_if_changed(label, merge, |s| change(s).map(|value| (value, true)))
+    }
+
+    /// A conditional edit shares the usual rollback and history snapshot with layer reorders.
+    pub(crate) fn edit_if_changed<T>(&mut self, label: &str, merge: bool, change: impl FnOnce(&mut Session) -> Result<(T, bool)>) -> Result<T> {
         // A box fill under way becomes its own step first, so this edit isn't written over or folded into it
         self.end_polygon_fill_box();
 
         let before = self.doc.clone();
-        let result = change(self).and_then(|value| match self.doc.project.instance_cycle() {
-            Some(id) => Err(EngineError::Other(format!("instance layer {} would draw itself", id.0))),
-            None => Ok(value),
+        let result = change(self).and_then(|(value, changed)| {
+            if changed && let Some(id) = self.doc.project.instance_cycle() {
+                return Err(EngineError::Other(format!("instance layer {} would draw itself", id.0)));
+            }
+
+            Ok((value, changed))
         });
         match result {
-            Ok(value) => {
-                self.record(label, before, merge);
+            Ok((value, changed)) => {
+                if changed {
+                    self.record(label, before, merge);
+                }
+
                 Ok(value)
             }
             Err(error) => {
@@ -948,6 +959,7 @@ impl Session {
                 values: stroke.values.clone(),
                 mask_value: self.tool.mask_value,
                 stencil: stroke.stencil.clone(),
+                carried_mask: stroke.canvas.pickup.as_ref().and_then(|pickup| pickup.mask_values()).cloned(),
                 carried: stroke.canvas.pickup.as_ref().map(|pickup| pickup.values.clone()).unwrap_or_default(),
             })
         });

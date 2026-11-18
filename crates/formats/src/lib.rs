@@ -11,7 +11,7 @@
 //!   (usda / usdc with textures alongside, usdz with them packaged).
 //! - [`export`]: texture export from a texture set's composite through [`ExportPreset`]s (file
 //!   name templates, channel packing, virtual maps such as the final normal, padding, resizing)
-//!   to PNG, JPEG, TGA, TIFF, BMP, WebP, EXR, HDR and DDS bytes.
+//!   to PNG, JPEG, TGA, TIFF, BMP, WebP, EXR and HDR bytes.
 //! - [`materialx`]: a MaterialX (`.mtlx`) OpenPBR document for an exported texture set.
 //! - [`mcmat`]: MaterialCraft portable materials (`.mcmat`) and mesh maps as 16-bit PNGs for
 //!   MaterialCraft graph inputs.
@@ -42,8 +42,7 @@ pub mod project_file;
 pub mod zip_read;
 
 pub use export::{
-    DdsCompression, DdsExport, Dest, ExportInput, ExportOptions, ExportPreset, ExportedFile, FileFormat, MapSpec, Padding, PlannedFile, SourceRef, VirtualMap,
-    list_outputs, render_maps,
+    Dest, ExportInput, ExportOptions, ExportPreset, ExportedFile, FileFormat, MapSpec, Padding, PlannedFile, SourceRef, VirtualMap, list_outputs, render_maps,
 };
 pub use image_res::{DecodedImage, coverage_png, decode_image, decode_image_within, gray16_png, gray16_resource};
 pub use mesh_export::{GlbTextures, NamedFiles, UsdExport, UsdFormat, glb_bytes, glb_export_options, obj_bytes, obj_with_mtl, usd_bytes, usd_export_options};

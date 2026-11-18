@@ -55,8 +55,8 @@ impl ToolSettings {
 
         // An image alpha names a resource of the project that was open; the library alpha is global
         tool.brush.alpha_image = alpha_image;
-        tool.stencil_look = self.stencil;
-        tool.smudge_strength = self.smudge_strength;
+        tool.stencil_look = self.stencil.sanitized();
+        tool.smudge_strength = if self.smudge_strength.is_finite() { self.smudge_strength.clamp(0.0, 1.0) } else { crate::session::default_smudge_strength() };
         tool.clone_from = self.clone_from;
         tool.clone_aligned = self.clone_aligned;
         tool.path.closed = self.path_closed;

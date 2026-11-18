@@ -67,12 +67,22 @@ impl Session {
         texturecraft_compose::solo_project(&self.doc.project, solo.layer, solo.ignore_mask)
     }
 
-    /// Run `f` with the solo off (what is saved or exported is the whole stack), then put it back.
-    pub(crate) fn without_solo<T>(&mut self, f: impl FnOnce(&mut Session) -> T) -> T {
-        let solo = self.solo;
-        self.set_solo(None);
-        let out = f(self);
-        self.set_solo(solo);
-        out
+    /// Sample document pixels while solo keeps its own composite in the viewport cache.
+    pub(crate) fn document_composite(&self, ts: usize, tiles: &[(u32, u32)]) -> Option<std::borrow::Cow<'_, texturecraft_compose::Composite>> {
+        use std::borrow::Cow;
+        use texturecraft_compose::{Composite, composite_tiles, pad_tiles};
+
+        let cache = self.caches.get(ts)?;
+        if self.solo.is_none() {
+            return Some(Cow::Borrowed(&cache.composite));
+        }
+
+        self.with_inputs(ts, |inputs| {
+            let set = inputs.project.texture_sets.get(ts)?;
+            let mut output = Composite { block_scales: inputs.block_scales.clone(), ..Composite::with_size(&set.channel_list(), cache.size.0, cache.size.1) };
+            composite_tiles(inputs, &mut output, tiles);
+            pad_tiles(&mut output, &cache.dilation, tiles);
+            Some(Cow::Owned(output))
+        })
     }
 }

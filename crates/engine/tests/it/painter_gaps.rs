@@ -899,3 +899,21 @@ fn a_decal_dragged_over_the_sphere_never_flips_its_up_between_steps() {
         last = up;
     }
 }
+
+#[test]
+fn editing_a_saved_decal_with_an_out_of_range_axis_repairs_its_projection() {
+    let mut session = session();
+    let image = session.import_resource_bytes("decal.png", png(4, 4, |_, _| [255; 4])).unwrap();
+    let layer = id(execute(&mut session, "layer.add.decal", &json!({"image": image, "symmetry": "x"})).unwrap(), "layer");
+    let LayerKind::Fill(fill) = &mut session.doc.project.layer_mut(layer).unwrap().kind else { panic!("expected fill") };
+    let Projection::Decal(decal) = &mut fill.projection else { panic!("expected decal") };
+    decal.symmetry.as_mut().unwrap().axis = u8::MAX;
+    let bytes = session.to_project_bytes().unwrap();
+    let mut loaded = Session::from_project_bytes(&bytes).unwrap();
+
+    execute(&mut loaded, "layer.decal.set", &json!({"layer": layer.0, "rotation": 12})).unwrap();
+
+    let LayerKind::Fill(fill) = &loaded.doc.project.layer(layer).unwrap().kind else { panic!("expected fill") };
+    let Projection::Decal(decal) = &fill.projection else { panic!("expected decal") };
+    assert_eq!(decal.symmetry.unwrap().axis, 2);
+}

@@ -130,6 +130,14 @@ fn the_clone_source_is_forgotten_when_another_texture_set_becomes_active() {
     execute(&mut s, "layer.select", &json!({"layer": other.0})).unwrap();
     assert_eq!(s.ts(), 0);
     assert!(s.tool.clone_source.is_none());
+
+    execute(&mut s, "tool.cloneSource", &json!({"uv": [0.3, 0.6]})).unwrap();
+    execute(&mut s, "layer.select", &json!({"layers": [other.0]})).unwrap();
+    assert!(s.tool.clone_source.is_some());
+    let layers = s.doc.project.texture_sets[1].stack.clone();
+    execute(&mut s, "layer.select", &json!({"layers": layers})).unwrap();
+    assert_eq!(s.ts(), 1);
+    assert!(s.tool.clone_source.is_none());
 }
 
 #[test]
@@ -485,4 +493,22 @@ fn brushes_saved_without_alpha_parameters_load_unchanged() {
     saved["alpha_params"] = json!({"size_x": 0.5, "invert": true});
     let partial: BrushSettings = serde_json::from_value(saved).unwrap();
     assert_eq!(partial.alpha_params, AlphaParams { size_x: 0.5, invert: true, ..AlphaParams::default() });
+}
+
+#[test]
+fn solo_keeps_the_document_source_for_clone_and_the_material_picker() {
+    let mut s = clone_ready();
+    let layer = s.selected_layer().unwrap();
+    let empty = execute(&mut s, "layer.add.paint", &json!({})).unwrap()["layer"].as_u64().unwrap();
+    execute(&mut s, "view.solo", &json!({"layer": empty})).unwrap();
+    execute(&mut s, "layer.select", &json!({"layer": layer.0})).unwrap();
+    s.update();
+    assert!(!red(color_at(&s, 160.0, 200.0)));
+
+    let picked = s.color_pick(Vec2::new(160.0, 200.0), s.viewport).unwrap();
+    assert!(red(picked[&Channel::BaseColor]));
+    dab(&mut s, 240.0, 200.0);
+    execute(&mut s, "view.solo", &json!({"layer": null})).unwrap();
+    s.update();
+    assert!(red(color_at(&s, 240.0, 200.0)));
 }

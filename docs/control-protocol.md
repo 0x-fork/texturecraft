@@ -272,7 +272,7 @@ takes a font family, not a path: it reads only the system's font folders.
 | `resource_import` | `{path}` | Image resource (png, jpg, tga, tif, bmp, webp, exr, hdr) → its name, for `layer.add.image` / `tool.stencil`, or as a mesh map instead of baking it: `textureSet.meshMap.set {ts?, map, image}` (`textureSet.meshMap.clear {ts?, map}` empties the slot); call it once per baked map file (the desktop app's `textureSet.meshMap.import`, which takes host paths, is refused through `command_run`) |
 | `material_save` | `{path, layer?, name?}` | A layer or folder as a `.tcmat` smart material below the write root |
 | `material_load` | `{path}` | Add a `.tcmat` smart material, a MaterialCraft `.mcmat` material or a `.mcraft` package above the selection |
-| `textures_export` | `{dir, preset?, ts?, format?, padding?, size?, ddsCompression?, ddsMipmaps?}` | Writes files below the write root |
+| `textures_export` | `{dir, preset?, ts?, format?, padding?, size?}` | Writes files below the write root |
 | `bake` | `{ts?, resolution?, maps?, cpu?}` | Mesh maps for generators and smart materials; rays on the GPU when there is one (`cpu: true`: on the CPU). Per-map ray settings (`ao`, `thickness`, `bentNormal`: rays, maxDistance, spread, distribution; AO ignoreBackface, selfOcclusion) are `bake.settings` parameters |
 | `paint_stroke` | `{points, viewport?, color?, roughness?, metallic?, height?, size?, hardness?}` | Paint tool + brush material + `tool.stroke`; points in viewport pixels |
 | `viewport_render` | `{view?: "3d" \| "2d", width?, height?, yaw?, pitch?, samples?, bounces?, cpu?}` | Headless: PNG image (≤ 2048 px a side); yaw/pitch in degrees for this render only; `samples` (1–4096) path traces the 3D view instead, on the GPU when it has compute shaders, else (or with `cpu: true`) on the CPU (no GPU needed) |
@@ -347,7 +347,7 @@ File access follows `--read-root` / `--write-root` as for MCP.
 | `resource.import` | `{path}` |
 | `material.save` | `{path, layer?, name?}` |
 | `material.load` | `{path}` |
-| `textures.export` | `{dir, preset?, ts?, format?, padding?, size?, bitDepth?, dilation?, normalFormat?, ddsCompression?, ddsMipmaps?}` |
+| `textures.export` | `{dir, preset?, ts?, format?, padding?, size?, bitDepth?, dilation?, normalFormat?}` |
 | `render` | `{view?, width?, height?, yaw?, pitch?}` → `{width, height, png}` |
 
 Brush preset operations are engine commands. Send each through `command.run` with the shown

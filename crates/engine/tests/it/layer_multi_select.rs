@@ -507,3 +507,19 @@ fn bad_layer_lists_are_errors() {
     }
     assert!(execute(&mut s, "layer.select", &json!({"layers": [a.0], "layer": other.0})).is_err(), "the active layer must be listed");
 }
+
+#[test]
+fn moving_layers_into_a_folder_in_another_set_preserves_the_document() {
+    let mut s = texturecraft_engine::sample_session(128, 64).unwrap();
+    let source = s.doc.project.texture_sets[0].stack[0];
+    execute(&mut s, "textureSet.select", &json!({"ts": 1})).unwrap();
+    let folder = id(execute(&mut s, "layer.add.group", &json!({})).unwrap(), "layer");
+    let before = s.doc.project.clone();
+    let history = s.history_labels();
+
+    for params in [json!({"layer": source.0, "above": folder.0, "inside": true}), json!({"layers": [source.0], "above": folder.0, "inside": true})] {
+        assert!(execute(&mut s, "layer.move", &params).is_err());
+        assert_eq!(s.doc.project, before);
+        assert_eq!(s.history_labels(), history);
+    }
+}

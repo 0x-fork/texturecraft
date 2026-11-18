@@ -48,9 +48,6 @@ layer's mask, the resulting composite matching the engine-only result, and Save 
 the link. These run in the headless test harness; a live run in the native app on the integrated
 build is still not done.
 
-UI-10 is addressed in the integrated source: the export dialog has a MaterialX option that is
-forwarded as `materialX`, listed in the export preview and kept with the export settings.
-
 The relevant implementations are [layer rows, menus and fill/brush editors](../crates/ui-egui/src/dock.rs),
 [generator properties](../crates/ui-egui/src/generator_panel.rs),
 [export settings and parameters](../crates/ui-egui/src/windows.rs),

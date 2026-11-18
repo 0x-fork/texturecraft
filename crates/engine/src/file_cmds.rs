@@ -2,11 +2,10 @@
 //! web; path-based commands are native only.
 
 use serde_json::{Value, json};
-use texturecraft_core::NormalFormat;
 #[cfg(not(target_arch = "wasm32"))]
-use texturecraft_core::PROJECT_EXT;
+use texturecraft_core::{NormalFormat, PROJECT_EXT};
 use texturecraft_core::{Project, TextureSet};
-use texturecraft_formats::{DdsCompression, ExportInput, ExportOptions, ExportedFile, FileFormat, Padding, ProjectFile};
+use texturecraft_formats::{ExportInput, ExportOptions, ExportedFile, FileFormat, Padding, ProjectFile};
 use texturecraft_geom::{Mesh, primitives};
 
 use crate::commands::{CommandSpec, always, bad, normal_format_param, strp, u64p};
@@ -52,7 +51,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export textures",
             ["File"],
             None,
-            "{dir, preset?: built-in or user preset name, or a preset object {name, maps}, ts?: index|[indexes]|\"all\", format?: png|jpg|tga|tif|exr|dds|..., bitDepth? (8-bit-only formats such as jpg, tga and bmp write 8 bits; dds writes 8 or 16: at 16 bits BC4, BC5 and uncompressed files keep 16 bits), padding?: none|dilation|dilationDefault|infinite, dilation?: px, size?: px, normalFormat?: openGl|directX, colorSpace?: sRGB (default for 8/16-bit files)|Linear Rec.709 (default for exr, hdr)|ACEScg|ACES2065-1 (colour maps are converted, data maps never are; 8/16-bit files clamp to 0-1; a chosen space is also recorded in the colour maps: an ICC profile in PNG, JPEG, TIFF and WebP, the chromaticities in EXR; TGA, BMP, HDR and DDS can't hold one and warn), ddsCompression?: auto (default: normal maps bc5, maps with alpha bc3, grayscale maps bc4, others bc1)|none|bc1|bc3 (BC7 is not written), ddsMipmaps?: bool (DDS: also write the full mip chain; default false), materialX?: bool (also write a .mtlx OpenPBR material per texture set; needs the \"OpenPBR (separate maps)\" preset)}",
+            "{dir, preset?: built-in or user preset name, or a preset object {name, maps}, ts?: index|[indexes]|\"all\", format?: png|jpg|tga|tif|exr|..., bitDepth?, padding?: none|dilation|dilationDefault|infinite, dilation?: px, size?: px, normalFormat?: openGl|directX, colorSpace?: sRGB (default for 8/16-bit files)|Linear Rec.709 (default for exr, hdr)|ACEScg|ACES2065-1 (colour maps are converted, data maps never are; 8/16-bit files clamp to 0-1; a chosen space is also recorded in the colour maps: an ICC profile in PNG, JPEG, TIFF and WebP, the chromaticities in EXR; TGA, BMP and HDR can't hold one and warn), materialX?: bool (also write a .mtlx OpenPBR material per texture set; needs the \"OpenPBR (separate maps)\" preset)}",
             always,
             export_textures
         ),
@@ -70,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "List export outputs",
             [],
             None,
-            "{preset?: name or preset object, ts?, format?, bitDepth?, size?, colorSpace?, ddsCompression?, ddsMipmaps?, materialX?: bool (also list the .mtlx files file.exportTextures writes; their map and bitDepth are null)} → [{ts, map, file, format, bitDepth, warnings}]",
+            "{preset?: name or preset object, ts?, format?, bitDepth?, size?, colorSpace?} → [{ts, map, file, format, bitDepth, warnings}]",
             always,
             plan
         ),
@@ -142,17 +141,12 @@ impl Session {
     fn material_files(&mut self, opts: ExportOptions, tiled: bool, materials: usize) -> Result<Vec<Vec<ExportedFile>>> {
         let opts = ExportOptions { atlas: true, ..opts };
 
-        // One solo pause for all materials, not one per material
-        self.without_solo(|session| {
-            (0..materials)
-                .map(|m| match session.texture_set_of_material(m) {
-                    Some(ts) if tiled || session.doc.project.texture_sets.get(ts).is_some_and(|t| t.tile_grid().is_none()) => {
-                        session.export_files(&[ts], &opts)
-                    }
-                    _ => Ok(Vec::new()),
-                })
-                .collect()
-        })
+        (0..materials)
+            .map(|m| match self.texture_set_of_material(m) {
+                Some(ts) if tiled || self.doc.project.texture_sets.get(ts).is_some_and(|t| t.tile_grid().is_none()) => self.export_files(&[ts], &opts),
+                _ => Ok(Vec::new()),
+            })
+            .collect()
     }
 
     /// A new project from mesh file bytes (one texture set per material).
@@ -243,22 +237,21 @@ impl Session {
 
     /// Render every export file for texture sets `sets` (in memory; works on the web).
     pub fn export_files(&mut self, sets: &[usize], opts: &ExportOptions) -> Result<Vec<ExportedFile>> {
-        // A solo is only a view: the files hold the whole stack
-        self.without_solo(|session| session.export_files_of_stack(sets, opts))
-    }
+        if self.solo.is_none() {
+            self.update();
+        }
 
-    fn export_files_of_stack(&mut self, sets: &[usize], opts: &ExportOptions) -> Result<Vec<ExportedFile>> {
-        self.update();
         let mesh_name = stem_of(self.doc.project.mesh.trim_start_matches("builtin:"));
         let mut out = Vec::new();
         let empty = Default::default();
         for &ts in sets {
             let cache = self.caches.get(ts).ok_or_else(|| EngineError::Other(format!("no texture set {ts}")))?;
+            let composite = self.document_composite(ts, &cache.covered_tiles).ok_or_else(|| EngineError::Other(format!("no texture set {ts}")))?;
             let coverage = cache.gbuf.coverage_mask();
             let input = ExportInput {
                 project: &self.doc.project,
                 ts,
-                composite: &cache.composite,
+                composite: &composite,
                 baked: self.doc.baked.get(&ts).unwrap_or(&empty),
                 coverage: &coverage,
                 mesh_name: &mesh_name,
@@ -322,21 +315,6 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
         // A value of the wrong type is an error, not the format's default space
         Some(other) => return Err(bad(cmd, format!("`colorSpace` is a name (sRGB, Linear Rec.709, ACEScg or ACES2065-1), not {other}"))),
     }
-
-    match p.get("ddsCompression") {
-        None | Some(Value::Null) => {}
-        Some(Value::String(name)) => {
-            o.dds.compression = DdsCompression::from_name(name).ok_or_else(|| bad(cmd, format!("unknown ddsCompression `{name}` (auto, none, bc1 or bc3)")))?;
-        }
-        Some(other) => return Err(bad(cmd, format!("`ddsCompression` is a name (auto, none, bc1 or bc3), not {other}"))),
-    }
-
-    match p.get("ddsMipmaps") {
-        None | Some(Value::Null) => {}
-        Some(Value::Bool(on)) => o.dds.mipmaps = *on,
-        Some(other) => return Err(bad(cmd, format!("`ddsMipmaps` is true or false, not {other}"))),
-    }
-
     Ok(o)
 }
 
@@ -365,17 +343,10 @@ fn set_index(s: &Session, v: &Value, cmd: &str) -> Result<usize> {
 fn plan(s: &mut Session, p: &Value) -> Result<Value> {
     let opts = export_options(s, p, "export.plan")?;
     let mesh_name = stem_of(s.doc.project.mesh.trim_start_matches("builtin:"));
-    let sets = sets_param(s, p, "export.plan")?;
     let mut names = Vec::new();
-    for &ts in &sets {
+    for ts in sets_param(s, p, "export.plan")? {
         for f in texturecraft_formats::list_outputs(&s.doc.project, ts, &mesh_name, &opts).map_err(fe)? {
             names.push(json!({"ts": ts, "map": f.map, "file": f.name, "format": f.format.extension(), "bitDepth": f.bit_depth, "warnings": f.warnings}));
-        }
-    }
-    if p.get("materialX").and_then(Value::as_bool).unwrap_or(false) {
-        let mut warnings = Vec::new();
-        for (ts, file, _) in materialx_documents(s, &sets, &opts, &mut warnings)? {
-            names.push(json!({"ts": ts, "map": null, "file": file, "format": "mtlx", "bitDepth": null, "warnings": []}));
         }
     }
     Ok(json!(names))
@@ -577,12 +548,12 @@ fn export_textures(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "files": written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(), "warnings": warnings }))
 }
 
-/// One `<mesh>_<set>.mtlx` per texture set, next to the textures `opts` writes: the
+/// One `<mesh>_<set>.mtlx` per texture set, next to the textures `opts` just wrote: the
 /// OpenPBR inputs those textures feed (see `texturecraft_formats::materialx`). UDIM sets name
 /// their files with the `<UDIM>` token. Sets with no recognised map, or whose name gives the
-/// same file name as an earlier set's, are skipped with a warning. Returns `(set, file name,
-/// document)` for each material that is written.
-fn materialx_documents(s: &Session, sets: &[usize], opts: &ExportOptions, warnings: &mut Vec<String>) -> Result<Vec<(usize, String, String)>> {
+/// same file name as an earlier set's, are skipped with a warning.
+#[cfg(not(target_arch = "wasm32"))]
+fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std::path::Path, warnings: &mut Vec<String>) -> Result<Vec<std::path::PathBuf>> {
     use texturecraft_formats::materialx::{self, Texture};
     let mesh_name = stem_of(s.doc.project.mesh.trim_start_matches("builtin:"));
     if opts.color_space == Some(texturecraft_texel::ColorSpace::Aces2065) {
@@ -620,24 +591,14 @@ fn materialx_documents(s: &Session, sets: &[usize], opts: &ExportOptions, warnin
             ));
             continue;
         }
-
-        out.push((ts, format!("{stem}.mtlx"), materialx::write(&format!("{mesh_name}_{}", set.name), &textures, None)));
+        let path = dir.join(format!("{stem}.mtlx"));
+        texturecraft_formats::write_atomic(&path, materialx::write(&format!("{mesh_name}_{}", set.name), &textures, None).as_bytes()).map_err(fe)?;
+        out.push(path);
     }
 
     // The normalmap node only exists in a material that has a normal map
     if normal_map_written && opts.normal_format == Some(NormalFormat::DirectX) {
         warnings.push("MaterialX: the normalmap node reads OpenGL (+Y) normals; this export wrote DirectX normals, so flip the green channel".into());
-    }
-    Ok(out)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std::path::Path, warnings: &mut Vec<String>) -> Result<Vec<std::path::PathBuf>> {
-    let mut out = Vec::new();
-    for (_, name, document) in materialx_documents(s, sets, opts, warnings)? {
-        let path = dir.join(name);
-        texturecraft_formats::write_atomic(&path, document.as_bytes()).map_err(fe)?;
-        out.push(path);
     }
     Ok(out)
 }

@@ -409,12 +409,13 @@ fn stencil(session: &mut Session, params: &Value) -> Result<Value> {
         session.tool.stencil = Some(stencil_state);
     }
 
+    use crate::session::StencilLook;
     let stencil_state = session.tool.stencil.as_mut().ok_or_else(|| bad("tool.stencil", "no stencil: give `image`"))?;
     if let Some(center) = pair(params, "center").or_else(|| params.get("center").and_then(color_of).map(|color| [color[0], color[1]])) {
-        stencil_state.center = center.map(|value| value.clamp(-4.0, 4.0));
+        stencil_state.center = center.map(|value| value.clamp(-StencilLook::MAX_CENTER_OFFSET, StencilLook::MAX_CENTER_OFFSET));
     }
     if let Some(scale) = f32p(params, "scale") {
-        stencil_state.scale = scale.clamp(0.01, 10.0);
+        stencil_state.scale = scale.clamp(StencilLook::MIN_SCALE, StencilLook::MAX_SCALE);
     }
     if let Some(rotation) = f32p(params, "rotation") {
         stencil_state.rotation = rotation.rem_euclid(360.0);

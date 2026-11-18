@@ -89,7 +89,10 @@ fn exports_hold_the_whole_stack_while_a_layer_is_soloed_and_the_solo_stays() {
     let whole = s.export_files(&[0], &opts).unwrap();
     s.set_solo(Some(Solo { layer: green, ignore_mask: true }));
     s.update();
+    let revision = s.caches[0].revision;
     let soloed = s.export_files(&[0], &opts).unwrap();
+    assert_eq!(s.pending_tiles(), 0, "export leaves the viewport cache ready to draw");
+    assert_eq!(s.caches[0].revision, revision);
     assert_eq!(soloed.len(), whole.len());
     assert!(soloed.iter().zip(&whole).all(|(a, b)| a.name == b.name && a.bytes == b.bytes), "the files are the whole stack's");
     assert_eq!(s.solo, Some(Solo { layer: green, ignore_mask: true }), "the view keeps showing the solo");
