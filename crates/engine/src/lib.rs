@@ -74,7 +74,7 @@ pub mod view_cmds;
 
 pub use bake::{BakeMesh, BakeMeshes, BakeTask, StreamedBake, StreamedMap};
 pub use bake_preview::{BakePreview, PreviewShow};
-pub use commands::{CommandSpec, command_specs, execute, find};
+pub use commands::{CommandSpec, check_enabled, command_specs, execute, find};
 pub use fill_hit_test::FillHitTest;
 pub use fill_mode::FillMode;
 pub use path_tool::PathState;

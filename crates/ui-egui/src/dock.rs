@@ -42,6 +42,11 @@ const TAG_COLORS: [Color32; 8] = [
 ];
 
 pub(crate) fn texture_set_list(app: &mut TextureCraftApp, ui: &mut Ui) {
+    // The empty state lists nothing
+    if !app.session.project_open {
+        return;
+    }
+
     let tk = Tokens::get(ui.ctx());
     let sets: Vec<(String, String, bool)> = app
         .session
@@ -94,7 +99,8 @@ pub(crate) fn texture_set_list(app: &mut TextureCraftApp, ui: &mut Ui) {
             let eye = Rect::from_min_size(rect.min + vec2(4.0, 3.0), vec2(16.0, 16.0));
             let eye_resp = ui.interact(eye, ui.scope_id().with(("ts_eye", i)), Sense::click()).on_hover_text(tr("Show or hide the texture set"));
             p.text(eye.center(), egui::Align2::CENTER_CENTER, if visible { ic::EYE } else { ic::EYE_SLASH }, egui::FontId::proportional(13.0), tk.text);
-            // Narrow panels drop the shader label, then the resolution, before cutting the name.
+
+            // Narrow panels drop the shader label, then the resolution, before cutting the name
             let cy = rect.center().y;
             let mut right = rect.right() - 6.0;
             if rect.width() >= 260.0 {
@@ -141,48 +147,62 @@ fn add_mask_menu(app: &mut TextureCraftApp, ui: &mut Ui, row: Option<u64>) {
 }
 
 pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
-    let tk = Tokens::get(ui.ctx());
+    let tokens = Tokens::get(ui.ctx());
 
     // Wrap in a narrow column so rows stay within the panel
-    ui.horizontal_wrapped(|ui| {
-        // Keep menu buttons as compact as the adjacent icon buttons
-        ui.spacing_mut().button_padding.x = 4.0;
-        ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
-        let chans = app.session.doc.project.texture_set(app.session.ts()).map(|t| t.channel_list()).unwrap_or_default();
+    let project_open = app.session.project_open;
+    ui.add_enabled_ui(project_open, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            // Keep menu buttons as compact as the adjacent icon buttons
+            ui.spacing_mut().button_padding.x = 4.0;
+            ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
+            let channels = app.session.doc.project.texture_set(app.session.ts()).map(|t| t.channel_list()).unwrap_or_default();
 
-        // The channel box takes what the six buttons leave, so the toolbar stays on one row in a narrow column
-        let buttons = 2.0 * (MENU_BUTTON_WIDTH + TOOLBAR_SPACING) + 4.0 * (TOOLBAR_ICON_SIZE + TOOLBAR_SPACING);
-        let channel_width = (ui.available_width() - buttons).clamp(CHANNEL_BOX_MIN_WIDTH, CHANNEL_BOX_WIDTH);
-        ui.allocate_ui(vec2(channel_width, ICON_BUTTON_SIZE), |ui| {
-            egui::ComboBox::from_id_salt("layer_channel").width(channel_width).truncate().selected_text(tr(app.ui.layer_channel.label())).show_ui(ui, |ui| {
-                for c in chans {
-                    ui.selectable_value(&mut app.ui.layer_channel, c, tr(c.label()));
-                }
+            // The channel box takes what the six buttons leave, so the toolbar stays on one row in a narrow column
+            let buttons = 2.0 * (MENU_BUTTON_WIDTH + TOOLBAR_SPACING) + 4.0 * (TOOLBAR_ICON_SIZE + TOOLBAR_SPACING);
+            let channel_width = (ui.available_width() - buttons).clamp(CHANNEL_BOX_MIN_WIDTH, CHANNEL_BOX_WIDTH);
+            ui.allocate_ui(vec2(channel_width, ICON_BUTTON_SIZE), |ui| {
+                egui::ComboBox::from_id_salt("layer_channel").width(channel_width).truncate().selected_text(tr(app.ui.layer_channel.label())).show_ui(
+                    ui,
+                    |ui| {
+                        for channel in channels {
+                            ui.selectable_value(&mut app.ui.layer_channel, channel, tr(channel.label()));
+                        }
+                    },
+                );
             });
-        });
-        let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id)).cloned();
-        ui.menu_button(RichText::new(ic::MAGIC_WAND).size(14.0), |ui| match &selected {
-            Some(l) => effect_menu(app, ui, l),
-            None => {
-                ui.label(RichText::new(tr("Select a layer")).color(tk.text_dim));
+            ui.menu_button(RichText::new(ic::MAGIC_WAND).size(14.0), |ui| {
+                let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id)).cloned();
+                match &selected {
+                    Some(layer) => effect_menu(app, ui, layer),
+                    None => {
+                        ui.label(RichText::new(tr("Select a layer")).color(tokens.text_dim));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(tr("Add effect"));
+            ui.menu_button(RichText::new(ic::SELECTION_BACKGROUND).size(14.0), |ui| add_mask_menu(app, ui, None)).response.on_hover_text(tr("Add mask"));
+            if icon_button(ui, ic::PAINT_BRUSH, tr("Add paint layer"), false, TOOLBAR_ICON_SIZE).clicked() {
+                app.run("layer.add.paint", Value::Null);
+            }
+            if icon_button(ui, ic::PAINT_BUCKET, tr("Add fill layer"), false, TOOLBAR_ICON_SIZE).clicked() {
+                app.run("layer.add.fill", Value::Null);
+            }
+            if icon_button(ui, ic::FOLDER_SIMPLE, tr("Add folder"), false, TOOLBAR_ICON_SIZE).clicked() {
+                app.run("layer.add.group", Value::Null);
+            }
+            if icon_button(ui, ic::TRASH, &crate::keymap::tip(&app.ui.keymap, tr("Remove layer"), "layer.remove"), false, TOOLBAR_ICON_SIZE).clicked() {
+                app.run("layer.remove", Value::Null);
             }
         })
-        .response
-        .on_hover_text(tr("Add effect"));
-        ui.menu_button(RichText::new(ic::SELECTION_BACKGROUND).size(14.0), |ui| add_mask_menu(app, ui, None)).response.on_hover_text(tr("Add mask"));
-        if icon_button(ui, ic::PAINT_BRUSH, tr("Add paint layer"), false, TOOLBAR_ICON_SIZE).clicked() {
-            app.run("layer.add.paint", Value::Null);
-        }
-        if icon_button(ui, ic::PAINT_BUCKET, tr("Add fill layer"), false, TOOLBAR_ICON_SIZE).clicked() {
-            app.run("layer.add.fill", Value::Null);
-        }
-        if icon_button(ui, ic::FOLDER_SIMPLE, tr("Add folder"), false, TOOLBAR_ICON_SIZE).clicked() {
-            app.run("layer.add.group", Value::Null);
-        }
-        if icon_button(ui, ic::TRASH, &crate::keymap::tip(&app.ui.keymap, tr("Remove layer"), "layer.remove"), false, TOOLBAR_ICON_SIZE).clicked() {
-            app.run("layer.remove", Value::Null);
-        }
     });
+
+    // The empty state has no layers: the toolbar stays, greyed
+    if !project_open {
+        return;
+    }
+
     ui.add_space(2.0);
     let ts = app.session.ts();
     let stack: Vec<LayerId> = app.session.doc.project.texture_sets.get(ts).map(|t| t.stack.iter().rev().copied().collect()).unwrap_or_default();
@@ -216,7 +236,7 @@ pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
         }
         let material = resp.dnd_hover_payload::<ShelfDrag>().is_some_and(|d| d.asset.is_material());
         if resp.dnd_hover_payload::<u64>().is_some() || material {
-            ui.painter().line_segment([rect.left_top(), rect.right_top()], Stroke::new(2.0, tk.accent));
+            ui.painter().line_segment([rect.left_top(), rect.right_top()], Stroke::new(2.0, tokens.accent));
         }
     });
     app.layer_panel.end(ui.ctx(), &app.session);
@@ -1766,6 +1786,10 @@ pub(crate) fn mesh_map_color(map: BakedMap) -> Color32 {
 
 /// The Properties tab title: what the panel edits
 pub(crate) fn properties_title(app: &TextureCraftApp) -> String {
+    if !app.session.project_open {
+        return tr("Properties").to_string();
+    }
+
     let project = &app.session.doc.project;
     let tool = app.session.tool.tool;
     let tool_usable = app.session.tool_usable(tool);
@@ -1792,6 +1816,11 @@ pub(crate) fn properties(app: &mut TextureCraftApp, ui: &mut Ui) {
 /// What the Properties panel edits: polygon fill's own settings, the selected effect, fill, folder, instance or mask, else the tool (or a hint to select a layer when it can't act)
 pub(crate) fn properties_contents(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tokens = Tokens::get(ui.ctx());
+    if !app.session.project_open {
+        ui.label(RichText::new(tr("No properties found")).color(tokens.text_dim));
+        return;
+    }
+
     let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id).cloned());
     let tool = app.session.tool.tool;
     let tool_usable = app.session.tool_usable(tool);

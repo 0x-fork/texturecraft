@@ -19,7 +19,6 @@ use crate::theme::{Accent, Brightness, Tokens, caption};
 use crate::widgets::{color_swatch, combo, icon_button, primary_button, section, section_with_reset, slider};
 
 pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    start(app, ctx);
     new_project(app, ctx);
     about(app, ctx);
     settings(app, ctx);
@@ -446,78 +445,6 @@ pub(crate) fn history(app: &mut TextureCraftApp, ui: &mut Ui) {
     }
 }
 
-/// What the start window was asked for.
-enum Start {
-    Menu(&'static str),
-    #[cfg(not(target_arch = "wasm32"))]
-    Recent(String),
-    Close,
-}
-
-/// The start window: a new project, a project file or a recent one, or the sample that is open.
-fn start(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    if !app.ui.windows.start {
-        return;
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    let tokens = Tokens::get(ctx);
-    let mut open = true;
-    let mut action = None;
-    dialog("start", "TextureCraft", &mut open).min_width(380.0).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            if ui.add(primary_button(ui, tr("New project..."))).clicked() {
-                action = Some(Start::Menu("ui.newProject"));
-            }
-            if ui.button(tr("Open...")).clicked() {
-                action = Some(Start::Menu("file.open"));
-            }
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        if file_dialogs_available() {
-            ui.add_space(8.0);
-            ui.label(caption(tr("Recent projects")));
-            if app.ui.recent.is_empty() {
-                ui.label(RichText::new(tr("No recent projects yet")).color(tokens.text_dim));
-            }
-            for path in &app.ui.recent {
-                let name = std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
-                if ui
-                    .add(egui::Button::selectable(false, format!("{}  {name}", ic::FILE)).min_size(vec2(ui.available_width(), 0.0)))
-                    .on_hover_text(path)
-                    .clicked()
-                {
-                    action = Some(Start::Recent(path.clone()));
-                }
-            }
-        }
-        ui.add_space(8.0);
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut app.ui.prefs.start_window, tr("Show at startup"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(tr("Continue with the sample project")).clicked() {
-                    action = Some(Start::Close);
-                }
-            });
-        });
-    });
-
-    if let Some(action) = action {
-        app.ui.windows.start = false;
-        match action {
-            Start::Menu(id) => crate::menus::invoke(app, ctx, id),
-            #[cfg(not(target_arch = "wasm32"))]
-            Start::Recent(path) => open_path(app, &path),
-            Start::Close => {}
-        }
-    }
-
-    if !open {
-        app.ui.windows.start = false;
-    }
-}
-
 fn new_project(app: &mut TextureCraftApp, ctx: &egui::Context) {
     if !app.ui.windows.new_project {
         return;
@@ -573,7 +500,7 @@ fn new_project(app: &mut TextureCraftApp, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut app.ui.new_project.template_name).hint_text(tr("Template name")).desired_width(120.0));
                 let name = app.ui.new_project.template_name.trim().to_string();
-                if ui.add_enabled(!name.is_empty(), egui::Button::new(tr("Save current project as template"))).clicked()
+                if ui.add_enabled(!name.is_empty() && app.session.project_open, egui::Button::new(tr("Save current project as template"))).clicked()
                     && app.run("project.template.save", json!({"name": name})).is_some()
                 {
                     app.ui.new_project.template = name;
@@ -658,13 +585,15 @@ fn settings_resources(ctx: &egui::Context) -> (u32, u64) {
 fn settings(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let tk = Tokens::get(ctx);
     let mut open = app.ui.windows.settings;
-    // A language whose script no font draws is listed by its English name and disabled.
+
+    // A language whose script no font draws is listed by its English name and disabled
     let drawable = LANGUAGES.each_ref().map(|l| crate::fonts::Script::of_language(l.code).is_none_or(|s| app.fonts.covers(s)));
     #[cfg(not(target_arch = "wasm32"))]
     let mut pick_data_folder = false;
     window("settings", tr("Settings"), &mut open).default_width(360.0).show(ctx, |ui| {
         let p = &mut app.ui.prefs;
-        // Every section is a two-column form: labels on the left, controls aligned beside them.
+
+        // Every section is a two-column form: labels on the left, controls aligned beside them
         let form = |id: &str| egui::Grid::new(id).num_columns(2).spacing(vec2(12.0, 8.0)).min_col_width(120.0);
         ui.label(caption(tr("Interface")));
         form("settings_interface").show(ui, |ui| {
@@ -716,9 +645,6 @@ fn settings(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     .on_hover_text(tr("Use the operating system's window frame and buttons instead of TextureCraft's own title bar"));
                 ui.end_row();
             }
-            ui.label(tr("Start window"));
-            ui.checkbox(&mut p.start_window, tr("Show at startup"));
-            ui.end_row();
         });
         ui.add_space(8.0);
         ui.label(caption(tr("Viewport")));
@@ -1287,6 +1213,12 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let mut do_export = false;
     let presets = texturecraft_engine::formats::builtin_presets();
     dialog("export_textures", tr("Export textures"), &mut open).fixed_size(vec2(820.0, 430.0)).show(ctx, |ui| {
+        // Nothing to export without a project
+        if !app.session.project_open {
+            ui.label(tr("No project is open"));
+            return;
+        }
+
         ui.horizontal(|ui| {
             for (i, t) in [tr("Settings"), tr("Output templates"), tr("List of exports")].iter().enumerate() {
                 if ui.selectable_label(app.ui.export.tab == i as u8, caption(t)).clicked() {
