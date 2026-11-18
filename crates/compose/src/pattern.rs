@@ -160,7 +160,7 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
         ProceduralKind::Billow => organic::billow(p, seed),
         ProceduralKind::ReptileScales => organic::reptile_scales(p, seed),
         ProceduralKind::Bark => organic::bark(p, seed),
-        ProceduralKind::CoralMaze => organic::coral_maze(p, seed),
+        ProceduralKind::Flesh => organic::flesh(p, seed),
         ProceduralKind::Camouflage => organic::camouflage(p, seed),
         ProceduralKind::Knit => fabric::knit(p, seed),
         ProceduralKind::BasketWeave => fabric::basket_weave(p, seed),

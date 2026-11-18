@@ -69,7 +69,7 @@ Everything TextureCraft does today, by area. What's still missing is in [`ROADMA
 - **Fill layers** take uniform values, **43 procedurals** (clouds, cells, grunge, scratches, wood
   grain, bricks, fabric weave, twill, leather grain, marble veins, Voronoi, paint chips, hexagon
   tiles, wave scales, herringbone planks, halftone dots, Truchet arcs, and seamless organic
-  surfaces: smooth fur, mackerel sky, soft billow, reptile scales, young bark, coral maze, camouflage, knit, basket
+  surfaces: smooth fur, mackerel sky, soft billow, reptile scales, young bark, rotting flesh, camouflage, knit, basket
   weave, goose-eye twill, slub silk, strip flooring, knotty wood…) or your own **images**, through UV, tri-planar, planar, spherical, cylindrical or decal projection, with
   the UV scale, rotation and offset, the tri-planar blend sharpness and offset, the planar axis
   and offset, and the cylindrical axis in the fill's properties. Each channel takes its own image (a normal, roughness or height map, say): pick it in the channel's

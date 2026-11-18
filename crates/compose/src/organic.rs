@@ -1,4 +1,4 @@
-//! Organic procedural surfaces: fur, clouds, reptile scales, bark, coral and camouflage.
+//! Organic procedural surfaces: fur, clouds, reptile scales, bark, flesh and camouflage.
 //!
 //! Every pattern repeats every unit in U and V, tones and details included, so it tiles without
 //! seams. A point is first moved by whole units into the unit square, so huge or non-finite
@@ -202,6 +202,12 @@ pub(crate) fn billow(p: Vec3, seed: u32) -> f32 {
 /// own, domed and lit from above, with a dark rim and a shadow cast on the scale below. A scale
 /// covers the ones under it. The rows wrap, so the pattern repeats every unit.
 pub(crate) fn reptile_scales(p: Vec3, seed: u32) -> f32 {
+    // The scales overlap, so every point is under one; a dark ground stands in if one is ever missed
+    scale_at(p, seed).unwrap_or(0.1)
+}
+
+/// The value of the scale showing at `p`, or None when no scale covers it
+fn scale_at(p: Vec3, seed: u32) -> Option<f32> {
     const COLUMNS: i32 = 8;
     // Even, so that the staggered rows line up again after one unit
     const ROWS: i32 = 12;
@@ -235,16 +241,15 @@ pub(crate) fn reptile_scales(p: Vec3, seed: u32) -> f32 {
         }
     }
 
-    let Some((s, rim, tone, ridge)) = top else { return 0.1 };
+    let (s, rim, tone, ridge) = top?;
     let height = (1.0 - rim * rim).max(0.0).sqrt();
     // A keel down the middle, stronger on some scales
     let keel = (-(s.x * 3.2) * (s.x * 3.2)).exp() * (0.1 + 0.25 * ridge);
     let normal = Vec3::new(s.x * 0.9, s.y * 0.9, height + keel).normalize();
     let lit = normal.dot(light).max(0.0);
     let grain = lattice_noise(u, (96, 96), seed ^ 0x3C);
-    let covered = if top_row == i32::MAX { 0.0 } else { shadow };
-    let body = (0.25 + 0.75 * tone) * (0.35 + 0.65 * lit) * (1.0 - 0.5 * covered) * (0.86 + 0.14 * grain);
-    (body * (0.45 + 0.55 * smoothstep(1.0, 0.8, rim))).clamp(0.0, 1.0)
+    let body = (0.25 + 0.75 * tone) * (0.35 + 0.65 * lit) * (1.0 - 0.5 * shadow) * (0.86 + 0.14 * grain);
+    Some((body * (0.45 + 0.55 * smoothstep(1.0, 0.8, rim))).clamp(0.0, 1.0))
 }
 
 /// Young bark: tall plates of different tone parted by wandering furrows (0 = furrow), with fibres
@@ -284,36 +289,52 @@ pub(crate) fn bark(p: Vec3, seed: u32) -> f32 {
     (ridge * (0.5 + 0.3 * plate + 0.2 * fibre)).clamp(0.0, 1.0)
 }
 
-/// A labyrinth of rounded walls like brain coral, where the walls break into dots and stripes in
-/// places: a band-limited wave field (cosines of wave vectors on one ring of the lattice) cut at a
-/// level that drifts slowly across the surface.
-pub(crate) fn coral_maze(p: Vec3, seed: u32) -> f32 {
-    use std::f32::consts::{PI, TAU};
-
-    const WAVES: usize = 9;
-    // Cycles per unit
-    const RING: f32 = 9.0;
+/// Rotting flesh: soft masses of wet tissue, folded and creased, threaded with branching raised
+/// veins, going dark and mottled in patches of decay where blisters rise. The coordinates are
+/// warped hard, so nothing is round or straight, and no part of it is built on cells. Higher is
+/// moister, healthier tissue.
+pub(crate) fn flesh(p: Vec3, seed: u32) -> f32 {
+    const BLISTERS: i32 = 14;
     let u = unit(p);
 
-    let (mut sum, mut energy) = (0.0f32, 0.0f32);
-    for k in 0..WAVES {
-        let h = |n: i32| noise::cell_hash(k as i32, n, 0, seed ^ 0x5E);
-        // Directions spread over a half turn (a cosine has no handedness); whole cycles per unit
-        // across and down, so the field repeats
-        let angle = (k as f32 + 0.8 * h(0)) * PI / WAVES as f32;
-        let (across, down) = ((angle.cos() * RING).round(), (angle.sin() * RING).round());
-        let amplitude = 0.7 + 0.6 * h(2);
-        sum += amplitude * (TAU * (across * u.x + down * u.y) + TAU * h(1)).cos();
-        energy += amplitude * amplitude * 0.5;
-    }
-    // Unit variance, whatever the amplitudes
-    let field = sum / energy.sqrt();
+    // The warp that makes the folds meander
+    let warp = |salt: u32| lattice_fbm(u, &[(2, 0.5), (4, 0.3), (8, 0.2)], seed ^ salt) - 0.5;
+    let w = u + Vec2::new(warp(0x11), warp(0x22)) * 0.24;
 
-    // The level drifts: walls are thick in places and thin in others
-    let level = (lattice_noise(u, (2, 2), seed ^ 0x6C) - 0.5) * 1.5 - 0.15;
-    let wall = smoothstep(-0.1, 0.45, field - level);
-    // Rounded across, like a tube
-    wall.sqrt()
+    // A lumpy body, folded where a slow noise crosses its middle value
+    let body = lattice_fbm(w, &[(3, 0.35), (6, 0.3), (12, 0.2), (24, 0.15)], seed ^ 0x33);
+    let fold = lattice_fbm(w, &[(5, 0.6), (10, 0.4)], seed ^ 0x44);
+    let crease = (1.0 - (2.0 * fold - 1.0).abs()).powi(4);
+
+    // Veins that branch: a thick set and, across it, a thinner one
+    let line = |cells: (i32, i32), salt: u32, sharpness: i32| {
+        (1.0 - (2.0 * lattice_fbm(w, &[(cells.0, 0.6), (cells.1, 0.4)], seed ^ salt) - 1.0).abs()).powi(sharpness)
+    };
+    let vein = line((3, 7), 0x55, 14).max(0.7 * line((6, 13), 0x56, 20));
+
+    // Decay: dark mottled patches
+    let decay = smoothstep(0.46, 0.58, lattice_fbm(w, &[(2, 0.5), (5, 0.3), (10, 0.2)], seed ^ 0x66));
+    let mottle = lattice_fbm(w, &[(24, 0.5), (48, 0.5)], seed ^ 0x77);
+
+    // Blisters in the decayed patches: round bumps on a jittered grid that wraps
+    let q = w * BLISTERS as f32;
+    let (ci, cj) = (q.x.floor() as i32, q.y.floor() as i32);
+    let mut blister = 0.0f32;
+    for j in (cj - 1)..=(cj + 1) {
+        for i in (ci - 1)..=(ci + 1) {
+            let h = |k: i32| noise::cell_hash(i.rem_euclid(BLISTERS), j.rem_euclid(BLISTERS), k, seed ^ 0x88);
+            if h(0) > 0.55 {
+                continue;
+            }
+
+            let center = Vec2::new(i as f32 + h(1), j as f32 + h(2));
+            blister = blister.max(smoothstep(1.0, 0.0, (q - center).length() / (0.3 + 0.4 * h(3))));
+        }
+    }
+
+    let healthy = (0.2 + 0.7 * smoothstep(0.2, 0.8, body)) * (1.0 - 0.7 * crease) + 0.3 * vein;
+    let rotten = healthy * (0.3 + 0.4 * mottle) + 0.35 * blister;
+    (healthy + (rotten - healthy) * decay).clamp(0.0, 1.0)
 }
 
 /// Camouflage: four tones of interlocking blotches with ragged edges. The darkest tone is the
@@ -351,7 +372,7 @@ mod tests {
         ("billow", billow),
         ("scales", reptile_scales),
         ("bark", bark),
-        ("coral", coral_maze),
+        ("flesh", flesh),
         ("camouflage", camouflage),
         ("knit", crate::fabric::knit),
         ("basket weave", crate::fabric::basket_weave),
@@ -422,17 +443,49 @@ mod tests {
     #[test]
     fn scales_leave_no_gap_and_bark_makes_furrows() {
         let grid = |size: usize| (0..size * size).map(move |i| Vec3::new((i % size) as f32 / size as f32, (i / size) as f32 / size as f32, 0.0));
-        let darkest = grid(64).map(|p| reptile_scales(p, 1)).fold(f32::MAX, f32::min);
-        assert!(darkest > 0.02, "a gap shows between scales: {darkest}");
+        // A scale covers every point: a point none reaches would read as a gap, however dark the scales are
+        for seed in 1..=3 {
+            let uncovered = grid(64).filter(|p| scale_at(*p, seed).is_none()).count();
+            assert_eq!(uncovered, 0, "{uncovered} of 4096 points are under no scale (seed {seed})");
+        }
 
         let furrows = grid(64).filter(|p| bark(*p, 1) < 0.1).count();
         assert!((100..1800).contains(&furrows), "furrows cover {furrows} of 4096 samples");
     }
 
     #[test]
-    fn the_coral_maze_has_walls_and_gaps() {
-        let walls = (0..4096).filter(|i| coral_maze(Vec3::new((i % 64) as f32 / 64.0, (i / 64) as f32 / 64.0, 0.0), 1) > 0.5).count();
-        assert!((800..3300).contains(&walls), "walls cover {walls} of 4096 samples");
+    fn flesh_has_creases_veins_and_decay() {
+        let values: Vec<f32> = (0..16384).map(|i| flesh(Vec3::new((i % 128) as f32 / 128.0, (i / 128) as f32 / 128.0, 0.0), 1)).collect();
+        let share = |keep: fn(f32) -> bool| values.iter().filter(|v| keep(**v)).count() as f32 / values.len() as f32;
+        // Dark creases and rot, and bright healthy tissue, each over a fair part of the surface
+        assert!(share(|v| v < 0.18) > 0.08, "no creases or rot: {}", share(|v| v < 0.18));
+        assert!(share(|v| v > 0.5) > 0.08, "no healthy tissue: {}", share(|v| v > 0.5));
+    }
+
+    #[test]
+    fn the_edges_of_the_unit_are_no_rougher_than_the_middle_of_it() {
+        const STEP: f32 = 1e-4;
+        const SAMPLES: usize = 512;
+        // How many points along a line change by a lot between two points just either side of `at`
+        // (the edge of the unit when `at` is 0, whose other side is the far edge)
+        let jumps = |pattern: Pattern, at: f32, across_u: bool| {
+            (0..SAMPLES)
+                .filter(|i| {
+                    let t = (*i as f32 + 0.5) / SAMPLES as f32;
+                    let (before, after) = (at - STEP, at + STEP);
+                    let (a, b) =
+                        if across_u { (Vec3::new(before, t, 0.0), Vec3::new(after, t, 0.0)) } else { (Vec3::new(t, before, 0.0), Vec3::new(t, after, 0.0)) };
+                    (pattern(a, 1) - pattern(b, 1)).abs() > 0.2
+                })
+                .count()
+        };
+        for (name, pattern) in PATTERNS {
+            for (edge, across_u) in [("U", true), ("V", false)] {
+                // A pattern on a lattice has cell edges at 0 and at 1/2 alike, which rise and fall at random; a seam would be an extra one
+                let (seam, middle) = (jumps(pattern, 0.0, across_u), jumps(pattern, 0.5, across_u));
+                assert!(seam <= 3 * middle + SAMPLES / 10, "{name}: {seam} jumps across the {edge} edge of the unit, against {middle} across its middle");
+            }
+        }
     }
 
     #[test]

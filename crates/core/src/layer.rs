@@ -312,8 +312,8 @@ pub enum ProceduralKind {
     ReptileScales,
     /// Young bark: tall plates parted by wandering furrows (0 = furrow).
     Bark,
-    /// A labyrinth of rounded walls, like brain coral.
-    CoralMaze,
+    /// Rotting flesh: soft lobes, veins and patches of decay.
+    Flesh,
     /// Four flat tones of interlocking blotches, for camouflage.
     Camouflage,
     /// Stockinette knit: V-shaped stitches of twisted yarn.
@@ -368,7 +368,7 @@ impl ProceduralKind {
         ProceduralKind::Billow,
         ProceduralKind::ReptileScales,
         ProceduralKind::Bark,
-        ProceduralKind::CoralMaze,
+        ProceduralKind::Flesh,
         ProceduralKind::Camouflage,
         ProceduralKind::Knit,
         ProceduralKind::BasketWeave,
@@ -414,7 +414,7 @@ impl ProceduralKind {
             ProceduralKind::Billow => "Soft billow",
             ProceduralKind::ReptileScales => "Reptile scales",
             ProceduralKind::Bark => "Young bark",
-            ProceduralKind::CoralMaze => "Coral maze",
+            ProceduralKind::Flesh => "Rotting flesh",
             ProceduralKind::Camouflage => "Camouflage",
             ProceduralKind::Knit => "Knit stitches",
             ProceduralKind::BasketWeave => "Basket weave",

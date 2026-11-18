@@ -48,7 +48,9 @@ pub(crate) fn knotty_wood(p: Vec3, seed: u32) -> f32 {
     let u = unit(p);
 
     // Rings across the board, wandering a little
-    let mut t = u.y * RINGS + (lattice_fbm(u, &[(2, 0.6), (5, 0.4)], seed ^ 0x14) - 0.5) * 1.4;
+    let wander = (lattice_fbm(u, &[(2, 0.6), (5, 0.4)], seed ^ 0x14) - 0.5) * 1.4;
+    let base = u.y * RINGS + wander;
+    let mut t = base;
     let q = u * CELLS as f32;
     let (ci, cj) = (q.x.floor() as i32, q.y.floor() as i32);
 
@@ -68,7 +70,12 @@ pub(crate) fn knotty_wood(p: Vec3, seed: u32) -> f32 {
             let distance = Vec2::new(d.x * 0.5, d.y).length() / radius;
             // The rings turn into circles around the knot; further out they only bend
             let circle = distance * 1.9 + h(4) * 3.0 + (lattice_noise(u, (24, 24), seed ^ 0x66) - 0.5) * 0.8;
-            t += (circle - t) * smoothstep(2.2, 0.8, distance);
+            // The ring a knot pulls towards is measured from where the knot sits in its own copy of
+            // the unit: a knot just past the bottom edge shapes the rings along the top edge, and
+            // those must come out as the rings along the bottom edge do
+            let home_y = (j.rem_euclid(CELLS) as f32 + 0.2 + 0.6 * h(2)) / CELLS as f32;
+            let ring_here = (home_y + d.y) * RINGS + wander;
+            t += (circle - ring_here) * smoothstep(2.2, 0.8, distance);
             core = core.max(smoothstep(0.5, 0.2, distance));
         }
     }
