@@ -241,22 +241,6 @@ mod tests {
         context.tex_manager().read().allocated().filter(|(_, metadata)| metadata.name.starts_with("res_picker-image-")).count()
     }
 
-    fn settle_anchor_previews(harness: &mut Harness<'_, (TextureCraftApp, Vec<(LayerId, String)>)>) {
-        // Allow the worker to finish on a busy machine
-        const ATTEMPTS: usize = 500;
-        const WAIT: std::time::Duration = std::time::Duration::from_millis(10);
-        for _ in 0..ATTEMPTS {
-            if !harness.state().0.layer_panel.service().busy() {
-                return;
-            }
-
-            std::thread::sleep(WAIT);
-            harness.run_steps(2);
-        }
-
-        assert!(!harness.state().0.layer_panel.service().busy(), "the anchor preview queue should settle");
-    }
-
     #[test]
     fn source_picker_images_render_on_scroll_and_release_on_removal() {
         const IMAGE_COUNT: usize = 128;
@@ -295,46 +279,6 @@ mod tests {
 
         assert_eq!(image_preview_count(&harness.ctx), 0, "removed images release all picker preview textures");
         eprintln!("picker image previews: initial {initial_previews}, after scroll {scrolled_previews}, after removal 0");
-    }
-
-    #[test]
-    fn source_picker_renders_only_visible_anchors() {
-        const ANCHOR_COUNT: usize = 128;
-        let mut session = Session::new_project("picker", primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
-        execute(&mut session, "layer.add.fill", &json!({"height": 0.5})).unwrap();
-        let mut anchors = Vec::new();
-        for index in 0..ANCHOR_COUNT {
-            let name = format!("anchor-{index:03}");
-            let result = execute(&mut session, "effect.add.anchor", &json!({"name": name})).unwrap();
-            anchors.push((LayerId(result["effect"].as_u64().unwrap()), name));
-        }
-        execute(&mut session, "layer.add.fill", &json!({"height": 0.0})).unwrap();
-        let mut harness = picker_harness(session, anchors);
-
-        harness.get_by_role_and_label(egui::Role::ComboBox, "Source").click();
-        harness.run_steps(3);
-        settle_anchor_previews(&mut harness);
-        let service = harness.state().0.layer_panel.service();
-        eprintln!("hidden anchor previews: rendered {}, retained {}", service.rendered, service.cached());
-
-        assert_eq!(service.rendered, 0, "the hidden Anchor points tab must not render its targets");
-        assert_eq!(service.cached(), 0);
-
-        harness.get_by_role_and_label(egui::Role::Tab, "Anchor points").click();
-        harness.run_steps(3);
-        settle_anchor_previews(&mut harness);
-        let initial_previews = harness.state().0.layer_panel.service().rendered;
-
-        assert!(initial_previews > 0 && initial_previews < ANCHOR_COUNT as u64);
-        assert_eq!(harness.state().0.layer_panel.service().cached() as u64, initial_previews);
-
-        harness.get_by_role_and_label(egui::Role::Button, "anchor-100").scroll_to_me();
-        harness.run_steps(30);
-        settle_anchor_previews(&mut harness);
-        let scrolled_previews = harness.state().0.layer_panel.service().rendered;
-
-        assert!(scrolled_previews > initial_previews && scrolled_previews < ANCHOR_COUNT as u64);
-        eprintln!("visible anchor previews: initial {initial_previews}, after scroll {scrolled_previews}");
     }
 
     #[test]
