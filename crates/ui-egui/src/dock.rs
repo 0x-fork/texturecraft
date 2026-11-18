@@ -1398,7 +1398,9 @@ mod image_menu_tests {
 
         let creation_context = eframe::CreationContext::_new_kittest(egui::Context::default());
         let app = TextureCraftApp::new(&creation_context, session);
-        Ok(Harness::builder().with_size(egui::vec2(320.0, 400.0)).with_context_setup(crate::theme::install).build_ui_state(
+
+        // Translated menu labels may need fonts this preview-cache test does not load
+        Ok(Harness::builder().with_size(egui::vec2(320.0, 400.0)).with_context_setup(crate::theme::install).allow_missing_glyphs().build_ui_state(
             |ui, (app, picked)| {
                 if let Some(name) = image_menu(app, ui) {
                     *picked = Some(name);

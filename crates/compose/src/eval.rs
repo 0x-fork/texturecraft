@@ -119,6 +119,11 @@ impl Inputs<'_> {
     fn tile_res(&self) -> u32 {
         self.gbuf.width / self.tile_grid().map_or(1, |g| g.cols.max(1))
     }
+
+    /// The current UV tile can occupy only part of its atlas block
+    fn tile_res_at(&self, x: u32, y: u32) -> u32 {
+        ((self.tile_res() as f32 * self.block_scales.at(x, y)).round() as u32).max(1)
+    }
 }
 
 /// The composited channels of one texture set.
@@ -1425,7 +1430,7 @@ impl<'a, 'b> Texel<'a, 'b> {
             Source::Procedural { pattern, low, high } => {
                 let (coords, projection, _) = self.projected(projection);
                 let pixels = if pattern.resolution.can_reduce() {
-                    let uv_tile = self.inp.tile_res();
+                    let uv_tile = self.inp.tile_res_at(self.x, self.y);
                     let texture_set = self.inp.project.texture_set(self.inp.ts).map_or(uv_tile, |set| set.resolution);
                     pattern_pixels(pattern, uv_tile, texture_set)
                 } else {
@@ -2707,6 +2712,39 @@ mod tests {
         let mut out = Composite::new(&f.project.texture_sets[0].channel_list(), 64);
         composite_tiles(&inp, &mut out, &all_tiles(64, 64));
         out
+    }
+
+    #[test]
+    fn procedural_resolution_uses_each_uv_tiles_scale() {
+        let mut fixture = fixture();
+        let set = &mut fixture.project.texture_sets[0];
+        set.uv_tiles = vec![1001, 1002];
+        set.resolution = 64;
+        set.tile_resolutions.insert(1002, 32);
+        fixture.gbuf = UvGBuffer::new(&fixture.mesh, 0, 128, 64);
+        let block_scales = set.block_scales();
+        let images = ImageStore::default();
+        let inputs = Inputs {
+            project: &fixture.project,
+            ts: 0,
+            mesh: &fixture.mesh,
+            gbuf: &fixture.gbuf,
+            pixels: &fixture.pixels,
+            baked: &fixture.baked,
+            block_scales,
+            preview: None,
+            images: &images,
+            bounds: fixture.mesh.bounds(),
+        };
+
+        assert_eq!(inputs.tile_res_at(0, 0), 64);
+        assert_eq!(inputs.tile_res_at(64, 0), 32);
+
+        let mut pattern = Procedural::new(ProceduralKind::Checker);
+        pattern.resolution.factor = -1;
+
+        assert_eq!(pattern_pixels(&pattern, inputs.tile_res_at(0, 0), 64), Some(32));
+        assert_eq!(pattern_pixels(&pattern, inputs.tile_res_at(64, 0), 64), Some(16));
     }
 
     fn fill_layer(p: &mut Project, color: [f32; 3], rough: f32) -> LayerId {

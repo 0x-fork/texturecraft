@@ -25,6 +25,7 @@ fn harness(render: bool) -> (Harness<'static, TextureCraftApp>, LayerId) {
     let builder = Harness::builder().with_size(egui::vec2(1600.0, 2400.0));
     let builder = if render { builder.wgpu() } else { builder };
     let mut harness = builder.build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.prefs.language = "en".into();
     harness.state_mut().ui.dock.close(Panel::Layers);
     harness.state_mut().ui.dock.close(Panel::TextureSetSettings);
     harness.state_mut().ui.dock.focus(Panel::Properties);
@@ -129,6 +130,7 @@ fn the_slot_names_the_mask_for_an_anchor_in_a_mask() {
     execute(&mut session, "effect.add.fill", &json!({"anchor": anchor})).unwrap();
     session.update();
     let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 2400.0)).build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.prefs.language = "en".into();
     harness.state_mut().ui.dock.focus(Panel::Properties);
     harness.run_steps(6);
 
@@ -191,6 +193,36 @@ fn a_gray_value_typed_in_its_field_applies() {
     harness.run_steps(3);
 
     assert_eq!(pattern(&harness, effect).tile.unwrap().background, 0.5);
+}
+
+#[test]
+fn typing_tile_contrast_then_clicking_invert_preserves_both_edits() {
+    let (mut harness, effect) = harness(false);
+    execute(&mut harness.state_mut().session, "effect.set", &json!({"effect": effect.0, "procedural": "Tile Generator"})).unwrap();
+    harness.run_steps(3);
+    let contrast = harness.get_by_label("Contrast");
+    contrast.scroll_to_me();
+    harness.run_steps(12);
+    let row = harness.get_by_label("Contrast").rect().center().y;
+    let at = harness.get_all(by().role(Role::TextInput)).find(|node| (node.rect().center().y - row).abs() < 4.0).unwrap().rect().center();
+
+    harness.drag_at(at);
+    harness.drop_at(at);
+    harness.run_steps(2);
+    for key in [egui::Key::End, egui::Key::Backspace, egui::Key::Backspace, egui::Key::Backspace, egui::Key::Backspace] {
+        harness.key_press(key);
+        harness.run_steps(1);
+    }
+    for character in "0.5".chars() {
+        harness.event(egui::Event::Text(character.to_string()));
+        harness.run_steps(1);
+    }
+    harness.get_by_label("Invert").click();
+    harness.run_steps(3);
+
+    let edited = pattern(&harness, effect);
+    assert_eq!(edited.tile.unwrap().contrast, 0.5);
+    assert!(edited.invert);
 }
 
 #[test]

@@ -28,6 +28,8 @@ const WAVES_BASE_CYCLES: f32 = 1.5;
 const WAVES_SPECIFIC_CYCLES: f32 = 6.0;
 /// Narrower than this, a size or a bevel is none
 const EPSILON: f32 = 1e-6;
+/// Valid tile settings reach at most three neighboring copies along an axis
+const MAX_PERIODIC_COPY: f32 = 3.0;
 
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
@@ -211,24 +213,45 @@ fn tile_value(
 
     let delta = Vec2::new(wrap(point.x - center.x, 1.0), wrap(point.y - center.y, 1.0));
     let turns = (tile.rotation + tile.rotation_random * TileRandomStream::Rotation.draw(seed, index) * 360.0) / 360.0;
-    let mut local = unrotate(delta, turns) * 2.0 / size;
-    for _ in 0..quarter_turns(tile, seed, (column, row), index) {
-        local = Vec2::new(local.y, -local.x);
-    }
+    let (sin, cos) = (turns * std::f32::consts::TAU).sin_cos();
+    let radius = Vec2::new(cos.abs() * size.x + sin.abs() * size.y, sin.abs() * size.x + cos.abs() * size.y) * 0.5;
+    let first = (-radius - delta).ceil().max(Vec2::splat(-MAX_PERIODIC_COPY));
+    let last = (radius - delta).floor().min(Vec2::splat(MAX_PERIODIC_COPY));
+    let quarter_turns = quarter_turns(tile, seed, (column, row), index);
     let mirrors = tile.symmetry_random * 0.5;
-    if tile.symmetry != TileSymmetry::Vertical && TileRandomStream::MirrorX.draw(seed, index) < mirrors {
-        local.x = -local.x;
-    }
-    if tile.symmetry != TileSymmetry::Horizontal && TileRandomStream::MirrorY.draw(seed, index) < mirrors {
-        local.y = -local.y;
-    }
+    let mirror_x = tile.symmetry != TileSymmetry::Vertical && TileRandomStream::MirrorX.draw(seed, index) < mirrors;
+    let mirror_y = tile.symmetry != TileSymmetry::Horizontal && TileRandomStream::MirrorY.draw(seed, index) < mirrors;
 
     let input = match tile.input_distribution {
         _ if inputs.is_empty() => None,
         TileInputDistribution::Random => inputs.get((TileRandomStream::Input.draw(seed, index) * inputs.len() as f32) as usize).copied().flatten(),
         TileInputDistribution::ByNumber => inputs.get(number as usize % inputs.len()).copied().flatten(),
     };
-    let value = pattern(tile, local, input);
+    let mut value = 0.0f32;
+    // A rotated shape may cross a repeat boundary even when the nearest copy misses it
+    for copy_y in first.y as i32..=last.y as i32 {
+        let y = delta.y + copy_y as f32;
+        if y.abs() > radius.y {
+            continue;
+        }
+        for copy_x in first.x as i32..=last.x as i32 {
+            let x = delta.x + copy_x as f32;
+            if x.abs() > radius.x {
+                continue;
+            }
+            let mut local = Vec2::new(cos * x + sin * y, -sin * x + cos * y) * 2.0 / size;
+            for _ in 0..quarter_turns {
+                local = Vec2::new(local.y, -local.x);
+            }
+            if mirror_x {
+                local.x = -local.x;
+            }
+            if mirror_y {
+                local.y = -local.y;
+            }
+            value = value.max(pattern(tile, local, input));
+        }
+    }
     if value <= 0.0 {
         return None;
     }
@@ -408,6 +431,39 @@ mod tests {
 
     fn at(tile: &TileGenerator, x: f32, y: f32) -> f32 {
         value(tile, Vec2::new(x, y), 1, None)
+    }
+
+    #[test]
+    fn rotated_tiles_cover_the_repeat_boundary_once() {
+        let tile = TileGenerator {
+            shape: TileShape::Square,
+            amount: [1, 1],
+            size_mode: TileSizeMode::NormalSize,
+            size: [1.0, 0.1],
+            scale: 2.0,
+            rotation: 45.0,
+            blending: TileBlending::Add,
+            ..TileGenerator::default()
+        };
+
+        assert!(at(&tile, 0.99, 0.01) > 0.99);
+        assert!(at(&tile, 0.99, 0.01) <= 1.0);
+    }
+
+    #[test]
+    fn overlapping_periodic_copies_contribute_one_tile_value() {
+        let tile = TileGenerator {
+            shape: TileShape::Square,
+            amount: [1, 1],
+            size_mode: TileSizeMode::NormalSize,
+            size: [1.0, 1.0],
+            scale: 2.0,
+            color: 0.4,
+            blending: TileBlending::Add,
+            ..TileGenerator::default()
+        };
+
+        assert!((at(&tile, 0.5, 0.5) - 0.4).abs() < EPSILON);
     }
 
     /// Bell shapes peak only at their tile's center, so the brightest texel of a cell shows where its tile is

@@ -174,7 +174,7 @@ fn tile_parameters(app: &mut TextureCraftApp, ui: &mut Ui, target: &PatternTarge
     let mut edits = TileEdits::default();
     let mut invert = pattern.invert;
     if ui.checkbox(&mut invert, tr("Invert")).changed() {
-        send(app, target, &Procedural { invert, ..pattern.clone() }, json!({}));
+        edits.merge = Some(false);
     }
     edits.slider(ui, tr("Position"), "position", tile.position, 0.0..=1.0);
     edits.slider(ui, tr("Contrast"), "contrast", tile.contrast, 0.0..=1.0);
@@ -205,7 +205,8 @@ fn tile_parameters(app: &mut TextureCraftApp, ui: &mut Ui, target: &PatternTarge
     });
 
     if let Some(merge) = edits.merge {
-        send(app, target, pattern, json!({"tile": Value::Object(edits.settings), "merge": merge}));
+        let edited = (invert != pattern.invert).then(|| Procedural { invert, ..pattern.clone() });
+        send(app, target, edited.as_ref().unwrap_or(pattern), json!({"tile": Value::Object(edits.settings), "merge": merge}));
     }
 }
 
