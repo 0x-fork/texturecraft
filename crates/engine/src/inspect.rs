@@ -10,13 +10,24 @@ use crate::session::StackTarget;
 fn source_json(s: &Source) -> Value {
     match s {
         Source::Uniform(v) => json!({ "uniform": v }),
-        Source::Procedural { pattern, low, high } => json!({
-            "procedural": pattern.kind.label(), "scale": pattern.scale, "seed": pattern.seed, "contrast": pattern.contrast, "low": low, "high": high
-        }),
+        Source::Procedural { pattern, low, high, ramp } => with_ramp(
+            json!({
+                "procedural": pattern.kind.label(), "scale": pattern.scale, "seed": pattern.seed, "contrast": pattern.contrast, "low": low, "high": high
+            }),
+            ramp,
+        ),
         Source::Image { name, normal_format: NormalFormat::OpenGl } => json!({ "image": name }),
         Source::Image { name, normal_format: NormalFormat::DirectX } => json!({ "image": name, "normalFormat": "directX" }),
-        Source::Anchor { anchor, channel } => json!({ "anchor": anchor.0, "channel": channel.id() }),
+        Source::Anchor { anchor, channel, ramp } => with_ramp(json!({ "anchor": anchor.0, "channel": channel.id() }), ramp),
     }
+}
+
+/// `v` with the gradient map stops of its source as `colors`, when it has any.
+fn with_ramp(mut v: Value, ramp: &[[f32; 3]]) -> Value {
+    if !ramp.is_empty() {
+        v["colors"] = json!(ramp);
+    }
+    v
 }
 
 fn fill_json(f: &Fill) -> Value {
@@ -193,10 +204,12 @@ pub fn session(s: &Session) -> Value {
         "bakeMeshes": crate::bake::meshes_json(s),
         "activeTextureSet": ts,
         "selectedLayer": s.selected_layer().map(|l| l.0),
+        "selectedLayers": crate::layer_selection::ids_json(&s.selected_layers()),
         "target": match s.target { StackTarget::Content => json!("content"), StackTarget::Mask => json!("mask"), StackTarget::Effect(e) => json!(e.0) },
         "layers": stack(s, ts),
         "tool": { "tool": s.tool.tool.id(), "brush": crate::tool_cmds::brush_json(s) },
         "view": s.view.label(),
+        "solo": s.solo.map(|solo| json!({ "layer": solo.layer.0, "ignoreMask": solo.ignore_mask })),
         "bakePreview": crate::bake_preview::preview_json(s),
         "camera": crate::view_cmds::camera_json(s),
         "display": s.doc.project.display,
