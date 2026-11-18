@@ -354,15 +354,16 @@ const TYPE_DROPDOWN: [&str; 10] =
     ["Materials", "Smart materials", "Smart masks", "Filters", "Brushes", "Alphas", "Textures", "Environments", "Fonts", "Show all"];
 
 /// The node labelled `label` added last (a popup's entry is newer than any other with its label)
-fn newest<'a>(harness: &'a Harness<'_, TextureCraftApp>, label: &'a str) -> egui_kittest::Node<'a> {
+fn latest_node_with_label<'a>(harness: &'a Harness<'_, TextureCraftApp>, label: &'a str) -> egui_kittest::Node<'a> {
     harness.get_all_by_label(label).last().unwrap_or_else(|| panic!("no {label}"))
 }
 
 /// Hover `label` long enough for its tooltip and tell whether the "Not available yet" hint shows
 fn shows_not_available(harness: &mut Harness<'_, TextureCraftApp>, label: &str) -> bool {
-    let center = newest(harness, label).rect().center();
+    let center = latest_node_with_label(harness, label).rect().center();
     harness.hover_at(center);
     harness.run_steps(30);
+
     harness.query_by_label("Not available yet").is_some()
 }
 
@@ -372,10 +373,10 @@ fn the_type_dropdown_lists_the_reference_entries_in_order() {
     button(&harness, "Filter by type").click();
     harness.run_steps(3);
 
-    let tops: Vec<f32> = TYPE_DROPDOWN.iter().map(|label| newest(&harness, label).rect().top()).collect();
+    let tops: Vec<f32> = TYPE_DROPDOWN.iter().map(|label| latest_node_with_label(&harness, label).rect().top()).collect();
     assert!(tops.windows(2).all(|pair| pair[0] < pair[1]), "the entries run top to bottom in the reference order: {tops:?}");
     for label in TYPE_DROPDOWN {
-        let disabled = newest(&harness, label).accesskit_node().is_disabled();
+        let disabled = latest_node_with_label(&harness, label).accesskit_node().is_disabled();
         assert_eq!(disabled, label == "Fonts", "only Fonts is greyed: {label}");
     }
     assert!(shows_not_available(&mut harness, "Fonts"), "Fonts explains why it is greyed");
@@ -387,10 +388,10 @@ fn show_all_unpicks_the_type() {
     button(&harness, "Filter by type").click();
     harness.run_steps(3);
 
-    newest(&harness, "Show all").click();
+    latest_node_with_label(&harness, "Show all").click();
     harness.run_steps(3);
 
-    assert_eq!(harness.state().ui.shelf_tab, TYPE_DROPDOWN.len() - 2, "no type is picked");
+    assert!(harness.query_by_label(SMART_MASKS[0].label).is_some(), "Show all restores assets from another type");
 }
 
 #[test]
@@ -403,17 +404,24 @@ fn the_panes_list_the_reference_rows_and_grey_the_missing_ones() {
     let saved = ["SAVED SEARCHES", "All", "Favorites", "3D Assets", "Flattened layers"];
     let paths = ["FILTER BY PATH", "All libraries", "Project", "Starter assets", "Your assets", "System fonts", "User fonts"];
     for rows in [&saved[..], &paths[..]] {
-        let tops: Vec<f32> = rows.iter().map(|label| newest(&harness, label).rect().top()).collect();
+        let tops: Vec<f32> = rows.iter().map(|label| latest_node_with_label(&harness, label).rect().top()).collect();
         assert!(tops.windows(2).all(|pair| pair[0] < pair[1]), "{rows:?} run top to bottom: {tops:?}");
     }
     for label in ["Favorites", "3D Assets", "Flattened layers", "System fonts", "User fonts"] {
-        assert!(newest(&harness, label).accesskit_node().is_disabled(), "{label} is greyed");
+        assert!(latest_node_with_label(&harness, label).accesskit_node().is_disabled(), "{label} is greyed");
     }
     for label in ["All", "All libraries", "Project", "Starter assets", "Your assets"] {
-        assert!(!newest(&harness, label).accesskit_node().is_disabled(), "{label} works");
+        assert!(!latest_node_with_label(&harness, label).accesskit_node().is_disabled(), "{label} works");
     }
     assert!(shows_not_available(&mut harness, "Flattened layers"), "a greyed saved search explains itself");
     assert!(shows_not_available(&mut harness, "User fonts"), "a greyed library explains itself");
+
+    button(&harness, "Hide non-applicable folders").click();
+    harness.run_steps(3);
+
+    assert!(harness.query_by_label("System fonts").is_none());
+    assert!(harness.query_by_label("User fonts").is_none());
+    assert!(harness.query_by_label("Starter assets").is_some());
 }
 
 #[test]
@@ -422,18 +430,24 @@ fn the_splitter_resizes_both_panes_and_the_split_is_saved() {
     harness.state_mut().ui.shelf_panes.saved_searches = true;
     harness.state_mut().ui.shelf_panes.filter_by_path = true;
     harness.run_steps(3);
-    let split = harness.state().ui.shelf_panes_split;
+
+    let initial_share = harness.state().ui.shelf_panes_split;
     let heading = harness.get_by_label("FILTER BY PATH").rect();
     let save_button = harness.get_by_label("Save the current search").rect().top();
     assert!(heading.top() > save_button, "the path pane sits below the saved searches");
 
-    // The splitter is the strip right above the path pane's heading
-    let from = egui::pos2(heading.left() + 20.0, heading.top() - 8.0);
-    let to = from + egui::vec2(0.0, 120.0);
+    const DRAG_DISTANCE_POINTS: f32 = 120.0;
+    const POSITION_TOLERANCE_POINTS: f32 = 2.0;
+    let divider = harness.get_by_label("Resize Assets filter panes").rect();
+    let from = egui::pos2(divider.center().x, divider.top() + 1.0);
+    let to = from + egui::vec2(0.0, DRAG_DISTANCE_POINTS);
     harness.hover_at(from);
     harness.run_steps(1);
     harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
     harness.run_steps(2);
+
+    assert_eq!(harness.state().ui.shelf_panes_split, initial_share, "an off-center press leaves the splitter in place");
+
     for step in 1..=4 {
         harness.hover_at(from + (to - from) * (step as f32 / 4.0));
         harness.run_steps(1);
@@ -442,16 +456,85 @@ fn the_splitter_resizes_both_panes_and_the_split_is_saved() {
     harness.run_steps(3);
 
     let moved = harness.get_by_label("FILTER BY PATH").rect();
-    assert!((moved.top() - heading.top() - 120.0).abs() < 2.0, "the path pane starts 120 points lower: {heading:?} to {moved:?}");
-    assert!(harness.state().ui.shelf_panes_split > split, "saved searches take a larger share");
+    assert!((moved.top() - heading.top() - DRAG_DISTANCE_POINTS).abs() < POSITION_TOLERANCE_POINTS, "the path pane follows the drag: {heading:?} to {moved:?}");
+    assert!(harness.state().ui.shelf_panes_split > initial_share, "saved searches take a larger share");
     assert!(harness.query_by_label("User fonts").is_some(), "the shorter path pane still lists its rows");
 
-    // The split is part of the saved UI state, and a state saved before the splitter loads the default
+    // States saved before the splitter existed still load the default
     let saved = serde_json::to_value(&harness.state().ui).unwrap();
     let restored: texturecraft_ui_egui::state::UiState = serde_json::from_value(saved.clone()).unwrap();
     assert_eq!(restored.shelf_panes_split, harness.state().ui.shelf_panes_split);
     let mut older = saved;
     assert!(older.as_object_mut().unwrap().remove("shelf_panes_split").is_some(), "the saved state names the split");
     let restored: texturecraft_ui_egui::state::UiState = serde_json::from_value(older).unwrap();
-    assert_eq!(restored.shelf_panes_split, split);
+    assert_eq!(restored.shelf_panes_split, initial_share);
+}
+
+#[test]
+fn the_smallest_saved_search_pane_can_scroll_to_and_select_the_last_query() {
+    let mut harness = shelf(REFERENCE_WINDOW);
+    harness.state_mut().ui.shelf_panes.saved_searches = true;
+    harness.state_mut().ui.shelf_panes.filter_by_path = true;
+    harness.state_mut().ui.shelf_panes_split = 0.0;
+    harness.state_mut().ui.shelf_saved_searches =
+        vec![SavedSearch { name: "Rust search".into(), filter: "rust".into(), tab: MATERIALS_TYPE, path: Vec::new() }];
+    harness.run_steps(3);
+
+    scroll_pane_to_end(&mut harness, "SAVED SEARCHES");
+
+    let last_row = harness.get_by_label("Rust search").rect();
+    let next_heading = harness.get_by_label("FILTER BY PATH").rect();
+    assert!(last_row.center().y < next_heading.top(), "the final search should be inside its pane: {last_row:?}");
+
+    harness.get_by_label("Rust search").click();
+    harness.run_steps(3);
+
+    assert_eq!(harness.state().ui.shelf_filter, "rust");
+}
+
+#[test]
+fn the_smallest_path_pane_can_scroll_to_its_last_library() {
+    let mut harness = shelf(REFERENCE_WINDOW);
+    harness.state_mut().ui.shelf_panes.saved_searches = true;
+    harness.state_mut().ui.shelf_panes.filter_by_path = true;
+    harness.state_mut().ui.shelf_panes_split = 1.0;
+    harness.run_steps(3);
+
+    scroll_pane_to_end(&mut harness, "FILTER BY PATH");
+
+    let last_row = harness.get_by_label("User fonts").rect();
+    let toolbar = button(&harness, "Filter by path").rect();
+    assert!(last_row.center().y < toolbar.top(), "the final library should be above the toolbar: {last_row:?}");
+}
+
+fn scroll_pane_to_end(harness: &mut Harness<'_, TextureCraftApp>, heading: &str) {
+    let heading = harness.get_by_label(heading).rect();
+    harness.hover_at(egui::pos2(heading.left() + 24.0, heading.bottom() + 12.0));
+    harness.run_steps(1);
+
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, -1000.0),
+        phase: egui::TouchPhase::Move,
+        source: egui::MouseWheelSource::Wheel,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(8);
+}
+
+#[test]
+fn the_splitter_is_exposed_as_a_resizable_control() {
+    let mut harness = shelf(REFERENCE_WINDOW);
+    harness.state_mut().ui.shelf_panes.saved_searches = true;
+    harness.state_mut().ui.shelf_panes.filter_by_path = true;
+    harness.run_steps(3);
+
+    let before = harness.state().ui.shelf_panes_split;
+
+    let divider = harness.get_by_label("Resize Assets filter panes");
+    assert_eq!(divider.accesskit_node().role(), egui::accesskit::Role::Splitter);
+    divider.increment_accesskit();
+    harness.run_steps(3);
+
+    assert!(harness.state().ui.shelf_panes_split > before);
 }
