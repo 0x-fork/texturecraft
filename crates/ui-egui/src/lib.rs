@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod angle_dial;
 mod ask;
 mod bake_job;
 pub mod bake_mode;
@@ -19,10 +20,13 @@ pub mod docking;
 pub mod export_templates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file_dialogs;
+mod fill_source_slot;
+mod fill_source_target;
 mod filter_slot;
 pub mod fonts;
 mod generator_panel;
 pub mod gpu;
+mod gray_slider;
 mod grid_tile;
 pub mod i18n;
 pub mod id_color_pick;
@@ -49,6 +53,8 @@ mod orb_shape;
 pub mod parity;
 mod path_hit;
 mod path_surface_cache;
+mod pattern_panel;
+mod pattern_target;
 pub mod pbr_import;
 mod preview_image;
 mod preview_request;
@@ -59,8 +65,13 @@ mod project_config;
 pub mod properties_popup;
 mod rail_popup;
 pub mod render_mode;
+mod resource_panel;
 mod resource_picker;
+mod resource_picker_anchor;
+mod resource_picker_choice;
 mod resource_picker_item;
+mod resource_picker_tab;
+mod resource_picker_tile;
 mod running_bake;
 pub mod saved_search;
 mod screen_color_pick;
@@ -80,6 +91,7 @@ mod surface_paint_point;
 pub mod symmetry;
 pub mod theme;
 pub mod thumbs;
+mod tile_edits;
 pub mod titlebar;
 pub mod toolbar;
 pub mod ui_state_store;
@@ -871,6 +883,7 @@ impl eframe::App for TextureCraftApp {
                 toolbar::rail(self, ui);
             }
         }
+
         let hide_ui = self.ui.hide_ui;
         let tokens = theme::Tokens::get(&ctx);
 
@@ -878,6 +891,10 @@ impl eframe::App for TextureCraftApp {
         let panel_frame = if hide_ui { egui::Frame::NONE.fill(tokens.viewport) } else { egui::Frame::NONE.fill(tokens.chrome).inner_margin(theme::GUTTER) };
         egui::CentralPanel::default().frame(panel_frame).show(ui, |ui| if hide_ui { viewport::central(self, ui) } else { docking::show(self, ui) });
         windows::show(self, &ctx);
+
+        // Finish after the dock and windows have requested their thumbnails
+        self.layer_panel.end(&ctx, &self.session);
+
         #[cfg(not(target_arch = "wasm32"))]
         updates_ui::show(self, &ctx);
         toasts(self, &ctx);

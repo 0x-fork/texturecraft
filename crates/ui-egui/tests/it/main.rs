@@ -71,3 +71,4 @@ mod user_smart_mask;
 mod stencil;
 mod symmetry;
 mod symmetry_2d;
+mod tile_generator_panel;
