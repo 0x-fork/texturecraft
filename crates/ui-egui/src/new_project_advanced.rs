@@ -44,9 +44,10 @@ const FILE_LIST_HEIGHT_POINTS: f32 = 120.0;
 /// Width of the Cancel and Create buttons
 const BUTTON_WIDTH_POINTS: f32 = 90.0;
 
-/// File > New project...: a fresh form (files listed for a failed baked map import stay listed).
+/// File > New project...: start a fresh form, carrying over failed imports from a closed form.
 pub(crate) fn open(app: &mut TextureCraftApp) {
-    let baked_maps = std::mem::take(&mut app.ui.new_project.baked_maps);
+    let baked_maps = if app.ui.windows.new_project { Vec::new() } else { std::mem::take(&mut app.ui.new_project.baked_maps) };
+
     app.ui.new_project = NewProject { baked_maps, opening_id: next_request_id(), ..NewProject::default() };
     app.ui.windows.new_project = true;
 }
@@ -94,6 +95,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     });
 
     if cancel || !open {
+        app.ui.new_project.baked_maps = Vec::new();
         close(app);
     } else if create && app.ui.windows.unsaved.is_none() {
         let opening_id = app.ui.new_project.opening_id;

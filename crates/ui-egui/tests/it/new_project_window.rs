@@ -8,6 +8,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use texturecraft_engine::template_cmds::DEFAULT_TEMPLATE;
 use texturecraft_ui_egui::TextureCraftApp;
+use texturecraft_ui_egui::file_dialogs::Answer;
 use texturecraft_ui_egui::new_project_advanced::create_command;
 use texturecraft_ui_egui::project_form::{NOT_AVAILABLE, OCIO_NOT_AVAILABLE};
 
@@ -236,7 +237,7 @@ fn opencolorio_shows_its_settings_disabled_and_creates_legacy() {
 }
 
 #[test]
-fn the_menu_opens_a_fresh_form() {
+fn the_menu_opens_a_fresh_form_after_cancel() {
     let mut h = harness();
     {
         let form = &mut h.state_mut().ui.new_project;
@@ -244,10 +245,12 @@ fn the_menu_opens_a_fresh_form() {
         form.resolution = 4096;
         form.uv_tiles = Some(true);
         form.import_cameras = false;
-        form.baked_maps = vec!["/maps/Ball_normal.png".into()];
     }
-    h.state_mut().ui.windows.new_project = false;
-    h.run_steps(2);
+    queue_baked_maps(&mut h);
+
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    h.run_steps(3);
+    assert!(!h.state().ui.windows.new_project);
     let ctx = h.ctx.clone();
     texturecraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "ui.newProject");
     h.run_steps(3);
@@ -255,7 +258,46 @@ fn the_menu_opens_a_fresh_form() {
     let form = &h.state().ui.new_project;
     assert_eq!((form.file.as_deref(), form.resolution, form.uv_tiles, form.import_cameras), (None, 1024, None, true));
     assert_eq!(form.template, DEFAULT_TEMPLATE);
-    assert_eq!(form.baked_maps, ["/maps/Ball_normal.png"], "files kept after a failed import stay listed");
+    assert!(form.baked_maps.is_empty(), "canceled files stayed queued: {:?}", form.baked_maps);
+    assert!(h.query_by_label("Ball_normal.png").is_none());
+}
+
+fn queue_baked_maps(h: &mut Harness<'_, TextureCraftApp>) {
+    h.state_mut().file_dialogs.set_override(Some(Box::new(|_| {
+        Answer::Paths(["Ball_normal.png", "Ball_ao.png", "Ball_curvature.png"].into_iter().map(std::path::PathBuf::from).collect())
+    })));
+    h.get_by_role_and_label(Role::Button, "Add").click();
+    h.run_steps(3);
+
+    h.get_by_label("Ball_normal.png");
+    h.get_by_label("Ball_ao.png");
+    h.get_by_label("Ball_curvature.png");
+}
+
+#[test]
+fn closing_the_form_from_its_title_bar_discards_baked_maps() {
+    let mut h = harness();
+    queue_baked_maps(&mut h);
+
+    h.get_by_role_and_label(Role::Button, "Close window").click();
+    h.run_steps(3);
+
+    assert!(!h.state().ui.windows.new_project);
+    assert!(h.state().ui.new_project.baked_maps.is_empty());
+}
+
+#[test]
+fn invoking_new_project_again_discards_the_open_forms_baked_maps() {
+    let mut h = harness();
+    queue_baked_maps(&mut h);
+
+    let ctx = h.ctx.clone();
+    texturecraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "ui.newProject");
+    h.run_steps(3);
+
+    assert!(h.state().ui.windows.new_project);
+    assert!(h.query_by_label("Ball_normal.png").is_none());
+    assert!(h.state().ui.new_project.baked_maps.is_empty());
 }
 
 #[test]
@@ -372,16 +414,26 @@ fn create_asks_before_discarding_edits_made_after_the_form_opened() {
 }
 
 #[test]
-fn a_layout_that_closes_new_project_releases_the_selected_mesh() {
+fn a_layout_that_closes_new_project_discards_selected_files() {
     let mut h = harness();
+    queue_baked_maps(&mut h);
     let bytes = std::sync::Arc::new(vec![0; 1024 * 1024]);
     let buffer = std::sync::Arc::downgrade(&bytes);
     let ui = &mut h.state_mut().ui;
     ui.new_project.file = Some("reset.obj".into());
     ui.new_project.file_bytes = Some(bytes);
 
+    let mut open_layout = texturecraft_ui_egui::UiState::default();
+    open_layout.windows.new_project = true;
+    ui.adopt_layout(open_layout);
+
+    assert!(ui.windows.new_project);
+    assert!(buffer.upgrade().is_some());
+    assert!(!ui.new_project.baked_maps.is_empty());
+
     ui.adopt_layout(texturecraft_ui_egui::UiState::default());
 
     assert!(!ui.windows.new_project);
     assert!(buffer.upgrade().is_none());
+    assert!(ui.new_project.baked_maps.is_empty());
 }

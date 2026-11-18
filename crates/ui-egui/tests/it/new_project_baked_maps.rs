@@ -112,6 +112,15 @@ fn a_failed_import_keeps_the_file_list_and_created_project() {
     assert!(app.session.doc.baked.values().all(|baked| baked.maps.is_empty()));
     let toast = app.toasts.last().unwrap();
     assert!(toast.error && toast.text.contains("Base_ao.png"), "{}", toast.text);
+
+    h.state_mut().ui.adopt_layout(texturecraft_ui_egui::UiState::default());
+    let ctx = h.ctx.clone();
+    texturecraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "ui.newProject");
+    h.run_steps(3);
+
+    assert_eq!(h.state().ui.new_project.baked_maps, paths);
+    h.get_by_label("Ball_normal.png");
+    h.get_by_label("Base_ao.png");
 }
 
 #[test]
@@ -146,6 +155,22 @@ fn new_project_baked_maps_snapshots() {
     h.run_steps(3);
     assert!(h.state().session.doc.baked[&0].maps.contains_key(&BakedMap::Normal));
     h.render().unwrap().save(output_dir.join("new-project-imported.png")).unwrap();
+
+    let ctx = h.ctx.clone();
+    texturecraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "ui.newProject");
+    let paths = bake_files(&dir, &["Ball_normal.png"]);
+    add_baked_map_files(&mut h.state_mut().ui.new_project, paths);
+    h.run_steps(6);
+    h.get_by_label("Ball_normal.png");
+
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(!h.state().ui.windows.new_project);
+    texturecraft_ui_egui::menus::invoke(h.state_mut(), &ctx, "ui.newProject");
+    h.run_steps(6);
+
+    assert!(h.query_by_label("Ball_normal.png").is_none());
+    h.render().unwrap().save(output_dir.join("new-project-after-cancel.png")).unwrap();
 }
 
 #[test]
