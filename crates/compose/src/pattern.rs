@@ -484,6 +484,11 @@ fn plane_value(pattern: &Procedural, point: Vec3, context: &PatternContext) -> f
     let Some(cells) = cells else { return pattern_value(pattern, point, context) };
 
     let grid = point.truncate() * cells - 0.5;
+    // A point so far out that the grid overflows has no neighbours to blend: read it exactly
+    if !grid.is_finite() {
+        return pattern_value(pattern, point, context);
+    }
+
     let base = grid.floor();
     let fraction = grid - base;
     let at = |dx: f32, dy: f32| pattern_value(pattern, ((base + Vec2::new(dx, dy) + 0.5) / cells).extend(point.z), context);
@@ -857,6 +862,23 @@ mod tests {
                 for shift in [Vec3::X, Vec3::Y, Vec3::new(-2.0, 3.0, 0.0)] {
                     let (here, there) = (raw(kind, p, 7), raw(kind, p + shift, 7));
                     assert!((here - there).abs() < 2e-3, "{kind:?}: {here} at {p}, {there} at {}", p + shift);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_pattern_read_from_a_coarse_image_takes_extreme_coordinates() {
+        let coarse = PatternContext { pixels: Some(4), ..PatternContext::default() };
+        let exact = PatternContext::default();
+        for kind in ProceduralKind::ALL {
+            let pattern = Procedural::new(kind);
+            for x in [f32::MAX, -f32::MAX, f32::INFINITY, f32::NEG_INFINITY] {
+                let point = Vec3::new(x, 0.125, 0.0);
+                // Whatever a pattern does with such a point exactly, the blend must not make it worse
+                if pattern_value(&pattern, point, &exact).is_finite() {
+                    let value = plane_value(&pattern, point, &coarse);
+                    assert!(value.is_finite(), "{kind:?} at x = {x}: {value}");
                 }
             }
         }
