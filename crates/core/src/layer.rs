@@ -274,10 +274,36 @@ pub enum ProceduralKind {
     DiamondBrocade,
     /// Truchet tiles: quarter-circle arcs that join into winding paths.
     TruchetArcs,
+    /// Long smooth locks of fur, shaded like a height map.
+    SmoothFur,
+    /// Crowded soft cloudlets over a dark sky.
+    MackerelSky,
+    /// Warped clouds crossed by fine strands.
+    Billow,
+    /// Overlapping reptile scales, domed and lit from above.
+    ReptileScales,
+    /// Young bark: tall plates parted by wandering furrows (0 = furrow).
+    Bark,
+    /// A labyrinth of rounded walls, like brain coral.
+    CoralMaze,
+    /// Four flat tones of interlocking blotches, for camouflage.
+    Camouflage,
+    /// Stockinette knit: V-shaped stitches of twisted yarn.
+    Knit,
+    /// A basket weave: threads in pairs, alternately across and down.
+    BasketWeave,
+    /// A goose-eye twill: diagonal ribs that turn back into small diamonds.
+    GooseEye,
+    /// Raw silk with slubs: threads that swell here and there.
+    SlubSilk,
+    /// Strip flooring: long boards with staggered butt joints (0 = gap).
+    StripFlooring,
+    /// Wood grain that bends around knots.
+    KnottyWood,
 }
 
 impl ProceduralKind {
-    pub const ALL: [ProceduralKind; 29] = [
+    pub const ALL: [ProceduralKind; 42] = [
         ProceduralKind::Clouds,
         ProceduralKind::Perlin,
         ProceduralKind::Noise,
@@ -307,6 +333,19 @@ impl ProceduralKind {
         ProceduralKind::HalftoneDots,
         ProceduralKind::DiamondBrocade,
         ProceduralKind::TruchetArcs,
+        ProceduralKind::SmoothFur,
+        ProceduralKind::MackerelSky,
+        ProceduralKind::Billow,
+        ProceduralKind::ReptileScales,
+        ProceduralKind::Bark,
+        ProceduralKind::CoralMaze,
+        ProceduralKind::Camouflage,
+        ProceduralKind::Knit,
+        ProceduralKind::BasketWeave,
+        ProceduralKind::GooseEye,
+        ProceduralKind::SlubSilk,
+        ProceduralKind::StripFlooring,
+        ProceduralKind::KnottyWood,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -339,6 +378,19 @@ impl ProceduralKind {
             ProceduralKind::HalftoneDots => "Halftone dots",
             ProceduralKind::DiamondBrocade => "Diamond brocade",
             ProceduralKind::TruchetArcs => "Truchet arcs",
+            ProceduralKind::SmoothFur => "Smooth fur",
+            ProceduralKind::MackerelSky => "Mackerel sky",
+            ProceduralKind::Billow => "Soft billow",
+            ProceduralKind::ReptileScales => "Reptile scales",
+            ProceduralKind::Bark => "Young bark",
+            ProceduralKind::CoralMaze => "Coral maze",
+            ProceduralKind::Camouflage => "Camouflage",
+            ProceduralKind::Knit => "Knit stitches",
+            ProceduralKind::BasketWeave => "Basket weave",
+            ProceduralKind::GooseEye => "Goose-eye twill",
+            ProceduralKind::SlubSilk => "Slub silk",
+            ProceduralKind::StripFlooring => "Strip flooring",
+            ProceduralKind::KnottyWood => "Knotty wood",
         }
     }
     pub fn parse(s: &str) -> Option<ProceduralKind> {

@@ -4,6 +4,8 @@ use texturecraft_core::{Decal, Procedural, ProceduralKind, Projection};
 use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_texel::noise;
 
+use crate::{fabric, organic, timber};
+
 /// Where a texel is, for pattern evaluation.
 #[derive(Clone, Copy, Debug)]
 pub struct Coords {
@@ -154,6 +156,19 @@ fn raw(kind: ProceduralKind, p: Vec3, seed: u32) -> f32 {
         ProceduralKind::HalftoneDots => halftone_dots(p, seed),
         ProceduralKind::DiamondBrocade => diamond_brocade(p),
         ProceduralKind::TruchetArcs => truchet_arcs(p, seed),
+        ProceduralKind::SmoothFur => organic::smooth_fur(p, seed),
+        ProceduralKind::MackerelSky => organic::mackerel_sky(p, seed),
+        ProceduralKind::Billow => organic::billow(p, seed),
+        ProceduralKind::ReptileScales => organic::reptile_scales(p, seed),
+        ProceduralKind::Bark => organic::bark(p, seed),
+        ProceduralKind::CoralMaze => organic::coral_maze(p, seed),
+        ProceduralKind::Camouflage => organic::camouflage(p, seed),
+        ProceduralKind::Knit => fabric::knit(p, seed),
+        ProceduralKind::BasketWeave => fabric::basket_weave(p, seed),
+        ProceduralKind::GooseEye => fabric::goose_eye(p, seed),
+        ProceduralKind::SlubSilk => fabric::slub_silk(p, seed),
+        ProceduralKind::StripFlooring => timber::strip_flooring(p, seed),
+        ProceduralKind::KnottyWood => timber::knotty_wood(p, seed),
     }
 }
 

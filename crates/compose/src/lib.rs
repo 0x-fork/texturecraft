@@ -13,11 +13,14 @@ mod curvature_size_level;
 pub mod curvature_sizes;
 pub mod display;
 pub mod eval;
+mod fabric;
 mod held_fields;
 mod image_identity;
+mod organic;
 pub mod pattern;
 pub mod store;
 pub mod thumb;
+mod timber;
 
 pub use below::{BelowCache, StackKey};
 pub use display::{DisplayKind, kinds_for, tile_bytes};
