@@ -59,6 +59,7 @@ A colour param is `[r, g, b]` in linear 0..1, or `"#rrggbb"` in sRGB, which is c
 linear. The same digits are two different colours: `"#c8102e"` is `[0.578, 0.005, 0.027]`, while
 `[0.784, 0.063, 0.180]` (its hex digits over 255) paints the lighter `#e54776`. Pass a colour from
 a design tool or a brand guide as hex. A single number is a linear grey.
+For a colour selection, `effect.set` accepts only linear `[r, g, b]` arrays in its `colors` list.
 
 `tool.cloneSource {uv: [u, v]}` (or `{x, y}` for a point on the mesh, or `{clear: true}`) sets the
 Clone tool's source. The source belongs to the active texture set: selecting another texture set
