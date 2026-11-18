@@ -275,6 +275,7 @@ fn brush(session: &mut Session, params: &Value) -> Result<Value> {
         && aligned != session.tool.clone_aligned
     {
         session.tool.clone_aligned = aligned;
+
         // A new mode starts without the offset of an earlier stroke
         if let Some(source) = session.tool.clone_source.as_mut() {
             source.offset = None;
@@ -318,11 +319,14 @@ fn material(s: &mut Session, p: &Value) -> Result<Value> {
         let values = crate::materials::brush_values(id).ok_or_else(|| {
             bad("tool.material", format!("`{id}` is not a simple material (a brush paints plain values; add smart materials with material.apply)"))
         })?;
-        // A channel the material does not set goes back to its default, so no value of the previous brush material stays; a normal map is painted flat
+
+        // Reset omitted channels so values from the previous brush material do not persist
+        // Normal maps remain flat
         for channel in Channel::ALL {
             if channel.kind() == texturecraft_core::ChannelKind::NormalMap {
                 continue;
             }
+
             let value = values.iter().find(|(set, _)| *set == channel).map_or(channel.default_value(), |(_, value)| *value);
             s.tool.values.insert(channel, value);
         }

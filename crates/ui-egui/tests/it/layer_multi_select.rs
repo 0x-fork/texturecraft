@@ -140,6 +140,7 @@ fn ctrl_a_over_the_layers_panel_selects_every_shown_row_but_not_the_layers_in_a_
 #[test]
 fn ctrl_a_leaves_text_fields_and_other_panels_alone() {
     let (mut h, [_, _, c, d]) = harness();
+
     // Pointer outside every panel: nothing is selected
     h.event(Event::PointerGone);
     h.run_steps(1);

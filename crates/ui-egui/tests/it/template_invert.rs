@@ -9,20 +9,16 @@ use texturecraft_ui_egui::TextureCraftApp;
 
 const TEMPLATE: &str = "Packed test";
 
-/// A temporary library folder removed when the test ends, also when it fails.
-struct Library(std::path::PathBuf);
+mod library;
 
-impl Drop for Library {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
+use library::Library;
 
 fn harness() -> (Harness<'static, TextureCraftApp>, Library) {
     let session = texturecraft_engine::sample_session(256, 64).unwrap();
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
     h.state_mut().ui.prefs.language = "en".into();
-    // The user's template library is a folder; use a temporary one, not the real one.
+
+    // The user's template library is a folder; use a temporary one, not the real one
     let dir = std::env::temp_dir().join(format!("texturecraft-template-invert-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     h.state_mut().session.load_export_presets(dir.clone());
@@ -63,6 +59,7 @@ fn invert_toggle_changes_the_saved_template() {
 
     let saved = |h: &Harness<'_, TextureCraftApp>| h.state().session.export_preset(TEMPLATE).unwrap().maps[0].inverted.clone();
     assert!(saved(&h).is_empty());
+
     // One Invert toggle per channel: R, G, B
     assert_eq!(toggles(&h).len(), 3);
     toggles(&h)[1].click();

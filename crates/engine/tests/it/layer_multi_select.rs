@@ -82,6 +82,7 @@ fn ctrl_click_adds_and_takes_out_one_layer() {
     click(&mut s, a, "ctrl");
     assert!(selected(&s).is_empty(), "Ctrl+click on the only selected layer leaves an empty selection");
     assert_eq!(s.selected_layer(), None);
+
     // The next Shift+click has no anchor and starts over at the clicked layer
     click(&mut s, c, "shift");
     assert_eq!(selected(&s), ["C"]);
@@ -179,6 +180,7 @@ fn duplicate_block_lands_at_the_topmost_layers_level_also_for_a_layer_from_a_fol
     let folder = id(execute(&mut s, "layer.add.group", &Value::Null).unwrap(), "layer");
     execute(&mut s, "layer.move", &json!({"layers": [a.0], "above": folder.0, "inside": true})).unwrap();
     assert_eq!(rows(&s)[..5], ["Folder 1", "A", "D", "C", "B"]);
+
     // The topmost selected row is A, inside the folder, so the block goes there
     execute(&mut s, "layer.select", &json!({"layers": [c.0, a.0]})).unwrap();
     execute(&mut s, "layer.duplicate", &Value::Null).unwrap();
@@ -193,6 +195,7 @@ fn duplicate_of_a_root_layer_and_a_folder_layer_with_the_root_one_higher() {
     let folder = id(execute(&mut s, "layer.add.group", &Value::Null).unwrap(), "layer");
     execute(&mut s, "layer.move", &json!({"layers": [a.0], "above": folder.0, "inside": true})).unwrap();
     execute(&mut s, "layer.move", &json!({"layers": [folder.0], "above": b.0})).unwrap();
+
     // Rows from the top: D, C, Folder 1 (A), B... select D (root, topmost) and A (in the folder)
     assert_eq!(rows(&s)[..5], ["D", "C", "Folder 1", "A", "B"]);
     execute(&mut s, "layer.select", &json!({"layers": [d.0, a.0]})).unwrap();
@@ -239,6 +242,7 @@ fn group_of_a_layer_inside_a_folder_and_one_outside_keeps_the_topmost_place() {
     let [x, y, z] = ["X", "Y", "Z"].map(|n| add(&mut s, n));
     let outer = id(execute(&mut s, "layer.add.group", &Value::Null).unwrap(), "layer");
     execute(&mut s, "layer.move", &json!({"layers": [y.0, z.0], "above": outer.0, "inside": true})).unwrap();
+
     // Rows from the top: Folder 1 (Z, Y), X
     assert_eq!(rows(&s)[..4], ["Folder 1", "Z", "Y", "X"]);
 
@@ -267,6 +271,7 @@ fn group_with_the_topmost_layer_at_the_root_takes_the_folder_layer_out_of_its_fo
     let [_x, fa, fb] = ["X", "Fill A", "Fill B"].map(|n| add(&mut s, n));
     let outer = id(execute(&mut s, "layer.add.group", &Value::Null).unwrap(), "layer");
     execute(&mut s, "layer.move", &json!({"layers": [fa.0, fb.0], "above": outer.0, "inside": true})).unwrap();
+
     // Folder 1 (Fill B, Fill A) at the root above X; add Fill 3 above the folder
     let f3 = add(&mut s, "Fill 3");
     execute(&mut s, "layer.move", &json!({"layers": [f3.0], "above": outer.0})).unwrap();
@@ -284,6 +289,7 @@ fn shift_range_counts_the_folder_row_and_skips_the_layers_of_a_collapsed_folder(
     let [a, b, c, d] = four(&mut s);
     let folder = id(execute(&mut s, "layer.add.group", &Value::Null).unwrap(), "layer");
     execute(&mut s, "layer.move", &json!({"layers": [b.0, c.0], "above": folder.0, "inside": true})).unwrap();
+
     // Rows from the top: Folder 1 (C, B), D, A... move the folder between D and A
     execute(&mut s, "layer.move", &json!({"layers": [folder.0], "above": a.0})).unwrap();
     assert_eq!(rows(&s)[..5], ["D", "Folder 1", "C", "B", "A"]);
@@ -344,6 +350,7 @@ fn visibility_of_several_layers_follows_the_layer_given_as_lead() {
     let mut s = session();
     let [a, b, c, _] = four(&mut s);
     execute(&mut s, "layer.visible", &json!({"layer": a.0, "visible": false})).unwrap();
+
     // The active layer is C (shown), but the eye of A (hidden) was clicked: all are shown
     execute(&mut s, "layer.select", &json!({"layers": [a.0, b.0, c.0], "layer": c.0})).unwrap();
     execute(&mut s, "layer.visible", &json!({"layers": [a.0, b.0, c.0], "layer": a.0})).unwrap();
@@ -394,6 +401,18 @@ fn selected_layers_moved_to_an_index_keep_their_order() {
         execute(&mut s, "layer.move", &json!({"layers": [d.0, lower.0], "index": 2})).unwrap();
         assert_eq!(rows(&s)[..5], expected, "D and {pair} to index 2");
     }
+}
+
+#[test]
+fn extreme_move_deltas_clamp_to_the_stack_ends() {
+    let mut session = session();
+    let [_, layer, ..] = four(&mut session);
+
+    execute(&mut session, "layer.move", &json!({"layer": layer.0, "delta": i64::MAX})).unwrap();
+    assert_eq!(rows(&session)[0], "B", "a large positive delta moves to the top");
+
+    execute(&mut session, "layer.move", &json!({"layer": layer.0, "delta": i64::MIN})).unwrap();
+    assert_eq!(rows(&session).last().map(String::as_str), Some("B"), "a large negative delta moves to the bottom");
 }
 
 #[test]
@@ -470,6 +489,7 @@ fn reselecting_an_earlier_active_layer_does_not_bring_back_its_multiple_selectio
     execute(&mut s, "effect.copy", &json!({ "effect": effect })).unwrap();
     execute(&mut s, "layer.select", &json!({"layers": [b.0, d.0], "layer": d.0})).unwrap();
     add(&mut s, "E");
+
     // Pasting the effect onto D selects D again, alone
     execute(&mut s, "effect.paste", &json!({"layer": d.0})).unwrap();
     assert_eq!(selected(&s), ["D"]);

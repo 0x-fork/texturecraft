@@ -746,6 +746,7 @@ pub(crate) mod tests {
         let loaded = store.load(Some(&storage)).expect("the old state loads");
 
         assert_eq!(loaded.tool_settings, texturecraft_engine::ToolSettings::default());
+
         // Nothing was unreadable, so nothing is kept beside the state on the next save
         assert!(store.unreadable.is_none());
     }

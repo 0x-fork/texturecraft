@@ -14,6 +14,10 @@ use texturecraft_texel::{TILE_AREA, TileImage, from_u16, to_u16};
 use crate::StampSource;
 use crate::commit::{dec, enc};
 
+mod lane;
+
+use lane::Lane;
+
 /// How a pickup stroke finds the values it deposits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PickupMode {
@@ -45,15 +49,6 @@ pub struct Pickup {
     /// Per-stamp scratch: texels that receive values, and the values read for them.
     reads: Vec<(u32, u32, f32)>,
     read_values: Vec<[f32; 3]>,
-}
-
-/// What one symmetry copy of a smudge stroke carries: its own previous stamp and its own deposits.
-#[derive(Clone, Debug)]
-struct Lane {
-    source: Option<StampSource>,
-    prev: Option<[f32; 2]>,
-    alpha: TileImage,
-    values: BTreeMap<Channel, TileImage>,
 }
 
 fn get(img: &TileImage, c: Channel, x: u32, y: u32) -> [f32; 3] {
@@ -130,6 +125,7 @@ impl Pickup {
         if texels.is_empty() {
             return false;
         }
+
         let mut lane = if self.isolated && matches!(self.mode, PickupMode::Smudge { .. }) { Some(self.take_lane(source, alpha)) } else { None };
         let (shift, strength, smudge) = match self.mode {
             PickupMode::Clone { offset } => (offset, 1.0, false),
@@ -140,11 +136,13 @@ impl Pickup {
                 };
                 let Some(prev) = prev else { return self.put_back(lane, false) };
                 let d = [center[0] - prev[0], center[1] - prev[1]];
-                // A jump (UV seam, lifted cursor) has nothing to drag along.
+
+                // A jump across a UV seam or lifted cursor has nothing to drag along
                 if d[0].hypot(d[1]) > extent(texels) {
                     return self.put_back(lane, false);
                 }
-                // shortcut: nearest-texel pickup; bilinear would smooth sub-texel stamp spacing.
+
+                // Nearest-texel pickup avoids smoothing sub-texel stamp spacing
                 ([-(d[0].round() as i64), -(d[1].round() as i64)], strength.clamp(0.0, 1.0), true)
             }
         };
@@ -152,17 +150,19 @@ impl Pickup {
         self.reads.clear();
         self.read_values.clear();
         for &(x, y, a) in texels {
-            let (sx, sy) = (i64::from(x) + shift[0], i64::from(y) + shift[1]);
+            // Saturate hostile offsets so the bounds check rejects them without overflow
+            let (sx, sy) = (i64::from(x).saturating_add(shift[0]), i64::from(y).saturating_add(shift[1]));
             if !(a > 0.0 && (0..w).contains(&sx) && (0..h).contains(&sy) && covered(&self.gbuf, sx as u32, sy as u32)) {
                 continue;
             }
+
             let (sx, sy) = (sx as u32, sy as u32);
             let a = a * strength * self.coverage.as_ref().map_or(1.0, |c| from_u16(c.get(sx, sy)[0]));
             if a <= 0.0 {
                 continue;
             }
-            // Smudge reads what the stroke shows so far (a copy: what it showed itself): carried
-            // values over the source.
+
+            // Each smudge copy reads its own deposits over the original source
             let (seen_alpha, seen_values) = match &lane {
                 Some(l) => (&l.alpha, &l.values),
                 None => (&*alpha, &self.values),
@@ -279,14 +279,31 @@ mod tests {
         let v = get(&p.values[&Channel::Roughness], Channel::Roughness, 45, 32);
         assert!((v[0] - 0.9).abs() < 1e-3, "{v:?}");
         assert!(from_u16(alpha.get(45, 32)[0]) > 0.99);
-        // Sources outside the image are skipped.
+
+        // Sources outside the image are skipped
         assert!(!p.stamp(&mut alpha, &disc(5, 5, 2), [5.0, 5.0], None));
+    }
+
+    #[test]
+    fn clone_skips_offsets_outside_the_coordinate_range() {
+        for offset in [[i64::MAX, 0], [0, i64::MAX], [i64::MIN, 0], [0, i64::MIN]] {
+            let (composite, gbuf) = setup(|_| 0.5);
+            let mut pickup = Pickup::new(PickupMode::Clone { offset }, composite, gbuf, [Channel::Roughness]);
+            let mut alpha = TileImage::new(TILE, TILE, 1);
+
+            let painted = pickup.stamp(&mut alpha, &[(1, 1, 1.0)], [1.0, 1.0], None);
+
+            assert!(!painted);
+            assert_eq!(alpha.allocated_count(), 0);
+            assert_eq!(pickup.values[&Channel::Roughness].allocated_count(), 0);
+        }
     }
 
     #[test]
     fn layer_clones_copy_only_where_the_layer_has_paint() {
         let (_, g) = setup(|_| 0.0);
-        // The layer: roughness 0.8 at half coverage on the left half (premultiplied).
+
+        // The layer has roughness 0.8 at half coverage on its left half
         let mut data = vec![0u16; TILE_AREA * 2];
         for y in 0..TILE {
             for x in 0..TILE / 2 {
@@ -302,7 +319,8 @@ mod tests {
         let v = get(&p.values[&Channel::Roughness], Channel::Roughness, 45, 32)[0];
         assert!((v - 0.8).abs() < 1e-3, "straight value: {v}");
         assert!((from_u16(alpha.get(45, 32)[0]) - 0.5).abs() < 1e-3, "the layer's coverage scales the stroke");
-        // Reading the layer's empty right half deposits nothing.
+
+        // Reading the layer's empty right half deposits nothing
         let mut q = Pickup::from_layer(PickupMode::Clone { offset: [30, 0] }, &flat, (TILE, TILE), g, [Channel::Roughness]);
         assert!(!q.stamp(&mut TileImage::new(TILE, TILE, 1), &disc(20, 32, 3), [20.0, 32.0], None), "the source is the empty half");
     }
@@ -318,7 +336,8 @@ mod tests {
         }
         let v = get(&p.values[&Channel::Roughness], Channel::Roughness, 30, 32)[0];
         assert!(v > 0.5 && from_u16(alpha.get(30, 32)[0]) > 0.99, "white dragged to the right: {v}");
-        // A jump larger than the stamp deposits nothing.
+
+        // A jump larger than the stamp deposits nothing
         assert!(!p.stamp(&mut alpha, &disc(50, 10, 3), [50.0, 10.0], None));
     }
 
@@ -332,7 +351,8 @@ mod tests {
             let (c, g) = setup(|x| if x < 20 { 1.0 } else { 0.0 });
             Pickup::new(PickupMode::Smudge { strength: 1.0 }, c, g, [Channel::Roughness])
         };
-        // A drags white right along row 32 while B drags left through the same texels.
+
+        // A drags white right along row 32 while B drags left through the same texels
         let (mut alone, mut isolated) = (smudge(), smudge());
         isolated.isolate_copies();
         let (mut alpha_alone, mut alpha_isolated) = (TileImage::new(TILE, TILE, 1), TileImage::new(TILE, TILE, 1));

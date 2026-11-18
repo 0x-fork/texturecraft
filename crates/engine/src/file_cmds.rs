@@ -287,6 +287,7 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
         Some(v @ Value::Object(_)) => Some(crate::preset_cmds::preset_param(v, cmd)?),
         Some(_) => return Err(bad(cmd, "`preset` must be a preset name or a preset object")),
     };
+
     let preset = preset.ok_or_else(|| bad(cmd, format!("unknown export preset {}", p.get("preset").unwrap_or(&Value::Null))))?;
     let mut o = ExportOptions::new(preset);
     if let Some(f) = strp(p, "format") {
@@ -317,9 +318,11 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
                     .ok_or_else(|| bad(cmd, format!("unknown colorSpace `{name}` (sRGB, Linear Rec.709, ACEScg or ACES2065-1)")))?,
             );
         }
-        // A value of the wrong type is an error, not the format's default space.
+
+        // A value of the wrong type is an error, not the format's default space
         Some(other) => return Err(bad(cmd, format!("`colorSpace` is a name (sRGB, Linear Rec.709, ACEScg or ACES2065-1), not {other}"))),
     }
+
     match p.get("ddsCompression") {
         None | Some(Value::Null) => {}
         Some(Value::String(name)) => {
@@ -327,11 +330,13 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
         }
         Some(other) => return Err(bad(cmd, format!("`ddsCompression` is a name (auto, none, bc1 or bc3), not {other}"))),
     }
+
     match p.get("ddsMipmaps") {
         None | Some(Value::Null) => {}
         Some(Value::Bool(on)) => o.dds.mipmaps = *on,
         Some(other) => return Err(bad(cmd, format!("`ddsMipmaps` is true or false, not {other}"))),
     }
+
     Ok(o)
 }
 
@@ -339,9 +344,11 @@ fn sets_param(s: &Session, p: &Value, cmd: &str) -> Result<Vec<usize>> {
     match p.get("ts") {
         None => Ok((0..s.set_count()).collect()),
         Some(Value::String(a)) if a == "all" => Ok((0..s.set_count()).collect()),
-        // Several sets in one command, so a file name two of them share is found before anything is written.
+
+        // Several sets in one command, so a file name two of them share is found before anything is written
         Some(Value::Array(a)) => {
             let mut sets = a.iter().map(|v| set_index(s, v, cmd)).collect::<Result<Vec<_>>>()?;
+
             // A set listed twice is written once
             let mut seen = std::collections::HashSet::new();
             sets.retain(|t| seen.insert(*t));
@@ -352,7 +359,7 @@ fn sets_param(s: &Session, p: &Value, cmd: &str) -> Result<Vec<usize>> {
 }
 
 fn set_index(s: &Session, v: &Value, cmd: &str) -> Result<usize> {
-    v.as_u64().map(|t| t as usize).filter(|t| *t < s.set_count()).ok_or_else(|| bad(cmd, "invalid `ts`"))
+    v.as_u64().and_then(|index| usize::try_from(index).ok()).filter(|index| *index < s.set_count()).ok_or_else(|| bad(cmd, "invalid `ts`"))
 }
 
 fn plan(s: &mut Session, p: &Value) -> Result<Value> {
@@ -589,7 +596,8 @@ fn materialx_documents(s: &Session, sets: &[usize], opts: &ExportOptions, warnin
         let mut textures: Vec<Texture> = Vec::new();
         for f in texturecraft_formats::list_outputs(&s.doc.project, ts, &mesh_name, opts).map_err(fe)? {
             let Some(input) = opts.preset.maps.get(f.map).and_then(|m| materialx::input_of_template(&m.file)) else { continue };
-            // The first tile stands for all of them: its number is written as <UDIM>.
+
+            // The first tile stands for all of them: its number is written as <UDIM>
             let file = f.udim_name.clone().unwrap_or_else(|| f.name.clone());
             let colorspace = materialx::colorspace_name(opts.space_for(f.format));
             if !textures.iter().any(|t| t.input == input) {
@@ -601,8 +609,10 @@ fn materialx_documents(s: &Session, sets: &[usize], opts: &ExportOptions, warnin
             warnings.push(format!("MaterialX: texture set \"{}\" has no OpenPBR maps; use the \"OpenPBR (separate maps)\" preset", set.name));
             continue;
         }
+
         let stem = texturecraft_formats::export::sanitize_file_stem(&format!("{mesh_name}_{}", set.name));
-        // Case-insensitive: Windows and macOS file systems are.
+
+        // Case-insensitive: Windows and macOS file systems are
         if !stems.insert(stem.to_ascii_lowercase()) {
             warnings.push(format!(
                 "MaterialX: texture set \"{}\" exports as \"{stem}\" like an earlier set, so its .mtlx was not written; rename one of them",
@@ -610,9 +620,11 @@ fn materialx_documents(s: &Session, sets: &[usize], opts: &ExportOptions, warnin
             ));
             continue;
         }
+
         out.push((ts, format!("{stem}.mtlx"), materialx::write(&format!("{mesh_name}_{}", set.name), &textures, None)));
     }
-    // The normalmap node only exists in a material that has a normal map.
+
+    // The normalmap node only exists in a material that has a normal map
     if normal_map_written && opts.normal_format == Some(NormalFormat::DirectX) {
         warnings.push("MaterialX: the normalmap node reads OpenGL (+Y) normals; this export wrote DirectX normals, so flip the green channel".into());
     }
@@ -969,5 +981,19 @@ f 1/1 2/2 3/3
         old.project.mesh_file.clear();
         let mut old = Session::from_project_bytes(&texturecraft_formats::save_project_bytes(&old).unwrap()).unwrap();
         assert_eq!(parts(&mut old), json!(["mesh"]));
+    }
+}
+
+#[cfg(all(test, target_pointer_width = "32"))]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn export_rejects_an_index_that_would_wrap_to_the_first_set() {
+        let mut session = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        let wrapped_index = u64::from(u32::MAX) + 1;
+
+        assert!(crate::execute(&mut session, "export.plan", &json!({ "ts": wrapped_index })).is_err());
+        assert!(crate::execute(&mut session, "export.plan", &json!({ "ts": [wrapped_index] })).is_err());
     }
 }

@@ -193,6 +193,7 @@ pub fn stroke_preview(brush: &BrushSettings, size_px: usize, image: Option<&Imag
         if travelled < step {
             continue;
         }
+
         travelled = 0.0;
         i += 1;
         let stamp_radius = radius * (1.0 - brush.jitter_size * jitter_sample(i, 1));

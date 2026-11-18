@@ -103,6 +103,7 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                     if matches!(id, "brush.preset.store" | "brush.preset.rename" | "brush.preset.delete") {
                         app.thumbs.forget_saved_files();
                     }
+
                     // A command that moved the camera takes over from a glide in progress; a projection switch joins it
                     app.settle_camera_glide(id, before);
 
@@ -178,6 +179,7 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                 let Some(name) = params.get("name").and_then(Value::as_str) else { return err("`name` is required") };
                 return if app.ui.apply_named_layout(name) { ok(Value::Null) } else { err(format!("no saved layout named `{name}`")) };
             }
+
             if !crate::menus::implemented(id) {
                 return err(format!("menu item `{id}` is not implemented"));
             }
@@ -185,7 +187,8 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
             crate::menus::invoke(app, ctx, id);
             ok(Value::Null)
         }
-        // What Window > Reset UI does once the question is answered with Reset.
+
+        // What Window > Reset UI does once the question is answered with Reset
         "ui.reset" => {
             app.ui.adopt_layout(crate::UiState::default());
             ok(Value::Null)

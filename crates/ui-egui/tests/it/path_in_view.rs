@@ -305,6 +305,7 @@ fn corner_button_toggles_the_selected_point_and_is_off_without_one() {
     for at in [A, B, C] {
         click(&mut h, at);
     }
+
     // The last placed point is selected
     h.get_all_by_label(button).next().unwrap().scroll_to_me();
     h.run_steps(30);

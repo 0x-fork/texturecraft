@@ -135,6 +135,7 @@ fn the_values_agree_with_the_view_command_and_survive_save_and_open() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("p.tcraft").display().to_string();
     texturecraft_engine::execute(session, "file.saveAs", &json!({"path": path})).unwrap();
+
     // Wipe the values, then open the saved file
     texturecraft_engine::execute(session, "display.set", &json!({"postEffects": false, "bloom": 0, "vignette": 0, "sharpen": 0, "grain": 0})).unwrap();
     texturecraft_engine::execute(session, "file.open", &json!({"path": path})).unwrap();

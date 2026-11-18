@@ -15,16 +15,9 @@ use crate::commands::{bad, u64p};
 use crate::session::StackTarget;
 use crate::{Result, Session};
 
-/// The layers selected in one texture set together with the active one.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MultiSelection {
-    /// The active layer these were picked with; another selected layer ends the selection.
-    pub active: LayerId,
-    /// Where a Shift+click range starts: the last layer clicked without Shift.
-    pub anchor: LayerId,
-    /// Every selected layer, the active one included, in the order they were picked.
-    pub layers: Vec<LayerId>,
-}
+mod multi_selection;
+
+pub use multi_selection::MultiSelection;
 
 impl Session {
     /// Every selected layer of the active texture set, top row first: the selected layer and the
@@ -35,12 +28,19 @@ impl Session {
         if picked.len() < 2 {
             return picked;
         }
+
         stack_rows(&self.doc.project, ts, false).into_iter().filter(|id| picked.contains(id)).collect()
     }
 
     /// Whether `id` is one of the [`Session::selected_layers`].
     pub fn is_layer_selected(&self, id: LayerId) -> bool {
-        self.selection_in(self.ts()).contains(&id)
+        let ts = self.ts();
+        let Some(active) = self.active_in(ts) else { return false };
+
+        match self.multi.get(&ts).filter(|multi| multi.active == active) {
+            Some(multi) => multi.layers.contains(&id) && self.doc.project.locate(id).is_some_and(|(set, _, _)| set == ts),
+            None => active == id,
+        }
     }
 
     /// The selected layer of texture set `ts`, if it is still in that set's stack.
@@ -101,6 +101,7 @@ fn push_rows(project: &Project, list: &[LayerId], expanded_only: bool, depth: us
     if depth > MAX_DEPTH {
         return;
     }
+
     for id in list.iter().rev() {
         let Some(layer) = project.layers.get(id) else { continue };
         rows.push(*id);
@@ -131,6 +132,7 @@ pub(crate) fn extend(s: &mut Session, ts: usize, id: LayerId, range: bool) -> Op
                 let layers = rows.get(from.min(to)..=from.max(to)).map(<[LayerId]>::to_vec).unwrap_or_else(|| vec![id]);
                 s.select_several(ts, id, anchor, layers);
             }
+
             // Nothing to range from (or it is hidden in a collapsed folder): start over at `id`
             None => s.select_several(ts, id, id, vec![id]),
         }
@@ -140,11 +142,13 @@ pub(crate) fn extend(s: &mut Session, ts: usize, id: LayerId, range: bool) -> Op
     let mut layers = current;
     if layers.contains(&id) {
         layers.retain(|layer| *layer != id);
+
         // Taking out the only selected layer leaves nothing selected
         let Some(last) = layers.last().copied() else {
             s.select_none(ts);
             return None;
         };
+
         let kept = |layer: Option<LayerId>| layer.filter(|layer| layers.contains(layer)).unwrap_or(last);
         let (active, anchor) = (kept(s.active_in(ts)), kept(anchor));
         s.select_several(ts, active, anchor, layers);
@@ -188,6 +192,7 @@ pub(crate) fn select_all(s: &mut Session) -> Result<Value> {
     let Some(top) = rows.first().copied() else {
         return Ok(json!({ "layer": Value::Null, "textureSet": ts, "layers": [] }));
     };
+
     let active = s.active_in(ts).filter(|active| rows.contains(active)).unwrap_or(top);
     let anchor = s.multi_in(ts).map(|multi| multi.anchor).filter(|anchor| rows.contains(anchor)).unwrap_or(active);
     s.select_several(ts, active, anchor, rows);
@@ -207,6 +212,7 @@ fn ids_param(s: &Session, cmd: &str, p: &Value) -> Result<(usize, Vec<LayerId>)>
         if *set.get_or_insert(ts) != ts {
             return Err(bad(cmd, "`layers` must all be in one texture set"));
         }
+
         if !ids.contains(&id) {
             ids.push(id);
         }
@@ -229,6 +235,7 @@ pub(crate) fn batch_param(s: &Session, cmd: &str, p: &Value, outermost: bool) ->
     if ids.len() < 2 {
         return if ids.is_empty() { Err(bad(cmd, "no layer selected and no `layer` given")) } else { Ok(ids) };
     }
+
     let project = &s.doc.project;
     let Some((ts, _, _)) = ids.first().and_then(|id| project.locate(*id)) else { return Ok(ids) };
     Ok(stack_rows(project, ts, false).into_iter().filter(|id| ids.contains(id) && !(outermost && in_listed_folder(project, *id, &ids))).collect())

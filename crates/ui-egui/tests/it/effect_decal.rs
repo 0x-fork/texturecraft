@@ -32,6 +32,7 @@ fn decal(harness: &Harness<'_, TextureCraftApp>, effect: LayerId) -> Decal {
 #[test]
 fn the_width_slider_resizes_a_mask_effects_decal_in_one_undo_step() {
     let (mut harness, effect) = selected_mask_decal();
+
     // Free width and height: with Keep proportions (on by default) the height would follow
     harness.get_by_label("Keep proportions").click();
     harness.run_steps(2);

@@ -284,6 +284,7 @@ pub fn window(app: &mut TextureCraftApp, ctx: &egui::Context) {
     if !app.ui.windows.shortcuts {
         return;
     }
+
     let capture_id = Id::unique(CAPTURE);
     let filter_id = Id::unique("keymap_filter");
     let mut capture: Option<usize> = ctx.data(|d| d.get_temp(capture_id));
@@ -326,6 +327,7 @@ pub fn window(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     {
                         continue;
                     }
+
                     ui.horizontal(|ui| {
                         ui.label(tr(b.label));
                         ui.label(RichText::new(tr(b.group)).size(10.5).color(tk.text_dim));
@@ -599,6 +601,7 @@ mod tests {
     #[test]
     fn a_stored_shortcut_replaces_the_default_and_an_empty_one_unbinds() {
         let mut keymap = Keymap::new();
+
         // F7 is bound to nothing else, so the stored shortcut alone decides (F5 is Perspective)
         keymap.insert("file.save".into(), "F7".into());
         keymap.insert("edit.undo".into(), String::new());
@@ -648,12 +651,14 @@ mod tests {
         let resolved = bindings_for(&keymap);
         assert_eq!(resolved.command_of(&press(Key::I, Modifiers::COMMAND | Modifiers::ALT)).as_deref(), Some("mask.invert"));
         assert!(resolved.conflict(invert).is_none());
-        // Taking the key of a default shortcut is a conflict, on both items.
+
+        // Taking the key of a default shortcut is a conflict, on both items
         rebind(&mut keymap, invert, "Ctrl+S");
         let resolved = bindings_for(&keymap);
         assert_eq!(resolved.conflict(invert).map(|b| b.id), Some("file.save"));
         assert_eq!(resolved.conflict(save).map(|b| b.id), Some("mask.invert"));
-        // Unbinding drops the override of an item that has no default.
+
+        // Unbinding drops the override of an item that has no default
         rebind(&mut keymap, invert, "");
         assert_eq!(shortcut_of(&keymap, "mask.invert"), None);
         assert!(bindings_for(&keymap).conflict(save).is_none());

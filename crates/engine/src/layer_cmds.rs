@@ -174,11 +174,13 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let before = s.doc.clone();
     let removed = s.edit("Remove layer", |s| {
         let mut removed = Vec::new();
+
         // Top row first, so the layer under the lowest removed one is never removed after it is chosen
         for id in &ids {
             let (ts, parent, i) = s.doc.project.locate(*id).ok_or(EngineError::Other("layer not in a stack".into()))?;
             removed.extend(s.doc.project.remove_layer(*id)?);
-            // Select the layer below (or above) the removed one.
+
+            // Select the layer below (or above) the removed one
             let list = match parent {
                 Some(g) => s.doc.project.layer(g).map(|l| l.children().to_vec()).unwrap_or_default(),
                 None => s.doc.project.texture_set(ts).map(|t| t.stack.clone()).unwrap_or_default(),
@@ -189,7 +191,8 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
                 None => s.select_none(ts),
             }
         }
-        // Instances of what was removed keep their look as independent layers.
+
+        // Instances of what was removed keep their look as independent layers
         crate::instance_cmds::detach_orphans(s, &before)?;
         Ok(removed)
     })?;
@@ -202,9 +205,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
     let (ts, _, _) = s.doc.project.locate(first).ok_or(EngineError::Other("layer not in a stack".into()))?;
     let src = s.doc.clone();
     let copies = s.edit("Duplicate layer", |s| {
-        // One block of copies directly above the topmost selected layer, at its level, in stack
-        // order (also the copy of a layer from inside a folder): the lowest goes in first, each
-        // next one above it
+        // Insert copies in order above the topmost selected layer, at its folder level
         let mut copies = Vec::new();
         let mut above = first;
         for id in ids.iter().rev() {
@@ -216,6 +217,7 @@ fn duplicate(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok(copies)
     })?;
+
     // The copies are selected; the active layer's copy stays the active one
     let active =
         s.selected.get(&ts).and_then(|active| ids.iter().position(|id| id == active)).and_then(|i| copies.get(i)).or(copies.first()).copied().unwrap_or(first);
@@ -248,15 +250,18 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
     if boolp(p, "all") == Some(true) {
         return crate::layer_selection::select_all(s);
     }
+
     if p.get("layers").is_some() {
         return crate::layer_selection::select_list(s, p);
     }
+
     let id = layer_param(s, "layer.select", p)?;
     let (ts, _, _) = s.doc.project.locate(id).ok_or_else(|| bad("layer.select", "layer not in a stack"))?;
 
     // Paths paint into the active set
     if ts != s.ts() {
         s.finish_path()?;
+
         // The clone source is a point of the set it was picked in
         s.tool.clone_source = None;
     }
@@ -278,6 +283,7 @@ fn select(s: &mut Session, p: &Value) -> Result<Value> {
             if s.doc.project.layer(s.doc.project.mask_owner(id))?.mask.is_none() {
                 return Err(bad("layer.select", "the layer has no mask"));
             }
+
             StackTarget::Mask
         }
         Some(Value::String(t)) if t == "content" => StackTarget::Content,
@@ -307,8 +313,8 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn visible(s: &mut Session, p: &Value) -> Result<Value> {
     let ids = batch_param(s, "layer.visible", p, false)?;
-    // Without `visible`, every layer takes the opposite of the lead's: `layer` when it is one of
-    // them (the row whose eye was clicked), else the active one, else the top one
+
+    // Use the clicked layer as lead, then the active or top layer if absent
     let lead = u64p(p, "layer")
         .map(LayerId)
         .filter(|lead| ids.contains(lead))
@@ -375,6 +381,7 @@ fn move_layers(s: &mut Session, p: &Value) -> Result<Value> {
         if above.is_some_and(|above| ids.contains(&above)) {
             return Err(bad("layer.move", "`above` is one of the moved layers"));
         }
+
         let inside = boolp(p, "inside").unwrap_or(false);
         apply_move(s, |project| move_stacked(project, &ids, above, inside))
     } else {
@@ -386,11 +393,15 @@ fn move_layer(s: &mut Session, p: &Value) -> Result<Value> {
     if p.get("layers").is_some() {
         return move_layers(s, p);
     }
+
     let id = layer_param(s, "layer.move", p)?;
     apply_move(s, |project| {
         if let Some(d) = p.get("delta").and_then(Value::as_i64) {
             let (_, _, i) = project.locate(id).ok_or(EngineError::Other("layer not in a stack".into()))?;
-            let to = (i as i64 + d).max(0) as usize;
+
+            // Saturate hostile deltas before the sibling-list clamp
+            let distance = usize::try_from(d.unsigned_abs()).unwrap_or(usize::MAX);
+            let to = if d < 0 { i.saturating_sub(distance) } else { i.saturating_add(distance) };
             project.move_layer(id, to)?;
         } else if let Some(i) = u64p(p, "index") {
             project.move_layer(id, usize::try_from(i).unwrap_or(usize::MAX))?;
@@ -400,6 +411,7 @@ fn move_layer(s: &mut Session, p: &Value) -> Result<Value> {
         } else {
             return Err(bad("layer.move", "give `delta`, `index` or `above`"));
         }
+
         Ok(())
     })
 }
@@ -507,7 +519,8 @@ fn fill_mut(s: &mut Session, target: FillTarget) -> Result<&mut Fill> {
 fn fill_set(s: &mut Session, p: &Value) -> Result<Value> {
     let target = fill_target(s, p, "layer.fill.set")?;
     let ch = channel_param("layer.fill.set", p, "channel")?.ok_or_else(|| bad("layer.fill.set", "`channel` is required"))?;
-    // `solo`: this channel on, every other one off.
+
+    // `solo`: this channel on, every other one off
     let solo = boolp(p, "solo") == Some(true);
     let enabled = if solo { Some(true) } else { boolp(p, "enabled") };
     let normal_format = normal_format_param("layer.fill.set", p)?;
@@ -520,6 +533,7 @@ fn fill_set(s: &mut Session, p: &Value) -> Result<Value> {
     if init_ramp && colors.is_some() {
         return Err(bad("layer.fill.set", "give `gradientMap` or `colors`, not both"));
     }
+
     let source = if let Some(kind) = strp(p, "procedural") {
         let kind = ProceduralKind::parse(kind).ok_or_else(|| bad("layer.fill.set", format!("unknown procedural `{kind}`")))?;
         let mut pr = Procedural::new(kind);
@@ -554,14 +568,17 @@ fn fill_set(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         return Err(bad("layer.fill.set", "give `color`, `value`, `procedural`, `image`, `anchor`, `colors`, `normalFormat`, `enabled` or `solo`"));
     };
+
     if normal_format.is_some() && source.as_ref().is_some_and(|src| !matches!(src, Source::Image { .. })) {
         return Err(bad("layer.fill.set", "`normalFormat` goes with `image` or alone"));
     }
-    // A format-only edit leaves the channel on or off.
+
+    // A format-only edit leaves the channel on or off
     let touches_channel = source.is_some() || enabled.is_some();
     s.edit("Set fill", |s| {
         let f = fill_mut(s, target)?;
-        // `normalFormat` alone: the convention of the channel's image.
+
+        // `normalFormat` alone: the convention of the channel's image
         if let (None, Some(nf)) = (&source, normal_format) {
             match f.sources.get_mut(&ch) {
                 Some(Source::Image { normal_format, .. }) => *normal_format = nf,
@@ -571,11 +588,12 @@ fn fill_set(s: &mut Session, p: &Value) -> Result<Value> {
         let colors = if init_ramp { initial_ramp(ch, &source, f.sources.get(&ch))? } else { colors };
         let source = with_ramp(ch, f.sources.get(&ch), source, colors)?;
         match target {
-            // A fill effect's channel is on while it has a source.
+            // A fill effect's channel is on while it has a source
             FillTarget::Effect(_) if enabled == Some(false) => {
                 f.sources.remove(&ch);
             }
-            // Removing stops (`colors: []`) from a channel the fill does not have adds nothing.
+
+            // Removing stops (`colors: []`) from a channel the fill does not have adds nothing
             FillTarget::Effect(_) if source.is_none() && enabled != Some(true) && !f.sources.contains_key(&ch) => {}
             FillTarget::Effect(_) => {
                 let src = source.unwrap_or_else(|| f.source(ch));
@@ -623,9 +641,11 @@ fn initial_ramp(ch: Channel, source: &Option<Source>, current: Option<&Source>) 
     if ch.kind() != texturecraft_core::ChannelKind::Color {
         return Err(bad("layer.fill.set", "`gradientMap` goes on a color channel"));
     }
+
     if let Some(kept) = current.map(Source::ramp).filter(|r| !r.is_empty()) {
         return Ok(Some(kept.to_vec()));
     }
+
     match source.as_ref().or(current) {
         Some(Source::Procedural { low, high, .. }) => Ok(Some(vec![*low, std::array::from_fn(|k| (low[k] + high[k]) * 0.5), *high])),
         Some(Source::Anchor { .. }) => Ok(Some(vec![[0.0; 3], [0.5; 3], [1.0; 3]])),
@@ -646,6 +666,7 @@ fn with_ramp(ch: Channel, current: Option<&Source>, source: Option<Source>, colo
         _ if adds => return Err(needs()),
         _ => return Ok(None),
     };
+
     let kept = match current {
         Some(current) if ch.kind() == texturecraft_core::ChannelKind::Color => current.ramp().to_vec(),
         _ => Vec::new(),
@@ -655,6 +676,7 @@ fn with_ramp(ch: Channel, current: Option<&Source>, source: Option<Source>, colo
         _ if adds => return Err(needs()),
         _ => {}
     }
+
     Ok(Some(source))
 }
 

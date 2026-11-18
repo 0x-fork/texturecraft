@@ -300,7 +300,8 @@ pub fn commit_layer(pixels: &mut PixelStore, layer: LayerId, size: (u32, u32), v
     for &c in &channels {
         pixels.layer_mut(layer, c, size);
     }
-    // The channels blend in parallel too: an 8K stroke touches hundreds of tiles per channel.
+
+    // The channels blend in parallel too: an 8K stroke touches hundreds of tiles per channel
     let images: Vec<(Channel, &mut TileImage, Option<StagedImage>)> =
         pixels.layers.iter_mut().filter(|((id, c), _)| *id == layer && channels.contains(c)).map(|((_, c), img)| (*c, img, staging.take(Some(*c)))).collect();
     images.into_par_iter().for_each(|(c, img, staged)| over(img, &layer_blend(c, values, &src), &src, staged));

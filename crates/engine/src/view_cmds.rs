@@ -6,6 +6,7 @@ use texturecraft_core::{BakedMap, Channel, ToneMapping};
 use texturecraft_geom::glam::Vec3;
 
 use crate::commands::{CommandSpec, always, bad, boolp, can_redo, can_undo, color_param, f32p, strp, u64p};
+use crate::frame_target::FrameTarget;
 use crate::session::ViewMode;
 use crate::{Result, Session, cmd};
 
@@ -97,18 +98,13 @@ fn repeat(s: &mut Session, p: &Value, step: fn(&mut Session) -> Result<String>) 
     Ok((last, n))
 }
 
-#[derive(Clone, Copy)]
-enum FrameTarget {
-    All,
-    Selection,
-}
-
 fn frame(s: &mut Session, p: &Value) -> Result<Value> {
     let target = match strp(p, "target") {
         None | Some("all") => FrameTarget::All,
         Some("selection") => FrameTarget::Selection,
         Some(other) => return Err(bad("viewport.frame", format!("unknown target `{other}` (all or selection)"))),
     };
+
     frame_target(s, target)
 }
 

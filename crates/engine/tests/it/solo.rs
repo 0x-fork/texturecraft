@@ -135,6 +135,7 @@ fn the_view_solo_command_sets_reports_and_ends_the_solo() {
     let r = execute(&mut s, "view.solo", &json!({"layer": green.0, "ignoreMask": true})).unwrap();
     assert_eq!(r, json!({"layer": green.0, "ignoreMask": true}));
     assert_eq!(texturecraft_engine::inspect::session(&s)["solo"], json!({"layer": green.0, "ignoreMask": true}));
+
     // The selected layer is the default
     execute(&mut s, "view.solo", &json!({"layer": null})).unwrap();
     assert_eq!(s.solo, None);

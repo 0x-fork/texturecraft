@@ -14,6 +14,7 @@ use texturecraft_paint::{BrushSettings, EyeDepth, Stroke, StrokeCanvas};
 use texturecraft_texel::DilationMap;
 
 use crate::fill_mode::FillMode;
+pub use crate::stencil_look::StencilLook;
 use crate::{EngineError, Result};
 
 /// Padding (texels) applied to composites for display.
@@ -178,22 +179,6 @@ pub struct StencilState {
     pub tile: bool,
     /// Overlay opacity in the viewport (display only).
     pub opacity: f32,
-}
-
-/// How a stencil sits on screen, without the image (which is a project resource).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StencilLook {
-    pub center: [f32; 2],
-    pub scale: f32,
-    pub rotation: f32,
-    pub tile: bool,
-    pub opacity: f32,
-}
-
-impl Default for StencilLook {
-    fn default() -> Self {
-        StencilLook { center: [0.0, 0.0], scale: 0.8, rotation: 0.0, tile: false, opacity: 0.5 }
-    }
 }
 
 impl StencilState {
@@ -639,6 +624,9 @@ impl Session {
             }
             Err(error) => {
                 self.doc = before;
+
+                // A failed repaint may have cached tiles from the discarded document
+                self.path_cache = None;
                 Err(error)
             }
         }
@@ -690,6 +678,11 @@ impl Session {
     pub(crate) fn invalidate_changed(&mut self, previous_document: &Document) {
         self.follow_uv_layouts(&previous_document.project);
         self.sync_caches();
+
+        // Removed path effects must release their cached painted tiles
+        if self.path_cache.as_ref().is_some_and(|cache| self.paths(cache.eid).is_none()) {
+            self.path_cache = None;
+        }
 
         // Removed or replaced resources may change any set's rendered content
         let removed_or_replaced_resource =
@@ -904,6 +897,7 @@ impl Session {
 
     fn after_history(&mut self, other: &Document) {
         self.modified = true;
+
         // Layers picked together belong to the stack they were picked in
         self.multi.clear();
         self.revision = self.revision.wrapping_add(1);

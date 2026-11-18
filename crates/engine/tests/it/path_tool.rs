@@ -733,6 +733,19 @@ fn corner_points_make_a_path_with_straight_edges() {
     assert!(execute(&mut s, "tool.path", &json!({"corners": [true, 3]})).is_err());
 }
 
+#[test]
+fn invalid_corner_flags_leave_the_current_curve_unchanged() {
+    let mut session = session(wall());
+    execute(&mut session, "tool.path", &json!({"uvPoints": [[0.2, 0.2], [0.5, 0.8], [0.8, 0.2]], "corners": [true, false, true]})).unwrap();
+    let before = session.tool.path.clone();
+
+    assert!(execute(&mut session, "tool.path", &json!({"uvPoints": SQUARE_UV, "corners": [true, 3]})).is_err());
+    assert_eq!(session.tool.path, before, "malformed flags leave the curve intact");
+
+    assert!(execute(&mut session, "tool.path", &json!({"corners": [true, true, true, true]})).is_err());
+    assert_eq!(session.tool.path, before, "extra flags cannot outlive their points");
+}
+
 /// Toggling a corner repaints the edited path, is one undo step that also restores the pixels, and is saved with the project
 #[test]
 fn toggling_a_corner_is_one_undo_step_and_is_saved() {
@@ -792,6 +805,7 @@ fn corner_flags_follow_their_points_when_points_are_inserted_or_removed() {
     assert_eq!(s.tool.path.corner_flags(), vec![false, false, true, false, false]);
     assert!(s.toggle_selected_path_corner(), "the appended point is selected");
     assert_eq!(s.tool.path.corner_flags(), vec![false, false, true, false, true]);
+
     // Undo steps through each change with its flags
     execute(&mut s, "edit.undo", &Value::Null).unwrap();
     assert_eq!(s.tool.path.corner_flags(), vec![false, false, true, false, false]);

@@ -53,10 +53,12 @@ fn clone_copies_values_from_the_source_offset() {
     dab(&mut s, 240.0, 200.0);
     let v = color_at(&s, 240.0, 200.0);
     assert!(red(v), "cloned red: {v:?}");
-    // The offset stays for the next strokes: the source moved along with the destination.
+
+    // The offset stays for the next strokes: the source moved along with the destination
     let off = s.tool.clone_source.unwrap().offset.unwrap();
     assert!(off[0].abs() > 0.01, "{off:?}");
-    // One undo step per clone stroke.
+
+    // One undo step per clone stroke
     execute(&mut s, "edit.undo", &Value::Null).unwrap();
     s.update();
     assert!(!red(color_at(&s, 240.0, 200.0)));
@@ -79,7 +81,8 @@ fn aligned_clone_keeps_the_first_offset_for_later_strokes() {
     assert_eq!(execute(&mut s, "tool.brush", &Value::Null).unwrap()["cloneAligned"], true, "aligned by default");
     dab(&mut s, 240.0, 200.0);
     assert!(red(color_at(&s, 240.0, 200.0)));
-    // The second stroke reads at the same offset, 40 points left of the first source: nothing red there.
+
+    // The second stroke reads at the same offset, 40 points left of the first source: nothing red there
     dab(&mut s, 200.0, 200.0);
     assert!(!red(color_at(&s, 200.0, 200.0)), "aligned: the source moved along");
     assert!(s.tool.clone_source.unwrap().offset.is_some());
@@ -112,6 +115,7 @@ fn the_clone_source_is_forgotten_when_another_texture_set_becomes_active() {
     let mut s = texturecraft_engine::sample_session(256, 64).unwrap();
     execute(&mut s, "tool.clone", &Value::Null).unwrap();
     execute(&mut s, "tool.cloneSource", &json!({"uv": [0.3, 0.6]})).unwrap();
+
     // Selecting the active set again keeps it
     let active = s.ts();
     execute(&mut s, "textureSet.select", &json!({"ts": active})).unwrap();

@@ -145,11 +145,12 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     if u64p(p, "index").is_none() && strp(p, "name").is_none_or(|n| n == DEFAULT_CAMERA) {
-        // The default camera: fov and projection from the display settings, framing the mesh.
+        // The default camera: fov and projection from the display settings, framing the mesh
         s.camera.fov = s.doc.project.display.fov;
         s.camera.ortho = false;
         return crate::execute(s, "viewport.frame", &Value::Null);
     }
+
     let i = which(s, "camera.select", p)?;
     if let Some(c) = s.doc.project.cameras.get(i).cloned() {
         // A saved view is clamped against the whole mesh, not against a part framed with F
@@ -171,6 +172,7 @@ fn fixed_view(s: &mut Session, name: &str) -> Result<Value> {
     let Some(&(_, yaw, pitch)) = VIEWS.iter().find(|(view, ..)| *view == name) else {
         return Err(bad("camera.view", format!("unknown view `{name}`: one of front, back, left, right, top, bottom")));
     };
+
     let current = if s.camera.yaw.is_finite() { s.camera.yaw } else { 0.0 };
     let turn = std::f32::consts::TAU;
     s.camera.yaw = current + (yaw.to_radians() - current + turn * 0.5).rem_euclid(turn) - turn * 0.5;
@@ -307,7 +309,8 @@ mod tests {
                 }
             }
         }
-        // Orbit still works from a fixed view, and a view is not an undo step.
+
+        // Orbit still works from a fixed view, and a view is not an undo step
         let steps = s.history_labels().len();
         execute(&mut s, "camera.view.top", &Value::Null).unwrap();
         assert!((s.camera.pitch - 89f32.to_radians()).abs() < 1e-6, "top stops at the orbit limit");

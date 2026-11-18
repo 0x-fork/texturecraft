@@ -4,41 +4,14 @@
 //! how big). Switching to one touches nothing else: not the mode, the zoom, the wireframes, the
 //! windows or the shelf. The layouts persist with `UiState`, so they work in the browser too.
 
-use serde::{Deserialize, Serialize};
-
 use crate::TextureCraftApp;
-use crate::docking::Dock;
 use crate::i18n::{tr, trf};
+pub use crate::layout_dialog::LayoutDialog;
+pub use crate::name_error::NameError;
+pub use crate::named_layout::NamedLayout;
 use crate::state::UiState;
 use crate::theme::caption;
 use crate::windows::dialog;
-
-/// One saved panel arrangement
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct NamedLayout {
-    pub name: String,
-    /// The painting mode's dock, which the other modes' docks start from
-    pub painting: Dock,
-    pub baking: Dock,
-}
-
-/// The layout dialog being shown (not saved)
-#[derive(Clone, Debug, PartialEq)]
-pub enum LayoutDialog {
-    /// Asking for the name to save the current layout under
-    Save(String),
-    /// A layout of this name exists: asking whether to replace it
-    Overwrite(String),
-    /// The list with rename and delete
-    Manage { renaming: Option<(String, String)>, deleting: Option<String> },
-}
-
-/// Why a name cannot be used
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NameError {
-    Empty,
-    Taken,
-}
 
 impl UiState {
     fn named_layout_index(&self, name: &str) -> Option<usize> {
@@ -73,6 +46,7 @@ impl UiState {
         let (current, other) = if self.dock_is_baking { (layout.baking, layout.painting) } else { (layout.painting, layout.baking) };
         self.dock = current;
         self.inactive_mode_dock = other;
+
         // A popup open against the rail shows a panel of the old arrangement
         self.rail_panel = None;
         true
@@ -84,6 +58,7 @@ impl UiState {
         if to.is_empty() {
             return Err(NameError::Empty);
         }
+
         if to != from && self.named_layout_index(to).is_some() {
             return Err(NameError::Taken);
         }
@@ -244,6 +219,7 @@ fn manage_dialog(
         if app.ui.named_layouts.is_empty() {
             ui.label(caption(tr("No saved layouts")));
         }
+
         // Many layouts scroll; Close stays below the list
         let list_height = ui.ctx().content_rect().height() * LIST_SCREEN_FRACTION;
         egui::ScrollArea::vertical().max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {

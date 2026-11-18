@@ -803,6 +803,7 @@ pub fn rasterize_uv(canvas: &mut StrokeCanvas, gbuf: &UvGBuffer, shape: Shape, s
         if s.radius.is_nan() || s.radius <= 0.0 || !s.center.is_finite() {
             continue;
         }
+
         let (cx, cy, r) = (s.center.x * w as f32, s.center.y * h as f32, s.radius * w as f32);
         let x0 = (cx - r * 1.42).floor().max(0.0) as u32;
         let x1 = ((cx + r * 1.42).ceil().max(0.0) as u32).min(w);
@@ -815,7 +816,8 @@ pub fn rasterize_uv(canvas: &mut StrokeCanvas, gbuf: &UvGBuffer, shape: Shape, s
                 if gbuf.tri.get((y * w + x) as usize).copied().unwrap_or(NO_TRI) == NO_TRI {
                     continue;
                 }
-                // Local frame with y up on screen (texel rows grow downward), as in the 3D view.
+
+                // Local frame with y up on screen (texel rows grow downward), as in the 3D view
                 let (dx, dy) = ((x as f32 + 0.5 - cx) / r, (cy - y as f32 - 0.5) / r);
                 let (lx, ly) = (dx * cs + dy * sn, -dx * sn + dy * cs);
                 let a = shape.sample(lx, ly, s.hardness, s.seed) * s.flow;

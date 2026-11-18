@@ -64,7 +64,8 @@ fn dds_export_picks_a_compression_per_map_and_takes_the_options() {
 #[test]
 fn the_plan_lists_dds_files_at_8_or_16_bits_and_bad_options_are_errors() {
     let mut s = session();
-    // DDS has 8 and 16 bits; 32 is written at 16.
+
+    // DDS has 8 and 16 bits; 32 is written at 16
     for (depth, written) in [(8, 8), (16, 16), (32, 16)] {
         let plan = execute(&mut s, "export.plan", &json!({ "preset": "glTF PBR Metal Roughness", "format": "dds", "bitDepth": depth })).unwrap();
         let files = plan.as_array().unwrap();

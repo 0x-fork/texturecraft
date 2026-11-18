@@ -149,6 +149,7 @@ pub(crate) fn layers(app: &mut TextureCraftApp, ui: &mut Ui) {
         ui.spacing_mut().button_padding.x = 4.0;
         ui.spacing_mut().item_spacing.x = TOOLBAR_SPACING;
         let chans = app.session.doc.project.texture_set(app.session.ts()).map(|t| t.channel_list()).unwrap_or_default();
+
         // The channel box takes what the six buttons leave, so the toolbar stays on one row in a narrow column
         let buttons = 2.0 * (MENU_BUTTON_WIDTH + TOOLBAR_SPACING) + 4.0 * (TOOLBAR_ICON_SIZE + TOOLBAR_SPACING);
         let channel_width = (ui.available_width() - buttons).clamp(CHANNEL_BOX_MIN_WIDTH, CHANNEL_BOX_WIDTH);
@@ -230,6 +231,7 @@ fn select_all_layers(app: &mut TextureCraftApp, ui: &Ui) {
     if ctx.egui_wants_keyboard_input() || !ui.ui_contains_pointer() {
         return;
     }
+
     if ctx.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
         app.run("layer.select", json!({"all": true}));
     }
@@ -529,6 +531,7 @@ fn thumb_box(ui: &Ui, app: &mut TextureCraftApp, rect: Rect, target: ThumbTarget
 fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize, index: usize) {
     let tokens = Tokens::get(ui.ctx());
     let selected = app.session.selected_layer() == Some(layer.id);
+
     // One of several selected layers (Shift/Ctrl+click) is highlighted like the active one
     let highlighted = selected || app.session.is_layer_selected(layer.id);
     let several = selection_with(app, layer.id);
@@ -540,6 +543,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
 
     // Background, folder lines, the selected rows' accent edge and the colour tag
     let painter = ui.painter().clone();
+
     // The active layer gets the strong tint; the other selected rows the plain selected shade
     let background = if selected {
         selected_layer_fill(&tokens)
@@ -595,6 +599,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         egui::FontId::proportional(LAYER_EYE_FONT_SIZE),
         if solo.is_some() { tokens.warning } else { eye_color },
     );
+
     // The eye shows or hides its own layer only, even on one of several selected rows
     if eye_response.clicked() {
         let modifiers = ui.input(|input| input.modifiers);
@@ -626,7 +631,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         x += FOLDER_CARET_SIZE;
     }
 
-    // Content thumbnail: the layer's own result in the displayed channel.
+    // Content thumbnail: the layer's own result in the displayed channel
     let channel = app.ui.layer_channel;
     let thumbnail = Rect::from_min_size(pos2(x, rect.center().y - thumbnail_size * 0.5), vec2(thumbnail_size, thumbnail_size));
     if !thumb_box(ui, app, thumbnail, ThumbTarget::Content { layer: layer.id, channel }, !layer.visible) {
@@ -640,7 +645,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     }
     x = thumbnail.right() + THUMBNAIL_SPACING;
 
-    // An instance draws its source's content, blending and (unless it has its own) mask.
+    // An instance draws its source's content, blending and (unless it has its own) mask
     let project = &app.session.doc.project;
     let source = layer.instance_source().map(|source| {
         let set = project.locate(source).and_then(|(set, _, _)| project.texture_sets.get(set)).map(|set| set.name.as_str()).unwrap_or("?");
@@ -649,7 +654,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     let mask = project.layers.get(&project.mask_owner(layer.id)).and_then(|owner| owner.mask.clone());
     let blend = project.content_layer(layer.id).and_then(|content| content.blend(channel));
 
-    // Mask thumbnail, selectable on its own; or the slot that adds one.
+    // Mask thumbnail, selectable on its own; or the slot that adds one
     let mask_rect;
     if let Some(mask) = &mask {
         let mask_target = selected && !targets_content(app);
@@ -691,7 +696,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
             );
         }
     } else {
-        // The empty slot adds a mask to this layer.
+        // The empty slot adds a mask to this layer
         let slot_size = thumbnail_size.min(MASK_SLOT_SIZE);
         mask_rect = Rect::from_min_size(pos2(x, rect.center().y - slot_size * 0.5), vec2(slot_size, slot_size));
         let slot = ui.interact(mask_rect, ui.scope_id().with(("mask_slot", layer.id.0)), Sense::click()).on_hover_text(tr("Add mask"));
@@ -704,7 +709,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     }
     x = mask_rect.right() + THUMBNAIL_GAP;
 
-    // Name (or rename editor) with the quieter subtitle under it.
+    // Name (or rename editor) with the quieter subtitle under it
     let (name_rect, show_blend) = layer_name_layout(rect, x);
     let show_name = name_rect.width() >= MIN_NAME_WIDTH;
     if !show_name {
@@ -717,13 +722,13 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
     if renaming {
         let mut editor_ui = ui.new_child(egui::UiBuilder::new().max_rect(name_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
         if let Some((_, text)) = app.ui.rename.as_mut() {
-            // Escape reaches us instead of just unfocusing the field, so it can cancel.
+            // Escape reaches us instead of just unfocusing the field, so it can cancel
             let filter = egui::EventFilter { horizontal_arrows: true, vertical_arrows: true, escape: true, ..Default::default() };
             let editor = editor_ui.add(egui::TextEdit::singleline(text).desired_width(name_rect.width()).event_filter(filter));
             if ui.input(|input| input.key_pressed(egui::Key::Escape)) {
                 app.ui.rename = None;
             } else if editor.lost_focus() {
-                // Enter or a click elsewhere.
+                // Enter or a click elsewhere
                 let name = text.trim().to_string();
                 app.ui.rename = None;
                 if !name.is_empty() && name != layer.name {
@@ -762,7 +767,7 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         painter.galley(pos2(name_rect.left(), rect.center().y + NAME_LINE_GAP), subtitle, tokens.text_dim);
     }
 
-    // Blend mode and opacity of the displayed channel, stacked at the right.
+    // Blend mode and opacity of the displayed channel, stacked at the right
     let mode_rect = Rect::from_min_size(
         pos2(rect.right() - RIGHT_COLUMN - ROW_CONTROL_GAP, rect.center().y - ROW_CONTROL_HEIGHT - ROW_STACK_GAP),
         vec2(RIGHT_COLUMN, ROW_CONTROL_HEIGHT),
@@ -788,8 +793,9 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         painter.text(mode_rect.right_center(), egui::Align2::RIGHT_CENTER, tr("off"), egui::FontId::proportional(ROW_SMALL_FONT_SIZE), tokens.text_dim);
     }
 
-    // Interaction: select, rename, drag & drop, context menu.
+    // Interaction: select, rename, drag & drop, context menu
     let on_control = eye_response.clicked() || content_response.clicked();
+
     // Shift or Ctrl/Cmd clicks in quick succession pick layers; only a plain double click renames
     let modifiers = ui.input(|input| input.modifiers);
     if row.clicked() && !on_control && !renaming {
@@ -802,10 +808,11 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         row.dnd_set_drag_payload(layer.id.0);
     }
 
-    // Drops: a layer lands above this row (inside a folder on its middle); a shelf material directly below it (inside a folder on its middle); a shelf smart mask replaces the mask
+    // A folder midpoint accepts child drops; a smart mask replaces the current mask
     let inside = layer.is_group()
         && ui.input(|input| input.pointer.hover_pos()).is_some_and(|pointer| (pointer.y - rect.center().y).abs() < row_height * FOLDER_DROP_ZONE);
     let shelf = row.dnd_hover_payload::<ShelfDrag>().map(|drag| drag.asset.clone());
+
     // Several selected layers move together, so none of them is a place to drop them
     let in_drag = |dragged: u64| dragged == layer.id.0 || several.as_ref().is_some_and(|layers| layers.contains(&dragged));
     let moving = row.dnd_hover_payload::<u64>().is_some_and(|dragged| !in_drag(*dragged));
@@ -1320,6 +1327,7 @@ fn blending_options_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) 
                 ui.add_enabled(false, egui::Button::new(label));
                 return;
             };
+
             if ui.button(label).clicked() {
                 let mut params = json!({"layer": lid, "channel": "all"});
                 if mode {
@@ -1356,6 +1364,7 @@ fn layer_context_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
     ui.set_min_width(230.0);
     let lid = layer.id.0;
     let keymap = app.ui.keymap.clone();
+
     // On one of several selected layers, remove, duplicate and group act on all of them
     let several = selection_with(app, layer.id);
     let run = |app: &mut TextureCraftApp, ui: &mut Ui, label: &str, id: &str, p: Value, enabled: bool| {
@@ -1375,9 +1384,11 @@ fn layer_context_menu(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
             ui.close();
         }
     };
+
     // An instance edits its source mask until it gets its own
     let project = &app.session.doc.project;
     let has_mask = project.layers.get(&project.mask_owner(layer.id)).is_some_and(|l| l.mask.is_some());
+
     // A switched-off mask has no values to export
     let mask_on = project.layers.get(&project.mask_owner(layer.id)).is_some_and(|l| l.mask.as_ref().is_some_and(|m| m.enabled));
     run(app, ui, tr("Add white mask"), "mask.add.white", json!({"layer": lid}), layer.mask.is_none());
@@ -1933,6 +1944,7 @@ fn stencil_section(app: &mut TextureCraftApp, ui: &mut Ui) {
         });
         import_button(app, ui);
     });
+
     // An image from the Assets panel dropped on the row becomes the stencil
     let row_response = row.response.interact(Sense::hover()).on_hover_text(tr("Drop an image from the Assets panel here to use it as the stencil"));
     if let Some(name) = image_drop(ui, &row_response) {
@@ -1942,6 +1954,7 @@ fn stencil_section(app: &mut TextureCraftApp, ui: &mut Ui) {
         ui.label(RichText::new(tr("Import an image (File > Import resources) to project it onto the mesh.")).color(tk.text_dim));
         return;
     }
+
     if let Some(st) = app.session.tool.stencil.as_mut() {
         slider(ui, tr("Scale"), &mut st.scale, 0.05..=4.0, 2);
         slider(ui, tr("Rotation"), &mut st.rotation, 0.0..=360.0, 0);
@@ -1993,6 +2006,7 @@ fn clone_section(app: &mut TextureCraftApp, ui: &mut Ui) {
         ui.label(RichText::new(tr("Hold V and click the mesh to set the source, then paint elsewhere to copy it.")).color(tk.text_dim));
         return;
     };
+
     ui.horizontal(|ui| {
         ui.label(trf("Source  U {u}  V {v}", &[("u", &format!("{:.3}", src.uv[0])), ("v", &format!("{:.3}", src.uv[1]))]));
         if ui.small_button(tr("Clear")).clicked() {
@@ -2319,7 +2333,8 @@ fn alpha_section(app: &mut TextureCraftApp, ui: &mut Ui) {
                 pick = Some(json!(a.label()));
             }
         }
-        // The library alpha in use (picked from the shelf's Alphas tab).
+
+        // The library alpha in use (picked from the shelf's Alphas tab)
         if let Some(a) = library {
             let tex = app.thumbs.alpha(ui.ctx(), a);
             alpha_tile(ui, true, &a.label, |p, r| {
@@ -2328,7 +2343,8 @@ fn alpha_section(app: &mut TextureCraftApp, ui: &mut Ui) {
                 }
             });
         }
-        // Imported images, sampled as grayscale.
+
+        // Imported images, sampled as grayscale
         for name in app.session.doc.resources.keys() {
             let Some(img) = app.session.images.get(name) else { continue };
             let tex = app.thumbs.image(ui.ctx(), name, img);
@@ -2479,6 +2495,7 @@ fn material_controls(app: &mut TextureCraftApp, ui: &mut Ui) {
         if !app.session.tool.enabled.contains(&channel) {
             continue;
         }
+
         let mut value = app.session.tool.values.get(&channel).copied().unwrap_or(channel.default_value());
         match channel.kind() {
             ChannelKind::Color => {
@@ -2898,6 +2915,7 @@ fn decal_editor(app: &mut TextureCraftApp, ui: &mut Ui, d: &Decal, base: &Value,
     for (row, ((label, range), x)) in rows.into_iter().zip(v.iter_mut()).enumerate() {
         edit = edit.or(slider_edit(ui, label, x, range, 3).map(|merge| (row, merge)));
     }
+
     // The lock is a setting of the editor, not of the decal: every decal starts locked
     let keep_id = ui.scope_id().with(("decal_keep_proportions", holder.0));
     let mut keep = ui.ctx().data(|data| data.get_temp::<bool>(keep_id)).unwrap_or(true);

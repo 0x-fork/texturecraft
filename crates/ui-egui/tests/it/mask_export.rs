@@ -83,6 +83,7 @@ fn copy_mask_to_clipboard_puts_the_gray_image_on_the_clipboard() {
     let mut h = harness(true);
     open_menu(&mut h);
     h.get_by_label("Copy mask to clipboard").click();
+
     // The copy command is in the output of the frame that handled the click only
     h.step();
 

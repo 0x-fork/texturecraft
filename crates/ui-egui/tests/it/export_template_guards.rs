@@ -1,34 +1,15 @@
 //! Export dialog > Output templates: deleting a template asks first, and switching away from a
 //! template whose last edit does not validate (so is not saved) asks before dropping that edit.
 
-use std::path::PathBuf;
-
 use egui::Key;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use serde_json::json;
 use texturecraft_ui_egui::TextureCraftApp;
 
-/// A library folder removed when its owner drops.
-struct Library(PathBuf);
+mod library;
 
-impl Library {
-    fn new(test: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("texturecraft-template-guards-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-
-    fn files(&self) -> usize {
-        std::fs::read_dir(&self.0).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).count()
-    }
-}
-
-impl Drop for Library {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
+use library::Library;
 
 /// The Output templates tab with two user templates, "Alpha tpl" (selected) and "Beta tpl", saved in `library`.
 fn harness(library: &Library) -> Harness<'static, TextureCraftApp> {
@@ -69,7 +50,8 @@ fn delete_asks_and_cancel_keeps_the_template() {
     h.get_by_label("Delete the selected template").click();
     h.run_steps(3);
     assert_eq!(library.files(), 2, "nothing is deleted before the answer");
-    // The export dialog has a Cancel too; the question's comes last.
+
+    // The export dialog has a Cancel too; the question's comes last
     h.get_all_by_label("Cancel").last().unwrap().click();
     h.run_steps(3);
     assert!(h.state().ui.windows.export, "the export dialog stays open");

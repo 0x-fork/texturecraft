@@ -8,6 +8,10 @@ use texturecraft_ui_egui::nav_buttons::{NavButton, NavView, button_rect};
 use texturecraft_ui_egui::state::{UiState, ViewLayout};
 use texturecraft_ui_egui::ui_state_store::UiStateStore;
 
+mod memory_storage;
+
+use memory_storage::MemoryStorage;
+
 const WINDOW: egui::Vec2 = vec2(1280.0, 800.0);
 
 /// The app showing only one view, so that the view fills the viewport rect the 3D view reports
@@ -193,7 +197,7 @@ fn buttons_stay_clear_of_the_pickers_the_gizmo_and_the_split_divider_at_1280_by_
     let view = harness.state().viewport_rect;
     assert!(view.width() >= 300.0, "the pickers fit the 3D side: {view:?}");
 
-    // The pickers: 300 wide at the top centre, 8 down and 22 high; the axis gizmo: lower left; the divider's 8 point grab zone: past the right edge
+    // Keep navigation buttons clear of the pickers, axis gizmo, set name, and divider
     let pickers = Rect::from_min_size(egui::pos2(view.center().x - 150.0, view.top() + 8.0), vec2(300.0, 22.0));
     let gizmo = Rect::from_min_size(egui::pos2(view.left(), view.bottom() - 56.0), vec2(80.0, 56.0));
     let set_name = Rect::from_min_size(egui::pos2(view.right() - 160.0, view.bottom() - 24.0), vec2(160.0, 24.0));
@@ -249,24 +253,4 @@ fn the_view_menu_item_hides_the_buttons_and_the_choice_is_saved() {
     harness.run_steps(3);
     drag_button(&mut harness, view, NavView::Scene, NavButton::Orbit, vec2(40.0, 20.0));
     assert_ne!(harness.state().session.camera, camera, "shown again");
-}
-
-/// App storage held in memory, saved the way the app saves its state between runs
-#[derive(Default)]
-struct MemoryStorage(std::collections::HashMap<String, String>);
-
-impl eframe::Storage for MemoryStorage {
-    fn get_string(&self, key: &str) -> Option<String> {
-        self.0.get(key).cloned()
-    }
-
-    fn set_string(&mut self, key: &str, value: String) {
-        self.0.insert(key.to_owned(), value);
-    }
-
-    fn remove_string(&mut self, key: &str) {
-        self.0.remove(key);
-    }
-
-    fn flush(&mut self) {}
 }

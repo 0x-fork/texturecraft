@@ -290,7 +290,8 @@ mod tests {
         assert!((rough - 0.3).abs() < 0.01);
         let set = s.doc.project.texture_sets[0].name.clone();
         let dir = std::env::temp_dir().join(format!("tc_user_preset_export_{}", std::process::id()));
-        // By name and as an inline object: the same files.
+
+        // By name and as an inline object: the same files
         for preset in [json!("packed"), packed] {
             let _ = std::fs::remove_dir_all(&dir);
             let r = run(&mut s, "file.exportTextures", json!({"dir": dir.display().to_string(), "preset": preset, "ts": 0})).unwrap();
@@ -352,7 +353,8 @@ mod tests {
         assert_eq!((&albedo[..4], &albedo[84..88]), (&b"DDS "[..], &b"DXT1"[..]), "colour without alpha: BC1");
         let dx = std::fs::read(dir.join(format!("{set}_dx.dds"))).unwrap();
         assert_eq!((&dx[84..88], le32(&dx, 128)), (&b"DX10"[..], 83), "normal maps are BC5 (DXGI_FORMAT_BC5_UNORM)");
-        // BC5 keeps X and Y (red and green) and reads back with blue 0.
+
+        // BC5 keeps X and Y (red and green) and reads back with blue 0
         let rg = &craft_dds::Texture::parse(&dx).unwrap().decode().unwrap()[i * 3..i * 3 + 3];
         let gl = image::open(dir.join(format!("{set}_gl.png"))).unwrap().to_rgb8().get_pixel((i % res) as u32, (i / res) as u32).0;
         assert!(rg[0].abs_diff(gl[0]) <= 4 && rg[2] == 0, "{rg:?} vs {gl:?}");

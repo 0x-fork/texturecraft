@@ -104,6 +104,7 @@ fn symmetry_param(cmd: &str, p: &Value, current: Option<DecalSymmetry>, bounds: 
         Some("z") => Some(2),
         Some(other) => return Err(bad(cmd, format!("unknown symmetry `{other}` (x, y, z or off)"))),
     };
+
     let flip = match strp(p, "symmetryFlip").map(str::to_ascii_lowercase).as_deref() {
         None => current.map_or(DecalFlip::None, |symmetry| symmetry.flip),
         Some("none" | "off") => DecalFlip::None,
@@ -111,6 +112,7 @@ fn symmetry_param(cmd: &str, p: &Value, current: Option<DecalSymmetry>, bounds: 
         Some("v") => DecalFlip::V,
         Some(other) => return Err(bad(cmd, format!("unknown symmetryFlip `{other}` (none, u or v)"))),
     };
+
     // The plane stays within the mesh, as the brush symmetry's offset does
     let (lo, hi) = bounds;
     let half_extent = (hi - lo) * 0.5;
@@ -120,6 +122,7 @@ fn symmetry_param(cmd: &str, p: &Value, current: Option<DecalSymmetry>, bounds: 
         (None, Some(symmetry)) => symmetry.offset,
         (None, None) => 0.0,
     };
+
     Ok(axis.map(|axis| {
         let limit = half_extent[usize::from(axis)];
         DecalSymmetry { axis, flip, offset: offset.clamp(-limit, limit) }
@@ -173,6 +176,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         rotation: f32p(p, "rotation").unwrap_or(0.0).rem_euclid(360.0),
         offset: [0.0; 2],
         flip: [boolp(p, "flipU").unwrap_or(false), boolp(p, "flipV").unwrap_or(false)],
+
         // By default it reaches half its larger side into the surface
         depth: f32p(p, "depth").map_or(size[0].max(size[1]) * 0.5, |depth| depth.clamp(mesh_diagonal * MIN_SIZE, mesh_diagonal * MAX_SIZE)),
         symmetry: symmetry_param(cmd, p, None, s.mesh.bounds())?,
@@ -267,8 +271,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
             return Err(bad(command, "that surface belongs to another texture set"));
         }
 
-        // Moving onto a surface facing another way carries the decal's up along (a stale up would
-        // lie in the new surface or flip the decal), unless `up` says otherwise below
+        // Carry up so a stale axis cannot lie in or flip on the new surface
         let previous = (Vec3::from(decal.normal), Vec3::from(decal.up));
         (decal.center, decal.normal, decal.offset) = (center.to_array(), normal.to_array(), [0.0; 2]);
         if params.get("up").is_none() {

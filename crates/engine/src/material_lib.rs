@@ -113,6 +113,7 @@ impl Session {
         if texturecraft_formats::mcmat::is_mcmat(bytes) || texturecraft_formats::mcmat::is_mcraft(bytes) {
             return self.add_linked_material_bytes_at(bytes, place);
         }
+
         let pf = texturecraft_formats::load_project_bytes(bytes).map_err(fe)?;
         let root = pf
             .project

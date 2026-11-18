@@ -34,6 +34,7 @@ fn app_with_decal() -> (Harness<'static, TextureCraftApp>, u64) {
     let layer = texturecraft_engine::execute(&mut session, "layer.add.decal", &placed).unwrap()["layer"].as_u64().unwrap();
 
     let mut harness = Harness::builder().with_size(WINDOW_SIZE).build_eframe(|cc| TextureCraftApp::new(cc, session));
+
     // The labels below are English; a first run would speak the system's language
     harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(STARTUP_FRAMES);

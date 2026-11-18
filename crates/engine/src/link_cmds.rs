@@ -351,6 +351,7 @@ impl Session {
         if maps.is_empty() {
             return Err(EngineError::Other(format!("{} has no maps TextureCraft can paint with", m.manifest.name)));
         }
+
         let label = format!("Add {}", m.manifest.name);
         let (id, names) = self.edit(&label, |s| {
             let ts = s.ts();

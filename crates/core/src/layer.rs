@@ -8,6 +8,8 @@ use crate::{BakedMap, BlendMode, Channel, ChannelKind, lum};
 
 mod curvature_detail;
 mod curvature_mode;
+mod decal_flip;
+mod decal_symmetry;
 mod generator_global;
 mod micro_detail;
 mod output_resolution;
@@ -15,6 +17,8 @@ mod resolution_mode;
 
 pub use curvature_detail::CurvatureDetail;
 pub use curvature_mode::CurvatureMode;
+pub use decal_flip::DecalFlip;
+pub use decal_symmetry::DecalSymmetry;
 pub use generator_global::GeneratorGlobal;
 pub use micro_detail::MicroDetail;
 pub use output_resolution::OutputResolution;
@@ -199,36 +203,6 @@ pub struct Decal {
     /// Mirror the image inside the frame: left to right (`[0]`), top to bottom (`[1]`). Old projects have neither.
     #[serde(default, skip_serializing_if = "not_flipped")]
     pub flip: [bool; 2],
-}
-
-/// The mirrored copy of a decal: reflected through the plane perpendicular to `axis`, across the mesh center (moved by `offset`).
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DecalSymmetry {
-    /// Axis the mirror plane is perpendicular to (0 = X, 1 = Y, 2 = Z)
-    pub axis: u8,
-    /// Extra flip of the image on the mirrored copy, on top of the reflection itself
-    #[serde(default)]
-    pub flip: DecalFlip,
-    /// Where the mirror plane sits, relative to the mesh center along `axis` (world units, as the brush symmetry's offset)
-    #[serde(default, skip_serializing_if = "is_zero")]
-    pub offset: f32,
-}
-
-fn is_zero(value: &f32) -> bool {
-    *value == 0.0
-}
-
-/// How the mirrored decal's image is turned over
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DecalFlip {
-    /// Only the reflection: the copy is the decal's mirror image
-    #[default]
-    None,
-    /// The image's left and right swapped
-    U,
-    /// The image's top and bottom swapped
-    V,
 }
 
 /// Serde helper: a decal that mirrors nothing saves without the field
@@ -1231,7 +1205,7 @@ pub struct Effect {
 
 impl Effect {
     pub fn new(id: LayerId, kind: EffectKind) -> Effect {
-        // Generators and fills that build a mask usually add on top of the background.
+        // Generators and fills that build a mask usually add on top of the background
         Effect { id, name: kind.name().to_string(), visible: true, kind, blend: BlendMode::Normal, opacity: 1.0 }
     }
 }
@@ -1395,8 +1369,8 @@ mod tests {
             assert_eq!(serde_json::from_value::<Source>(json).unwrap(), source);
             assert_eq!(source.ramp(), ramp.as_slice());
         }
-        // No stops: no `ramp` key, so projects without gradient maps save as they did; files from
-        // before gradient maps (no key) load with none.
+
+        // Empty ramps preserve older projects' JSON shape
         let old_procedural = serde_json::json!({"Procedural": {"pattern": serde_json::to_value(Procedural::new(ProceduralKind::Clouds)).unwrap(), "low": [0.25, 0.25, 0.25], "high": [0.75, 0.75, 0.75]}});
         let old_anchor = serde_json::json!({"Anchor": {"anchor": 7, "channel": "BaseColor"}});
         for (old, source) in [(old_procedural, procedural(Vec::new())), (old_anchor, anchor(Vec::new()))] {

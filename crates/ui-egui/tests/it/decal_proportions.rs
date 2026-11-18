@@ -27,6 +27,7 @@ fn app_with_decal() -> (Harness<'static, TextureCraftApp>, LayerId) {
     .unwrap();
     let layer = LayerId(placed["layer"].as_u64().unwrap());
     let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1400.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
+
     // The labels below are English; a first run would speak the system's language
     harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(4);

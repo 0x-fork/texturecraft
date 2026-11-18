@@ -58,10 +58,12 @@ fn the_viewport_menu_goes_to_the_front_view_and_orbit_works_afterwards() {
     let mut h = harness();
     h.state_mut().run("camera.set", json!({"yaw": 70, "pitch": 30, "ortho": true}));
     h.run_steps(2);
+
     // The menu bar's "Viewport", above the dock's tab of the same name
     h.get_all_by_label("Viewport").min_by(|a, b| a.rect().top().total_cmp(&b.rect().top())).unwrap().click();
     h.run_steps(2);
     h.get_by_label_contains("Front view").click();
+
     // The UI glides there over about a third of a second
     h.run_steps(6);
     let camera = h.state().session.camera;
@@ -139,6 +141,7 @@ fn a_view_that_returns_to_the_starting_camera_cancels_the_glide_of_the_earlier_v
     let mut h = slow_glide_harness();
     start_front_glide(&mut h);
     h.run_steps(60);
+
     // Back, then Front again before a frame runs: the camera is already at the front
     h.state_mut().run("camera.view.back", json!({}));
     h.state_mut().run("camera.view.front", json!({}));
@@ -183,6 +186,7 @@ fn a_control_view_command_naming_the_current_camera_ends_a_glide_started_in_the_
     let mut h = slow_glide_harness();
     start_front_glide(&mut h);
     h.run_steps(60);
+
     // At the front: the UI starts a glide to the back, then a script asks for the front before a frame runs
     h.state_mut().run("camera.view.back", json!({}));
     let context = h.ctx.clone();
@@ -242,6 +246,7 @@ fn alt_drag_during_a_glide_is_not_overwritten_by_it() {
     drag(&mut h, center, vec2(-200.0, 0.0), Modifiers::ALT);
     h.run_steps(60);
     let camera = h.state().session.camera;
+
     // The glide ends at yaw 0 and pitch 0; the drag turned the camera away from the front by far more than a degree
     assert!(camera.yaw.abs() > 0.1, "the orbit stays: yaw {}", camera.yaw.to_degrees());
 }

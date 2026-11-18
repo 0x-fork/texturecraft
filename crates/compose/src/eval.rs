@@ -1439,6 +1439,7 @@ impl<'a, 'b> Texel<'a, 'b> {
     fn source(&mut self, source: &Source, projection: &Projection, kind: ChannelKind) -> [f32; 3] {
         match source {
             Source::Uniform(value) => *value,
+
             // A gradient map: on color channels the value picks a color along the stops
             Source::Procedural { pattern, ramp, .. } if kind == ChannelKind::Color && !ramp.is_empty() => {
                 let (coords, projection, _) = self.projected(projection);
@@ -1446,6 +1447,7 @@ impl<'a, 'b> Texel<'a, 'b> {
             }
             Source::Anchor { anchor, channel, ramp } if kind == ChannelKind::Color && !ramp.is_empty() => {
                 let value = self.anchored(*anchor, *channel);
+
                 // Signed values (height) span -1..1; a mask anchor's gray already spans 0..1 in every channel
                 let signed = channel.kind() == ChannelKind::Signed && !self.is_mask_anchor(*anchor);
                 let lightness = if signed { lum(value) * 0.5 + 0.5 } else { lum(value) };
@@ -1702,15 +1704,16 @@ impl<'a, 'b> Texel<'a, 'b> {
             if self.stop == Some(n.id) {
                 return true;
             }
+
             let m = self.tape_mask(n);
             match &n.content {
-                // A masked-out group still runs when it records anchors (they hold its inner
-                // stack) or may hold the stop layer.
+                // Masked-out groups still run when they record anchors or hold the stop layer
                 Content::Group(children) if m > 0.0 || n.has_anchor || self.stop.is_some() => {
                     let mut inner = *acc;
                     if self.eval(children, &mut inner) {
                         return true;
                     }
+
                     if m > 0.0 {
                         mix_group(acc, &inner, &n.chans, m);
                     }
@@ -1722,7 +1725,8 @@ impl<'a, 'b> Texel<'a, 'b> {
                             apply(acc, c, v, cov, m);
                         }
                     }
-                    // Anchors inside the content stack: the stack with the content cut there.
+
+                    // Anchors inside the content stack read the stack cut at that point
                     for (a, cut) in &n.anchors {
                         let rec = match (cut, before) {
                             (Some(k), Some(mut b)) => {
@@ -2356,6 +2360,7 @@ pub fn pad_tiles(out: &mut Composite, dmap: &DilationMap, tiles: &[(u32, u32)]) 
     if (dmap.width, dmap.height) != (w, h) {
         return written;
     }
+
     let (nx, ny) = (w.div_ceil(TILE) as i64, h.div_ceil(TILE) as i64);
     let mut set = std::collections::BTreeSet::new();
     for &(tx, ty) in tiles {
@@ -2372,8 +2377,8 @@ pub fn pad_tiles(out: &mut Composite, dmap: &DilationMap, tiles: &[(u32, u32)]) 
     for img in out.channels.values_mut() {
         let comps = img.comps();
         let src: &TileImage = img;
-        // Padding writes only uncovered texels and reads only covered ones, so tiles pad
-        // independently (in parallel) from the unpadded image.
+
+        // Each tile pads from the original image, so parallel writes stay independent
         let padded: Vec<((u32, u32), Vec<u16>)> = set
             .par_iter()
             .filter_map(|&(tx, ty)| {
@@ -2384,10 +2389,12 @@ pub fn pad_tiles(out: &mut Composite, dmap: &DilationMap, tiles: &[(u32, u32)]) 
                         if x >= w || y >= h {
                             continue;
                         }
+
                         let Some((sx, sy)) = dmap.source(x, y) else { continue };
                         if (sx, sy) == (x, y) {
                             continue;
                         }
+
                         let v = src.get(sx, sy);
                         let d = data.get_or_insert_with(|| src.tile(tx, ty).map_or_else(|| vec![0; TILE_AREA * comps], <[u16]>::to_vec));
                         let o = (ly * TILE + lx) as usize * comps;
@@ -2420,48 +2427,71 @@ pub fn mask_texels(inputs: &Inputs, id: LayerId) -> Option<Vec<f32>> {
     prepare_mask_curvature_sizes(inputs, std::iter::once(mask));
 
     let fields = neighbourhood_fields(inputs, &channels, &coordinates);
-    let tiles: HashMap<(u32, u32), Vec<f32>> = coordinates
-        .par_iter()
-        .map(|&tile| {
-            let mut values = vec![0.0f32; TILE_AREA];
-            for (offset, value) in mask_tile(inputs, id, mask, &channels, &fields, tile, 0..TILE_AREA) {
-                if let Some(destination) = values.get_mut(offset) {
+    let width_usize = width as usize;
+    let tile_side = TILE as usize;
+    let mut output = vec![0.0f32; width_usize * height as usize];
+
+    // Write each tile into disjoint atlas rows without temporary tile buffers
+    output.par_chunks_mut(width_usize.max(1) * tile_side).enumerate().for_each(|(tile_y, rows)| {
+        for tile_x in 0..width.div_ceil(TILE) {
+            for (offset, value) in mask_tile(inputs, id, mask, &channels, &fields, (tile_x, tile_y as u32), 0..TILE_AREA) {
+                let x = tile_x as usize * tile_side + offset % tile_side;
+                if x < width_usize
+                    && let Some(destination) = rows.get_mut((offset / tile_side) * width_usize + x)
+                {
                     *destination = value;
                 }
             }
-            (tile, values)
-        })
-        .collect();
-
-    let mut output = vec![0.0f32; width as usize * height as usize];
-    for y in 0..height {
-        for x in 0..width {
-            if let Some(tile) = tiles.get(&(x / TILE, y / TILE))
-                && let Some(value) = tile.get(((y % TILE) * TILE + x % TILE) as usize)
-                && let Some(destination) = output.get_mut((y * width + x) as usize)
-            {
-                *destination = *value;
-            }
         }
-    }
+    });
     Some(output)
 }
 
 /// The layer mask as a square grayscale image, using nearest texels and black outside the mesh
+/// Keep preview tiles at 8 bits instead of retaining the export's full float atlas
 /// Returns None without an enabled mask
 pub fn mask_image(inputs: &Inputs, id: LayerId, size: u32) -> Option<Vec<u8>> {
-    let texels = mask_texels(inputs, id)?;
+    let mask = layer_mask(inputs.project, id).filter(|mask| mask.enabled)?;
+    let channels = inputs.project.texture_set(inputs.ts).map(|set| set.channel_list()).unwrap_or_default();
     let (width, height) = (inputs.gbuf.width, inputs.gbuf.height);
+    let coordinates = all_tiles(width, height);
+
+    // A hidden layer's mask is left out of the stack's preparation
+    prepare_mask_curvature_sizes(inputs, std::iter::once(mask));
+
+    let fields = neighbourhood_fields(inputs, &channels, &coordinates);
+    let width_usize = width as usize;
+    let tile_side = TILE as usize;
+    let mut atlas = vec![0u8; width_usize * height as usize];
+
+    // Write each tile row into disjoint atlas rows
+    atlas.par_chunks_mut(width_usize.max(1) * tile_side).enumerate().for_each(|(tile_y, rows)| {
+        for tile_x in 0..width.div_ceil(TILE) {
+            for (offset, value) in mask_tile(inputs, id, mask, &channels, &fields, (tile_x, tile_y as u32), 0..TILE_AREA) {
+                let x = tile_x as usize * tile_side + offset % tile_side;
+                if x < width_usize
+                    && let Some(destination) = rows.get_mut((offset / tile_side) * width_usize + x)
+                {
+                    *destination = (value * 255.0 + 0.5) as u8;
+                }
+            }
+        }
+    });
+
     let size = size.max(1);
+    if width == size && height == size {
+        return Some(atlas);
+    }
+
     let mut output = vec![0u8; (size * size) as usize];
     for y in 0..size {
         for x in 0..size {
             let sample_x = (u64::from(x) * u64::from(width) / u64::from(size)) as u32;
             let sample_y = (u64::from(y) * u64::from(height) / u64::from(size)) as u32;
-            if let Some(value) = texels.get(sample_y as usize * width as usize + sample_x as usize)
+            if let Some(value) = atlas.get(sample_y as usize * width_usize + sample_x as usize)
                 && let Some(destination) = output.get_mut((y * size + x) as usize)
             {
-                *destination = (value * 255.0 + 0.5) as u8;
+                *destination = *value;
             }
         }
     }
@@ -2904,14 +2934,15 @@ mod tests {
         let id = f.project.alloc_id();
         let l = Layer::new(id, "Paint", LayerKind::Paint, &[Channel::BaseColor]);
         f.project.insert_layer(0, l, None, false).unwrap();
-        // Half-covered red texel: premul (0.5, 0, 0), coverage 0.5.
+
+        // Half-covered red texel has premultiplied color and 0.5 coverage
         let img = f.pixels.layer_mut(id, Channel::BaseColor, (64, 64));
         img.set(3, 3, &[to_u16(0.5), 0, 0, to_u16(0.5)]);
         let out = run(&f, None);
         assert!(close(out.value(Channel::BaseColor, 3, 3), [0.75, 0.25, 0.25]));
         assert!(close(out.value(Channel::BaseColor, 4, 3), [0.5; 3]));
 
-        // A live stroke painting blue at full alpha on texel (4, 3).
+        // A live stroke paints blue at full alpha on texel (4, 3)
         let mut alpha = TileImage::new(64, 64, 1);
         alpha.set(4, 3, &[to_u16(1.0)]);
         let pv = StrokePreview {
@@ -2927,7 +2958,7 @@ mod tests {
         let out = run(&f, Some(&pv));
         assert!(close(out.value(Channel::BaseColor, 4, 3), [0.0, 0.0, 1.0]));
 
-        // A black mask hides the layer.
+        // A black mask hides the layer
         f.project.layer_mut(id).unwrap().mask = Some(Mask::new(MaskBackground::Black));
         let out = run(&f, None);
         assert!(close(out.value(Channel::BaseColor, 3, 3), [0.5; 3]));
@@ -3007,6 +3038,51 @@ mod tests {
         assert!(assert_sparse_mask_matches_image(&fixture, missing, &texels).is_none());
         fixture.project.layer_mut(layer).unwrap().mask.as_mut().unwrap().enabled = false;
         assert!(assert_sparse_mask_matches_image(&fixture, layer, &texels).is_none());
+    }
+
+    #[test]
+    fn mask_image_resamples_a_non_square_atlas() {
+        let mut fixture = fixture();
+        fixture.gbuf = UvGBuffer::new(&fixture.mesh, 0, 128, 64);
+        fixture.project.texture_sets[0].resolution = 128;
+        let layer = fill_layer(&mut fixture.project, [1.0; 3], 1.0);
+        let effect = fixture.project.alloc_id();
+        let mut mask = Mask::new(MaskBackground::Black);
+        mask.effects.push(Effect::new(
+            effect,
+            EffectKind::Fill {
+                source: Source::Procedural { pattern: Procedural::new(ProceduralKind::Checker), low: [0.0; 3], high: [1.0; 3], ramp: Vec::new() },
+                projection: Projection::default(),
+            },
+        ));
+        fixture.project.layer_mut(layer).unwrap().mask = Some(mask);
+        let images = ImageStore::default();
+        let inputs = Inputs {
+            project: &fixture.project,
+            ts: 0,
+            mesh: &fixture.mesh,
+            gbuf: &fixture.gbuf,
+            pixels: &fixture.pixels,
+            baked: &fixture.baked,
+            block_scales: fixture.project.texture_sets[0].block_scales(),
+            preview: None,
+            images: &images,
+            bounds: fixture.mesh.bounds(),
+        };
+        let sampled_texels: Vec<_> = (0..64).flat_map(|y| (0..64).map(move |x| (x * 2, y))).collect();
+
+        let preview = mask_image(&inputs, layer, 64).unwrap();
+        let sparse = mask_at(&inputs, layer, &sampled_texels).unwrap();
+        let atlas = mask_texels(&inputs, layer).unwrap();
+
+        assert_eq!(preview.len(), 64 * 64);
+        assert_eq!(atlas.len(), 128 * 64);
+        assert!(preview.contains(&0));
+        assert!(preview.contains(&255));
+        for ((&preview_value, &sparse_value), &(x, y)) in preview.iter().zip(&sparse).zip(&sampled_texels) {
+            assert!((f32::from(preview_value) / 255.0 - sparse_value).abs() <= 0.5 / 255.0 + 1e-6);
+            assert!((atlas[(y * 128 + x) as usize] - sparse_value).abs() <= 1e-6);
+        }
     }
 
     #[test]
@@ -3427,7 +3503,7 @@ soft {soft:?}"
 
     #[test]
     fn high_pass_edge_detect_directional_warp_grayscale_and_normal_invert() {
-        // Uniform content: high pass is mid gray (0 for height), edge detect black.
+        // Uniform content gives mid gray high pass and black edge detection
         let mut f = fixture();
         let id = fill_layer(&mut f.project, [1.0, 0.0, 0.0], 0.2);
         let hp = content_fx(&mut f, id, EffectKind::Filter(Filter::HighPass { radius: 64.0 }));
@@ -3437,7 +3513,8 @@ soft {soft:?}"
         f.project.layer_mut(id).unwrap().content_effects.retain(|e| e.id != hp);
         content_fx(&mut f, id, EffectKind::Filter(Filter::EdgeDetect { width: 64.0 }));
         assert!(close(run(&f, None).value(Channel::Roughness, 30, 30), [0.0; 3]));
-        // A checker: its borders light up, the middle of its cells stays black.
+
+        // A checker's borders light up while cell interiors stay black
         let mut f = fixture();
         let id = f.project.alloc_id();
         let mut fill = Fill::default();
@@ -3457,12 +3534,14 @@ soft {soft:?}"
         let warped = run(&f, None);
         let differs = (0..64).any(|y| (0..64).any(|x| (warped.value(Channel::Roughness, x, y)[0] - plain.value(Channel::Roughness, x, y)[0]).abs() > 0.2));
         assert!(differs, "the warp moves the checker");
-        // Point filters.
+
+        // Point filters
         assert!(close(Filter::Grayscale.point(ChannelKind::Color, [1.0, 0.0, 0.0]).unwrap(), [lum([1.0, 0.0, 0.0]); 3]));
         assert_eq!(Filter::Grayscale.point(ChannelKind::Scalar, [0.3; 3]), Some([0.3; 3]));
         assert_eq!(Filter::NormalInvert.point(ChannelKind::NormalMap, [0.5, 0.25, 1.0]), Some([0.5, 0.75, 1.0]));
         assert_eq!(Filter::NormalInvert.point(ChannelKind::Color, [0.5, 0.25, 1.0]), Some([0.5, 0.25, 1.0]));
-        // Replace color: near colors shift (keeping their offset), far ones and scalars stay.
+
+        // Replace color shifts near colors while far colors and scalars stay
         let rc = Filter::ReplaceColor { from: [0.8, 0.1, 0.1], to: [0.1, 0.1, 0.8], tolerance: 0.1, softness: 0.1 };
         assert!(close(rc.point(ChannelKind::Color, [0.85, 0.1, 0.1]).unwrap(), [0.15, 0.1, 0.8]));
         assert!(close(rc.point(ChannelKind::Color, [0.1, 0.8, 0.1]).unwrap(), [0.1, 0.8, 0.1]));
@@ -3490,20 +3569,23 @@ soft {soft:?}"
         let mut f = fixture();
         let id = checker(&mut f);
         let plain = values(&f);
-        // Bevel: never above the shape, and its edges become ramps.
+
+        // Bevel stays below the shape and turns edges into ramps
         let fx = content_fx(&mut f, id, EffectKind::Filter(Filter::Bevel { width: 128.0 }));
         let bevel = values(&f);
         let mids = |v: &[f32]| v.iter().filter(|x| **x > 0.05 && **x < 0.95).count();
         assert!(bevel.iter().zip(&plain).all(|(b, p)| *b <= p + 1e-4 && *b >= 0.0), "a bevel only lowers values");
         assert!(mids(&bevel) > mids(&plain) + 64, "{} vs {}", mids(&bevel), mids(&plain));
-        // Mosaic: fewer changes from one texel to the next.
+
+        // Mosaic reduces changes between adjacent texels
         f.project.layer_mut(id).unwrap().content_effects.retain(|e| e.id != fx);
         let fx = content_fx(&mut f, id, EffectKind::Filter(Filter::Mosaic { size: 768.0 }));
         let mosaic = values(&f);
         let steps = |v: &[f32]| v.windows(2).filter(|w| (w[0] - w[1]).abs() > 0.01).count();
         assert!(steps(&mosaic) < steps(&plain), "{} vs {}", steps(&mosaic), steps(&plain));
         assert!(mosaic.iter().all(|v| (0.0..=1.0).contains(v)));
-        // Glow on uniform content adds its own blur: 0.2 + 0.2.
+
+        // Glow on uniform content adds its own blur
         f.project.layer_mut(id).unwrap().content_effects.retain(|e| e.id != fx);
         let mut f = fixture();
         let id = fill_layer(&mut f.project, [0.1; 3], 0.2);
@@ -3522,7 +3604,8 @@ soft {soft:?}"
             (out.value(Channel::BaseColor, 30, 30), out.value(Channel::Roughness, 30, 30))
         };
         let n = primitives::plane(2.0, 2).normals[0];
-        // Facing the light: ambient + light = 1 (unchanged); facing away: ambient only.
+
+        // Facing the light adds illumination; facing away keeps ambient only
         let (toward, rough) = lit(if n.y > 0.0 { 90.0 } else { -90.0 });
         assert!(close(toward, [0.5; 3]) && close(rough, [0.3; 3]), "{toward:?} {rough:?}");
         let (away, _) = lit(if n.y > 0.0 { -90.0 } else { 90.0 });
@@ -3535,7 +3618,8 @@ soft {soft:?}"
     #[test]
     fn geometry_masks_show_layers_on_chosen_parts_only() {
         let mut f = fixture();
-        // Two parts of the plane's one material: the first half of its triangles and the rest.
+
+        // The plane's material spans both triangle groups
         let n = f.mesh.indices.len() as u32 / 6 * 3;
         f.mesh.submeshes = vec![
             texturecraft_geom::SubMesh { name: "Lid".into(), material: 0, start: 0, count: n },
@@ -3565,13 +3649,15 @@ soft {soft:?}"
         material.sources.insert(Channel::Roughness, Source::Uniform([0.2; 3]));
         content_fx(&mut f, id, EffectKind::Material(material));
         let paint = content_fx(&mut f, id, EffectKind::Paint);
-        // Roughness 0.9 painted at half coverage (premultiplied).
+
+        // Roughness 0.9 is painted at half coverage
         f.pixels.layer_mut(paint, Channel::Roughness, (64, 64)).set(3, 3, &[to_u16(0.45), to_u16(0.5)]);
         let out = run(&f, None);
         assert!(close(out.value(Channel::Roughness, 10, 10), [0.2; 3]), "the fill effect covers the empty paint layer");
         assert!(close(out.value(Channel::Roughness, 3, 3), [0.55; 3]), "{:?}", out.value(Channel::Roughness, 3, 3));
         assert!(close(out.value(Channel::BaseColor, 3, 3), [0.5; 3]), "channels without a source stay untouched");
-        // Flattening bakes the content effects in.
+
+        // Flattening bakes in the content effects
         let images = Default::default();
         let inp = Inputs {
             project: &f.project,
@@ -3606,11 +3692,13 @@ soft {soft:?}"
         mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Fill { source, projection: Projection::default() }));
         f.project.layer_mut(top).unwrap().mask = Some(mask.clone());
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.7; 3]));
-        // Under a blur the anchor is read by the field pre-pass too: a flat height stays flat.
+
+        // The field pre-pass reads anchors under blur, preserving flat height
         mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 32.0 })));
         f.project.layer_mut(top).unwrap().mask = Some(mask);
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.7; 3]));
-        // An anchor above its reader is not evaluated yet: it reads the channel default (0).
+
+        // An anchor above its reader is not evaluated yet, so it reads the channel default
         f.project.move_layer(low, 1).unwrap();
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.5; 3]));
     }
@@ -3817,6 +3905,7 @@ soft {soft:?}"
         let mut fill = Fill { projection: Projection::Decal(d), ..Fill::default() };
         fill.sources.insert(Channel::BaseColor, Source::image("decal"));
         project.insert_layer(0, Layer::new(id, "Decal", LayerKind::Fill(fill), &[Channel::BaseColor]), None, false).unwrap();
+
         // Top left red, top right blue, bottom left green, bottom right yellow
         let img = crate::store::ImageRes {
             width: 2,
@@ -3937,6 +4026,7 @@ soft {soft:?}"
     #[test]
     fn the_mirror_plane_can_be_moved_along_its_axis() {
         use texturecraft_core::{DecalFlip, DecalSymmetry};
+
         // Mirrored across Z with the plane at z = 0.3: a decal at z = -0.2 gets its copy at z = 0.8
         let at = (0.1, -0.2);
         let moved = Some(DecalSymmetry { axis: 2, flip: DecalFlip::None, offset: 0.3 });
@@ -3974,6 +4064,7 @@ soft {soft:?}"
     fn flipping_a_decal_mirrors_its_image_inside_the_frame() {
         let mut f = fixture();
         let s = f.gbuf.surface(&f.mesh, 32 * 64 + 32).unwrap();
+
         // The frame's center sits a quarter of its width to the right of the texel, so the texel reads the image's left half
         let d = texturecraft_core::Decal {
             center: s.pos.to_array(),
@@ -4047,7 +4138,8 @@ soft {soft:?}"
             let id = f.project.alloc_id();
             let mut fill = Fill::default();
             fill.sources.insert(Channel::BaseColor, Source::Anchor { anchor, channel: Channel::BaseColor, ramp: RAMP.to_vec() });
-            // A scalar channel reading the same anchor with stops keeps reading its gray.
+
+            // A scalar channel reading the same anchor with stops keeps reading its gray
             fill.sources.insert(Channel::Roughness, Source::Anchor { anchor, channel: Channel::BaseColor, ramp: RAMP.to_vec() });
             fill.sources.insert(Channel::Metallic, Source::Uniform([0.3; 3]));
             let channels = [Channel::BaseColor, Channel::Roughness, Channel::Metallic];
@@ -4113,7 +4205,8 @@ soft {soft:?}"
             let out = run(&f, None);
             (0..64).map(|x| (out.value(Channel::BaseColor, x, 20), out.value(Channel::Roughness, x, 20))).collect::<Vec<_>>()
         };
-        // The pattern's own 0..1 values, then the same pattern through low and high and through the stops.
+
+        // The pattern's own 0..1 values, then the same pattern through low and high and through the stops
         let gray = composite(Vec::new(), [0.0; 3], [1.0; 3]);
         let plain = composite(Vec::new(), low, high);
         let mapped = composite(RAMP.to_vec(), low, high);

@@ -242,6 +242,7 @@ pub fn menu_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
                         if current_sub == Some(s) {
                             continue;
                         }
+
                         current_sub = Some(s);
                         ui.menu_button(tr(s), |ui| {
                             for x in items.iter().filter(|x| x.sub == Some(s)) {
@@ -253,10 +254,12 @@ pub fn menu_bar(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
                         });
                         continue;
                     }
+
                     if item.label == "-" {
                         ui.separator();
                         continue;
                     }
+
                     menu_item(app, &ctx, ui, item);
                 }
             });
@@ -395,6 +398,7 @@ pub fn shortcuts(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let commands_to_invoke = ctx.input_mut(|input| {
         // egui's label selection copies on these events at the end of the frame
         let copies: Vec<_> = input.events.iter().filter(|event| matches!(event, egui::Event::Copy | egui::Event::Cut)).cloned().collect();
+
         // Escape and Enter answer the Reset UI question first, even when a shortcut binds them
         let confirming_reset = app.ui.windows.confirm_reset_ui;
         if confirming_reset && !popup_open {

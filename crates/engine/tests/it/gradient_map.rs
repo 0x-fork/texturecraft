@@ -49,7 +49,7 @@ fn an_anchor_gradient_map_recolors_the_gray_below_and_undoes() {
     execute(&mut s, "layer.fill.set", &json!({"layer": top, "channel": "baseColor", "anchor": anchor})).unwrap();
     assert!(close(center(&mut s, Channel::BaseColor), [0.5; 3]), "{:?}", center(&mut s, Channel::BaseColor));
 
-    // Mid gray picks the middle stop; the other channels keep their values.
+    // Mid gray picks the middle stop; the other channels keep their values
     execute(&mut s, "layer.fill.set", &json!({"layer": top, "channel": "baseColor", "colors": RGB})).unwrap();
     assert!(close(center(&mut s, Channel::BaseColor), [0.0, 1.0, 0.0]), "{:?}", center(&mut s, Channel::BaseColor));
     assert!(close(center(&mut s, Channel::Roughness), [0.3; 3]));
@@ -58,7 +58,7 @@ fn an_anchor_gradient_map_recolors_the_gray_below_and_undoes() {
     let row = inspect["layers"].as_array().unwrap().iter().find(|l| l["id"] == top).unwrap().clone();
     assert_eq!(row["fill"]["sources"]["baseColor"]["colors"], json!(RGB), "{row}");
 
-    // One undo step each way.
+    // One undo step each way
     execute(&mut s, "edit.undo", &Value::Null).unwrap();
     assert!(ramp(&s, top).is_empty());
     assert!(close(center(&mut s, Channel::BaseColor), [0.5; 3]));
@@ -66,7 +66,7 @@ fn an_anchor_gradient_map_recolors_the_gray_below_and_undoes() {
     assert_eq!(ramp(&s, top), RGB.to_vec());
     assert!(close(center(&mut s, Channel::BaseColor), [0.0, 1.0, 0.0]));
 
-    // Picking the anchor again keeps the stops; hex colors work; an empty list removes them.
+    // Picking the anchor again keeps the stops; hex colors work; an empty list removes them
     execute(&mut s, "layer.fill.set", &json!({"layer": top, "channel": "baseColor", "colors": ["#000000", "#ff0000"]})).unwrap();
     execute(&mut s, "layer.fill.set", &json!({"layer": top, "channel": "baseColor", "anchor": anchor})).unwrap();
     assert!(close(center(&mut s, Channel::BaseColor), [0.5, 0.0, 0.0]), "{:?}", center(&mut s, Channel::BaseColor));
@@ -83,7 +83,8 @@ fn a_procedural_gradient_map_saves_and_loads() {
     let value = center(&mut s, Channel::BaseColor);
     assert!(close(value, [1.0, 0.0, 0.0]) || close(value, [0.0, 0.0, 1.0]), "a stop, not low or high: {value:?}");
     assert!(close(center(&mut s, Channel::Roughness), [0.4; 3]));
-    // Changing the pattern's settings without `colors` (as its sliders do) keeps the stops.
+
+    // Changing the pattern's settings without `colors` (as its sliders do) keeps the stops
     execute(
         &mut s,
         "layer.fill.set",
@@ -117,7 +118,8 @@ fn gradient_map_colors_are_refused_where_they_cannot_apply() {
     assert!(set(&mut s, json!({"channel": "baseColor", "procedural": "Clouds", "colors": vec![[0.5; 3]; 17]})).is_err(), "at most 16 stops");
     assert!(set(&mut s, json!({"channel": "baseColor", "procedural": "Clouds", "colors": ["red"]})).is_err());
     assert!(ramp(&s, layer).is_empty(), "a refused edit changes nothing");
-    // Removing stops where there are none (a uniform color) changes nothing either.
+
+    // Removing stops where there are none (a uniform color) changes nothing either
     let before = s.doc.project.clone();
     set(&mut s, json!({"channel": "baseColor", "colors": []})).unwrap();
     assert_eq!(s.doc.project, before);
@@ -129,8 +131,8 @@ fn gradient_map_colors_are_refused_where_they_cannot_apply() {
 fn a_scalar_channel_drops_stuck_stops_when_its_source_is_set() {
     let mut s = session();
     let layer = id(execute(&mut s, "layer.add.fill", &json!({"roughness": 0.4})).unwrap(), "layer");
-    // Stops on a scalar channel (a source copied from a color channel, or written by hand): the
-    // panel shows no stop editor there, so setting the source again must not keep them.
+
+    // Replacing a scalar source must discard color stops hidden by the panel
     let stuck = |s: &mut Session| {
         let LayerKind::Fill(fill) = &mut s.doc.project.layer_mut(LayerId(layer)).unwrap().kind else { panic!("not a fill layer") };
         let pattern = texturecraft_engine::core::Procedural::new(texturecraft_engine::core::ProceduralKind::Clouds);
@@ -151,17 +153,20 @@ fn a_scalar_channel_drops_stuck_stops_when_its_source_is_set() {
 #[test]
 fn removing_stops_from_an_absent_channel_adds_no_channel() {
     let mut s = session();
-    // A content fill effect that supplies only roughness: a default gray base color would cover the layer.
+
+    // A content fill effect that supplies only roughness: a default gray base color would cover the layer
     let effect = id(execute(&mut s, "effect.add.fill", &json!({"target": "content", "roughness": 0.7})).unwrap(), "effect");
     let before = s.doc.project.clone();
     execute(&mut s, "layer.fill.set", &json!({"effect": effect, "channel": "baseColor", "colors": []})).unwrap();
     assert_eq!(s.doc.project, before, "no base color source appears on the effect");
-    // The same on a fill layer that has no base color channel.
+
+    // The same on a fill layer that has no base color channel
     let layer = id(execute(&mut s, "layer.add.fill", &json!({"roughness": 0.4})).unwrap(), "layer");
     let before = s.doc.project.clone();
     execute(&mut s, "layer.fill.set", &json!({"layer": layer, "channel": "baseColor", "colors": []})).unwrap();
     assert_eq!(s.doc.project, before, "no base color channel appears on the layer");
-    // Turning the channel on still adds it.
+
+    // Turning the channel on still adds it
     execute(&mut s, "layer.fill.set", &json!({"effect": effect, "channel": "baseColor", "enabled": true})).unwrap();
     let (_, x) = s.doc.project.effect(texturecraft_engine::core::LayerId(effect)).unwrap();
     match &x.kind {
@@ -180,32 +185,39 @@ fn gradient_map_true_starts_the_stops_from_the_current_source() {
         p["channel"] = json!("baseColor");
         execute(s, "layer.fill.set", &p)
     };
-    // A uniform color has nothing to start from.
+
+    // A uniform color has nothing to start from
     assert!(set(&mut s, json!({"gradientMap": true})).is_err());
-    // A procedural starts at low, halfway and high, so its look holds.
+
+    // A procedural starts at low, halfway and high, so its look holds
     set(&mut s, json!({"procedural": "Clouds", "low": [0.0, 0.25, 0.5], "high": [1.0, 0.75, 0.5]})).unwrap();
     set(&mut s, json!({"gradientMap": true})).unwrap();
     assert_eq!(ramp(&s, layer), vec![[0.0, 0.25, 0.5], [0.5; 3], [1.0, 0.75, 0.5]]);
-    // Stops already there stay.
+
+    // Stops already there stay
     set(&mut s, json!({"colors": RGB})).unwrap();
     set(&mut s, json!({"gradientMap": true})).unwrap();
     assert_eq!(ramp(&s, layer), RGB.to_vec());
-    // Set together with a new pattern, the stops stay.
+
+    // Set together with a new pattern, the stops stay
     set(&mut s, json!({"procedural": "Voronoi", "gradientMap": true})).unwrap();
     assert_eq!(ramp(&s, layer), RGB.to_vec());
-    // It cannot go with `colors`, and it undoes in one step.
+
+    // It cannot go with `colors`, and it undoes in one step
     assert!(set(&mut s, json!({"gradientMap": true, "colors": RGB})).is_err());
     set(&mut s, json!({"colors": []})).unwrap();
     set(&mut s, json!({"gradientMap": true})).unwrap();
     execute(&mut s, "edit.undo", &Value::Null).unwrap();
     assert!(ramp(&s, layer).is_empty());
-    // An anchor starts at black, gray and white.
+
+    // An anchor starts at black, gray and white
     execute(&mut s, "layer.add.fill", &json!({})).unwrap();
     let anchor = id(execute(&mut s, "effect.add.anchor", &json!({})).unwrap(), "effect");
     let top = id(execute(&mut s, "layer.add.fill", &json!({})).unwrap(), "layer");
     execute(&mut s, "layer.fill.set", &json!({"layer": top, "channel": "baseColor", "anchor": anchor})).unwrap();
     execute(&mut s, "layer.fill.set", &json!({"layer": top, "channel": "baseColor", "gradientMap": true})).unwrap();
     assert_eq!(ramp(&s, top), vec![[0.0; 3], [0.5; 3], [1.0; 3]]);
-    // A scalar channel has no stops.
+
+    // A scalar channel has no stops
     assert!(execute(&mut s, "layer.fill.set", &json!({"layer": top, "channel": "roughness", "gradientMap": true})).is_err());
 }

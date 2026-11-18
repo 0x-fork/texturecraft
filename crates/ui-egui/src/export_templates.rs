@@ -120,7 +120,8 @@ fn is_rgb(d: Dest) -> bool {
 fn set_layout(map: &mut MapSpec, layout: Layout) {
     let get = |d: Dest| map.channels.iter().find(|(x, _)| *x == d).map(|(_, s)| s.clone());
     let color = get(Dest::R).or_else(|| get(Dest::L)).unwrap_or(SourceRef::Constant(0.0));
-    // A source that moves to a new channel keeps its inversion.
+
+    // A source that moves to a new channel keeps its inversion
     let color_inverted = map.inverted.contains(if get(Dest::R).is_some() { &Dest::R } else { &Dest::L });
     let was_inverted = |d: Dest| match get(d) {
         Some(_) => map.inverted.contains(&d),
@@ -178,29 +179,8 @@ fn sync_draft(app: &mut TextureCraftApp) {
     }
 }
 
-/// A template list action.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ListAction {
-    Select(String),
-    New,
-    Duplicate,
-    StartRename(String),
-    Rename(String),
-    Remove,
-    Import,
-    /// A template read from a file, added and selected.
-    Imported(ExportPreset),
-    Export,
-}
-
-/// A question waiting for an answer in the Output templates tab.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Ask {
-    /// Delete this template (its file goes with it).
-    Delete(String),
-    /// Leave the selected template, whose last edit does not validate and is not saved, for this.
-    Leave(ListAction),
-}
+pub use crate::ask::Ask;
+pub use crate::list_action::ListAction;
 
 enum MapAction {
     Add(Layout),
@@ -221,7 +201,7 @@ pub fn tab(app: &mut TextureCraftApp, ui: &mut Ui, builtins: &[ExportPreset]) {
     });
     ui.separator();
     ui.vertical(|ui| {
-        // Leave room for the input maps column and two separators.
+        // Leave room for the input maps column and two separators
         ui.set_width((ui.available_width() - INPUTS_WIDTH - 5.0 * ui.spacing().item_spacing.x - 4.0).max(200.0));
         ui.set_height(height);
         outputs(app, ui);
@@ -368,11 +348,13 @@ fn remove(app: &mut TextureCraftApp, name: String) {
 /// The open question, if any: Escape or Cancel keeps things as they are.
 pub(crate) fn ask(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let Some(question) = app.ui.export.ask.clone() else { return };
-    // The edit was fixed while the question was open: nothing is dropped any more.
+
+    // The edit was fixed while the question was open: nothing is dropped any more
     if matches!(question, Ask::Leave(_)) && unfinished(app).is_none() {
         app.ui.export.ask = None;
         return;
     }
+
     let mut cancel = false;
     let mut yes = false;
     let (title, text, yes_label, no_label) = match &question {
@@ -774,7 +756,8 @@ fn input_maps(ui: &mut Ui) {
             ui.horizontal_wrapped(|ui| {
                 for (k, (label, s)) in inputs.iter().enumerate() {
                     let label = tr(label);
-                    // Not `dnd_drag_source`: its scope doesn't wrap inside `horizontal_wrapped`.
+
+                    // `dnd_drag_source` cannot wrap inside `horizontal_wrapped`
                     let r = chip(ui, label, false).interact(egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
                     r.dnd_set_drag_payload(s.clone());
                     if r.dragged()

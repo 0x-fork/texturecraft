@@ -345,14 +345,14 @@ fn dab_uv(session: &mut Session, uv: Vec2) {
 fn a_2d_dab_paints_its_copy_where_the_3d_stroke_paints_it() {
     let brush = json!({"size": 1, "symmetryX": true, "symmetryOffset": [0.25, 0.0, 0.0]});
 
-    // The same surface point painted in the 3D view...
+    // Paint one surface point in the 3D view
     let mut in_3d = session(wall());
     execute(&mut in_3d, "tool.brush", &brush).unwrap();
     let hit = in_3d.pick(Vec2::new(300.0, 200.0), in_3d.viewport).unwrap();
     execute(&mut in_3d, "tool.stroke", &json!({"points": [[300, 200]]})).unwrap();
     in_3d.update();
 
-    // ... and in the 2D view
+    // Paint its UV in the 2D view
     let mut in_2d = session(wall());
     execute(&mut in_2d, "tool.brush", &brush).unwrap();
     dab_uv(&mut in_2d, hit.uv);

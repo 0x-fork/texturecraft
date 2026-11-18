@@ -86,6 +86,7 @@ mod tests {
                     positions.push(Vec3::new(sign * x, y, 0.0));
                     uvs.push(uv_of(sign * x, y));
                 }
+
                 // A mirror image has the opposite winding, so it keeps facing +Z
                 let corners = if mirrored { [0, 2, 1, 0, 3, 2] } else { [0, 1, 2, 0, 2, 3] };
                 indices.extend(corners.map(|corner| first + corner));

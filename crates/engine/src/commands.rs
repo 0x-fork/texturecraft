@@ -55,10 +55,12 @@ impl CommandSpec {
 fn params_all_optional(params: &str) -> bool {
     let Some(body) = params.trim_start().strip_prefix('{') else { return false };
     let Some(end) = body.find('}') else { return false };
-    // `{a?} | {b}`: other forms exist, and the first one alone may not do anything.
+
+    // `{a?} | {b}`: other forms exist, and the first one alone may not do anything
     if body[end + 1..].trim_start().starts_with('|') {
         return false;
     }
+
     let (mut depth, mut start) = (0i32, 0);
     let mut entries = Vec::new();
     for (i, c) in body[..end].char_indices() {
@@ -74,7 +76,7 @@ fn params_all_optional(params: &str) -> bool {
     }
     entries.push(&body[start..end]);
     entries.iter().filter(|entry| !entry.trim().is_empty()).all(|entry| {
-        // `index? | name?` asks for one of the two, so it is not optional as a whole.
+        // `index? | name?` asks for one of the two, so it is not optional as a whole
         !entry.contains(" | ") && entry.trim().split([':', ' ', '(']).next().is_some_and(|key| key.ends_with('?'))
     })
 }
@@ -403,14 +405,14 @@ mod tests {
 
     #[test]
     fn no_bindable_command_asks_for_a_parameter() {
+        // Effect commands need a selected effect, which this session lacks
         for spec in command_specs().iter().filter(|c| c.bindable() && c.shortcut.is_none() && !c.id.starts_with("effect.")) {
             let mut session = crate::sample_session(256, 64).unwrap();
-            if (spec.enabled)(&session).is_ok() {
-                // The effect commands act on the selected effect, and there is none here. A command may refuse for the state (a layer without a mask), never for a missing parameter.
-                if let Err(err) = execute(&mut session, spec.id, &Value::Null) {
-                    let text = err.to_string();
-                    assert!(!text.contains("required") && !text.contains("give "), "{} asks for a parameter: {text}", spec.id);
-                }
+            if (spec.enabled)(&session).is_ok()
+                && let Err(err) = execute(&mut session, spec.id, &Value::Null)
+            {
+                let text = err.to_string();
+                assert!(!text.contains("required") && !text.contains("give "), "{} asks for a parameter: {text}", spec.id);
             }
         }
     }

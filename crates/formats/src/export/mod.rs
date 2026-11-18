@@ -24,6 +24,12 @@ use texturecraft_texel::{ColorSpace, DilationMap, linear_to_srgb};
 
 use crate::{FormatError, MAX_IMAGE_SIZE, Result};
 
+mod dds_compression;
+mod dds_export;
+
+pub use dds_compression::DdsCompression;
+pub use dds_export::DdsExport;
+
 /// Height-to-normal slope: with strength 1, a height change of 1 across 1/16 of the texture
 /// width tilts the normal 45°, at any resolution.
 const HEIGHT_SPAN: f32 = 16.0;
@@ -136,70 +142,6 @@ impl FileFormat {
     pub fn depth(self, want: u8) -> u8 {
         self.bit_depths().iter().copied().min_by_key(|d| (d.abs_diff(want), std::cmp::Reverse(*d))).unwrap_or(8)
     }
-}
-
-/// How DDS files are compressed. BC4 (one channel) and BC5 (two channels) are picked per map by
-/// [`DdsCompression::Auto`]; BC7 is not written.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum DdsCompression {
-    /// Per map: normal maps BC5 (X and Y; the renderer rebuilds Z), maps with alpha BC3,
-    /// grayscale maps BC4, the other colour maps BC1.
-    #[default]
-    Auto,
-    /// Uncompressed and lossless: 8 or 16 bits per channel, as the bit depth says.
-    None,
-    /// BC1 (DXT1), 4 bits per pixel; alpha is only on or off.
-    Bc1,
-    /// BC3 (DXT5), 8 bits per pixel with smooth alpha.
-    Bc3,
-}
-
-impl DdsCompression {
-    pub const ALL: [DdsCompression; 4] = [DdsCompression::Auto, DdsCompression::None, DdsCompression::Bc1, DdsCompression::Bc3];
-
-    /// The name commands use: `auto`, `none`, `bc1` or `bc3`.
-    pub fn name(self) -> &'static str {
-        match self {
-            DdsCompression::Auto => "auto",
-            DdsCompression::None => "none",
-            DdsCompression::Bc1 => "bc1",
-            DdsCompression::Bc3 => "bc3",
-        }
-    }
-
-    /// [`Self::name`] back to a compression, also taking `dxt1` and `dxt5`, in any case.
-    pub fn from_name(name: &str) -> Option<DdsCompression> {
-        match name.to_ascii_lowercase().as_str() {
-            "auto" => Some(DdsCompression::Auto),
-            "none" => Some(DdsCompression::None),
-            "bc1" | "dxt1" => Some(DdsCompression::Bc1),
-            "bc3" | "dxt5" => Some(DdsCompression::Bc3),
-            _ => None,
-        }
-    }
-
-    /// The compression a map of `n` components (1 L, 2 LA, 3 RGB, 4 RGBA) is written with;
-    /// `normal` for a normal map.
-    fn resolve(self, normal: bool, n: usize) -> craft_dds::DdsCompression {
-        use craft_dds::DdsCompression as C;
-        match self {
-            DdsCompression::Auto if normal && n == 3 => C::Bc5,
-            DdsCompression::Auto if matches!(n, 2 | 4) => C::Bc3,
-            DdsCompression::Auto if n == 1 => C::Bc4,
-            DdsCompression::Auto => C::Bc1,
-            DdsCompression::None => C::None,
-            DdsCompression::Bc1 => C::Bc1,
-            DdsCompression::Bc3 => C::Bc3,
-        }
-    }
-}
-
-/// What DDS files are written with.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DdsExport {
-    pub compression: DdsCompression,
-    /// Also write the full mip chain down to 1×1 (each level a box filter of the one above).
-    pub mipmaps: bool,
 }
 
 /// Destination channel of an output file. `L` alone writes grayscale; `L` + `A` gray + alpha.
@@ -350,30 +292,38 @@ impl ExportPreset {
         if self.name.trim().is_empty() || self.name.chars().count() > MAX_PRESET_NAME || self.name.chars().any(char::is_control) {
             return bad(format!("the name must be 1 to {MAX_PRESET_NAME} characters without control characters"));
         }
+
         if self.maps.len() > MAX_MAPS {
             return bad(format!("more than {MAX_MAPS} maps"));
         }
+
         for m in &self.maps {
             if let Some(e) = template_error(&m.file) {
                 return bad(e);
             }
+
             if !matches!(m.bit_depth, 8 | 16 | 32) {
                 return bad(format!("map \"{}\" has bit depth {} (8, 16 or 32)", m.file, m.bit_depth));
             }
+
             if m.channels.iter().any(|(_, s)| s.component() != s.raw_component()) {
                 return bad(format!("map \"{}\" picks a component other than 0, 1 or 2", m.file));
             }
+
             let dests: BTreeSet<Dest> = m.channels.iter().map(|(d, _)| *d).collect();
             if dests.len() != m.channels.len() || m.channels.is_empty() {
                 return bad(format!("map \"{}\" needs distinct destination channels", m.file));
             }
+
             if dests.contains(&Dest::L) && dests.iter().any(|d| matches!(d, Dest::R | Dest::G | Dest::B)) {
                 return bad(format!("map \"{}\" mixes L with R/G/B", m.file));
             }
+
             let inv: BTreeSet<Dest> = m.inverted.iter().copied().collect();
             if inv.len() != m.inverted.len() || !inv.is_subset(&dests) {
                 return bad(format!("map \"{}\" inverts a channel it does not write, or one twice", m.file));
             }
+
             if m.channels.iter().any(|(_, s)| matches!(s, SourceRef::Constant(v) if !v.is_finite())) {
                 return bad(format!("map \"{}\" has a non-finite constant", m.file));
             }
@@ -479,7 +429,7 @@ pub struct PlannedFile {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Planning: which maps exist for a texture set and what their files are called.
+// Planning: which maps exist for a texture set and what their files are called
 
 fn normal_present(set: &TextureSet) -> bool {
     set.has_channel(Channel::Normal) || set.has_channel(Channel::Height) || set.baked.contains(&BakedMap::Normal)
@@ -534,8 +484,7 @@ fn is_color(map: &MapSpec) -> bool {
 /// drops Z. A map that packs a normal component next to other data is not one, nor is one without
 /// its X and Y in red and green, nor a world-space normal, whose Z can point below the horizon.
 fn is_normal(map: &MapSpec) -> bool {
-    // The component of a normal source: X, Y and Z must sit in R, G and B, or BC5 would keep the
-    // wrong component or drop a different one than Z.
+    // BC5 requires X, Y and Z in RGB order so it can reconstruct Z
     let in_place = |d: &Dest, component: u8| matches!((d, component), (Dest::R, 0) | (Dest::G, 1) | (Dest::B, 2));
     [Dest::R, Dest::G].iter().all(|wanted| map.channels.iter().any(|(d, s)| d == wanted && !matches!(s, SourceRef::Constant(_))))
         && map.channels.iter().all(|(d, s)| {
@@ -587,6 +536,7 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
     {
         return Err(FormatError::Invalid(format!("export size {s} must be a power of two up to {MAX_IMAGE_SIZE}")));
     }
+
     let mut used = BTreeSet::new();
     let mut out = Vec::new();
     let tiles: Vec<Option<u32>> = if set.uv_tiles.is_empty() || opts.atlas { vec![None] } else { set.uv_tiles.iter().copied().map(Some).collect() };
@@ -594,6 +544,7 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
         if !map.channels.iter().any(|(_, s)| source_present(set, s)) {
             continue;
         }
+
         let format = opts.format_override.unwrap_or(map.format);
         let bit_depth = format.depth(opts.bit_depth_override.unwrap_or(map.bit_depth));
         let space = opts.space_for(format);
@@ -602,9 +553,11 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
             (true, ColorSpace::Srgb) => "sRGB",
             (true, other) => other.name(),
         };
-        // Integer files clamp to 0-1, which wide-gamut linear colour can leave.
+
+        // Integer files clamp wide-gamut linear color to 0–1
         let clamps = is_color(map) && !format.is_float() && matches!(space, ColorSpace::AcesCg | ColorSpace::Aces2065);
-        // One file per UV tile: names without `$udim` get it appended.
+
+        // Append `$udim` to names for separate UV tiles
         let template = if tiles.iter().any(Option::is_some) && !map.file.contains("$udim") { format!("{}.$udim", map.file) } else { map.file.clone() };
         for &tile in &tiles {
             let stem = template
@@ -614,7 +567,8 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
                 .replace("$textureSet", &set.name)
                 .replace("$channel", channel_label(map))
                 .replace("$colorSpace", color_space);
-            // The same name with the tile number as a placeholder, to write it as `<UDIM>` after.
+
+            // Replace the tile number with `<UDIM>` in the shared name
             let token_stem = tile.map(|_| {
                 let t = template
                     .replace("$udim", "UDIMTOKEN")
@@ -636,7 +590,8 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
                     format.extension().to_uppercase()
                 ));
             }
-            // Case-insensitive: Windows and macOS file systems are.
+
+            // Compare names case-insensitively for Windows and macOS
             let mut k = 2;
             while used.contains(&name.to_ascii_lowercase()) {
                 name = format!("{stem}_{k}.{ext}");
@@ -646,8 +601,9 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
                 warnings.push(format!("\"{stem}.{ext}\" is produced by more than one map; this one was renamed to \"{name}\""));
             }
             used.insert(name.to_ascii_lowercase());
-            // Only when putting the tile number back gives this file's name: the length limit cuts the
-            // longer placeholder elsewhere (or off), and a name may hold the placeholder text itself.
+
+            // Use a UDIM name only when substituting its tile recovers the output name
+            // Truncation or literal placeholder text can make that substitution ambiguous
             let udim_name = token_stem.filter(|t| tile.is_some_and(|n| t.contains("UDIMTOKEN") && t.replace("UDIMTOKEN", &n.to_string()) == stem)).map(|t| {
                 let renamed = if k > 2 { format!("_{}", k - 1) } else { String::new() };
                 format!("{t}{renamed}.{ext}").replace("UDIMTOKEN", "<UDIM>")
@@ -659,7 +615,7 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
 }
 
 // ---------------------------------------------------------------------------------------------
-// Sampling.
+// Sampling
 
 /// Which texel a value is taken from.
 #[derive(Clone, Copy, PartialEq)]
@@ -813,10 +769,12 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
     if tile_res == 0 || tile_res > MAX_IMAGE_SIZE || height != tile_res * grid.map_or(1, |g| g.rows) {
         return Err(FormatError::Invalid(format!("composite size {res}×{height} does not fit texture set \"{}\"", set.name)));
     }
+
     if input.coverage.len() != res as usize * height as usize {
         return Err(FormatError::Invalid(format!("coverage has {} texels, expected {res}×{height}", input.coverage.len())));
     }
-    // Padding stays inside each UV tile.
+
+    // Padding stays inside each UV tile
     let dmap = match opts.padding {
         Padding::None => None,
         Padding::Dilation(d) | Padding::DilationDefault(d) => Some(DilationMap::in_blocks(input.coverage, res, height, Some(d), tile_res)),
@@ -841,11 +799,13 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
             let lay = layout(set, map);
             let n = lay.len();
             let inverted: Vec<bool> = lay.iter().map(|(d, _)| map.inverted.contains(d)).collect();
-            // The texels written: one tile, or the whole set.
+
+            // The texels written: one tile, or the whole set
             let (x0, y0, w, h) = match (p.tile, grid) {
                 (Some(t), Some(g)) => {
                     let (bx, by) = g.block(t).ok_or_else(|| FormatError::Invalid(format!("UV tile {t} is not in the set's grid")))?;
-                    // A tile smaller than its block fills the block's top-left corner.
+
+                    // A tile smaller than its block fills the block's top-left corner
                     let side = ((tile_res as f32 * set.tile_scale(t)).round() as u32).clamp(1, tile_res);
                     (bx * tile_res, by * tile_res, side, side)
                 }
@@ -873,12 +833,13 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
                     }
                 }
             });
-            // `size` is per tile: an atlas scales with it.
+
+            // `size` is per tile: an atlas scales with it
             let scale = |v: u32| (u64::from(v) * u64::from(opts.size.unwrap_or(tile_res)) / u64::from(tile_res)) as u32;
             let size = (scale(w), scale(h));
             let data = resize(data, (w, h), n, size);
-            // Colour maps leave linear Rec.709 for the chosen space. sRGB in integer files is
-            // encoded by `encode`; every other case is converted here (float sRGB included).
+
+            // Integer sRGB converts in `encode`; other color spaces convert here
             let space = opts.space_for(p.format);
             let rgb = lay.len() >= 3 && lay.iter().take(3).map(|(d, _)| *d).eq([Dest::R, Dest::G, Dest::B]);
             let mut data = data;
@@ -894,7 +855,8 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
                 warnings.push(format!("\"{}\" packs colour into one channel (L), so it is written in linear Rec.709, not {}", p.name, space.name()));
             }
             let srgb: Vec<bool> = lay.iter().map(|(d, _)| *d != Dest::A && is_color(map) && !p.format.is_float() && space == ColorSpace::Srgb).collect();
-            // A colour space the user chose is written into the colour maps (data maps have none).
+
+            // A colour space the user chose is written into the colour maps (data maps have none)
             let embed = (opts.color_space.is_some() && is_color(map) && rgb).then_some(space);
             let dds = craft_dds::DdsOptions { compression: opts.dds.compression.resolve(is_normal(map), n), mipmaps: opts.dds.mipmaps };
             let bytes = encode(p.format, p.bit_depth, size, n, &data, &srgb, embed, dds, &mut warnings)?;
@@ -954,8 +916,8 @@ fn encode(
     warnings: &mut Vec<String>,
 ) -> Result<Vec<u8>> {
     let failed = |e: &dyn std::fmt::Display| FormatError::Invalid(format!("{} encoding failed: {e}", format.extension()));
-    // Where the colour space goes: an ICC profile in PNG, JPEG, TIFF and WebP, the chromaticities
-    // attribute in EXR. The other formats have no place for it.
+
+    // Embed ICC or EXR chromaticities only where the format supports them
     if let Some(space) = embed
         && matches!(format, FileFormat::Tga | FileFormat::Bmp | FileFormat::Hdr | FileFormat::Dds)
     {
@@ -973,7 +935,8 @@ fn encode(
         }
         _ => {}
     }
-    // Integer formats: transfer function and quantization first, then fit the channel layout.
+
+    // Integer formats: transfer function and quantization first, then fit the channel layout
     let encoded: Vec<f32> =
         data.iter().enumerate().map(|(i, v)| if srgb.get(i % n).copied().unwrap_or(false) { linear_to_srgb(*v) } else { v.clamp(0.0, 1.0) }).collect();
     let (encoded, n) = match (format, n) {
@@ -984,8 +947,8 @@ fn encode(
         (FileFormat::Tiff, 2) => (remap(&encoded, 2, &[0, 0, 0, 1]), 4),
         _ => (encoded, n),
     };
-    // DDS at 8 or 16 bits per channel (the closest depth `FileFormat::depth` picks). BC1 to BC3
-    // are 8-bit blocks at both depths; BC4, BC5 and uncompressed files keep 16 bits.
+
+    // BC1 and BC3 stay 8-bit; BC4, BC5 and raw DDS preserve 16-bit input
     if format == FileFormat::Dds {
         let to8 = |v: &f32| (v * 255.0 + 0.5) as u8;
         if dds.compression == craft_dds::DdsCompression::Bc1
@@ -1002,6 +965,7 @@ fn encode(
         }
         .map_err(|e| failed(&e));
     }
+
     use image::ExtendedColorType as C;
     let (bytes, color) = if depth == 16 {
         let b: Vec<u8> = encoded.iter().flat_map(|v| ((v * 65535.0 + 0.5) as u16).to_ne_bytes()).collect();
@@ -1023,7 +987,8 @@ fn remap(data: &[f32], n: usize, pick: &[usize]) -> Vec<f32> {
 fn write_image(format: FileFormat, bytes: &[u8], (w, h): (u32, u32), color: image::ExtendedColorType, icc: Option<Vec<u8>>) -> image::ImageResult<Vec<u8>> {
     use image::ImageEncoder;
     let mut out = Cursor::new(Vec::new());
-    // `set_icc_profile` says no (an error to ignore) for an encoder without a place for it.
+
+    // `set_icc_profile` says no (an error to ignore) for an encoder without a place for it
     let fmt = match format {
         FileFormat::Jpeg => {
             let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, JPEG_QUALITY);
@@ -1064,7 +1029,8 @@ fn write_image(format: FileFormat, bytes: &[u8], (w, h): (u32, u32), color: imag
         FileFormat::Webp => image::ImageFormat::WebP,
         FileFormat::Hdr => image::ImageFormat::Hdr,
         FileFormat::Exr => image::ImageFormat::OpenExr,
-        // Written by `write_dds` (`image` is built without DDS support and refuses it).
+
+        // Written by `write_dds` (`image` is built without DDS support and refuses it)
         FileFormat::Dds => image::ImageFormat::Dds,
     };
     image::write_buffer_with_format(&mut out, bytes, w, h, color, fmt)?;
@@ -1099,8 +1065,8 @@ fn write_dds<T: Copy>(
         (Layout::Gray, Layout::Rgba) => pixels.iter().flat_map(|&g| [g, g, g, opaque]).collect(),
         (Layout::GrayA, Layout::Rgba) => pixels.as_chunks::<2>().0.iter().flat_map(|&[g, a]| [g, g, g, a]).collect(),
         (Layout::Rgb, Layout::Rgba) => pixels.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, opaque]).collect(),
-        // `DdsCompression::resolve` picks BC4 for gray and BC5 for RGB only; craft-dds refuses
-        // any other pairing with an error.
+
+        // craft-dds rejects mismatched BC4 and BC5 channel layouts
         _ => pixels,
     };
     encode(w, h, layout, &pixels, dds)
@@ -1127,13 +1093,15 @@ fn write_exr((w, h): (u32, u32), n: usize, data: &[f32], half: bool, space: Opti
     let layer = Layer::new((w as usize, h as usize), LayerAttributes::default(), Encoding::SMALL_LOSSLESS, AnyChannels::sort(channels));
     let mut out = Cursor::new(Vec::new());
     let mut image = Image::from_layer(layer);
-    // The primaries and white point of the values, in the attribute OpenEXR readers look for.
+
+    // Store primaries and white point in the OpenEXR attribute
     if let Some(space) = space {
         let [r, g, b, white] = space.chromaticities().map(|xy| Vec2(xy[0] as f32, xy[1] as f32));
         image.attributes.chromaticities = Some(exr::meta::attribute::Chromaticities { red: r, green: g, blue: b, white });
     }
     let writer = image.write();
-    // No worker threads on the web.
+
+    // The web build has no worker threads
     #[cfg(target_arch = "wasm32")]
     let writer = writer.non_parallel();
     writer.to_buffered(&mut out)?;
@@ -1148,11 +1116,12 @@ pub fn write_files(files: &[ExportedFile], dir: &std::path::Path) -> Result<Vec<
     files
         .iter()
         .map(|f| {
-            // The planned name is `<sanitized stem>.<ext>`; the stem alone is capped at MAX_STEM.
+            // Cap the sanitized stem before adding the extension
             let (stem, ext) = f.name.rsplit_once('.').unwrap_or((&f.name, ""));
             if f.name.is_empty() || stem != sanitize_file_stem(stem) || !ext.chars().all(|c| c.is_ascii_alphanumeric()) || f.name.trim_matches('.').is_empty() {
                 return Err(FormatError::Invalid(format!("\"{}\" is not a plain file name", f.name)));
             }
+
             let path = dir.join(&f.name);
             crate::write_atomic(&path, &f.bytes)?;
             Ok(path)

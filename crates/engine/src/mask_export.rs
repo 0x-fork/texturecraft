@@ -14,6 +14,7 @@ use texturecraft_core::LayerId;
 use crate::commands::{CommandSpec, bad, has_layer};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::commands::{layer_param, strp};
+pub use crate::mask_bitmap::MaskBitmap;
 use crate::{EngineError, Result, Session, cmd};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -26,33 +27,6 @@ pub fn specs() -> Vec<CommandSpec> {
         has_layer,
         export
     )]
-}
-
-/// An evaluated mask: `width × height` values in `0..=1`, row by row from the top.
-#[derive(Clone, Debug, PartialEq)]
-pub struct MaskBitmap {
-    /// UDIM number of the tile (None: the whole texture set).
-    pub tile: Option<u32>,
-    pub width: u32,
-    pub height: u32,
-    pub values: Vec<f32>,
-}
-
-impl MaskBitmap {
-    /// The values as 16-bit gray levels.
-    pub fn gray16(&self) -> Vec<u16> {
-        self.values.iter().map(|v| (v.clamp(0.0, 1.0) * 65535.0 + 0.5) as u16).collect()
-    }
-
-    /// The values as 8-bit gray levels.
-    pub fn gray8(&self) -> Vec<u8> {
-        self.values.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect()
-    }
-
-    /// A 16-bit grayscale PNG.
-    pub fn to_png16(&self) -> Result<Vec<u8>> {
-        texturecraft_formats::gray16_png(self.width, self.height, self.values.iter().copied()).map_err(|e| EngineError::Other(e.to_string()))
-    }
 }
 
 impl Session {
@@ -73,6 +47,7 @@ impl Session {
             .iter()
             .map(|&tile| {
                 let (block_x, block_y) = grid.block(tile).ok_or_else(|| EngineError::Other(format!("UV tile {tile} is not in the set's grid")))?;
+
                 // A tile smaller than its block fills the block's top-left corner
                 let side = ((block as f32 * set.tile_scale(tile)).round() as u32).clamp(1, block);
                 let mut tile_values = Vec::with_capacity(side as usize * side as usize);
@@ -126,7 +101,7 @@ mod tests {
 
     #[test]
     fn the_tile_number_goes_before_the_png_extension() {
-        // Compared as paths: Windows writes the folder with backslashes.
+        // Compared as paths: Windows writes the folder with backslashes
         let name = |path: &str, tile| {
             let file = file_path(path, tile);
             assert_eq!(file.parent(), std::path::Path::new(path).parent(), "the folder is kept");

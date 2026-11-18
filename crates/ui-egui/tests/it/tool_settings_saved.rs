@@ -3,24 +3,9 @@
 use egui_kittest::Harness;
 use texturecraft_ui_egui::{TextureCraftApp, UiState};
 
-#[derive(Default)]
-struct Values(std::collections::HashMap<String, String>);
+mod memory_storage;
 
-impl eframe::Storage for Values {
-    fn get_string(&self, key: &str) -> Option<String> {
-        self.0.get(key).cloned()
-    }
-
-    fn set_string(&mut self, key: &str, value: String) {
-        self.0.insert(key.to_owned(), value);
-    }
-
-    fn remove_string(&mut self, key: &str) {
-        self.0.remove(key);
-    }
-
-    fn flush(&mut self) {}
-}
+use memory_storage::MemoryStorage;
 
 #[test]
 fn saving_the_app_stores_the_current_brush_and_tool_settings() {
@@ -32,7 +17,7 @@ fn saving_the_app_stores_the_current_brush_and_tool_settings() {
     tool.brush.symmetry.z = true;
     tool.smudge_strength = 0.9;
 
-    let mut storage = Values::default();
+    let mut storage = MemoryStorage::default();
     eframe::App::save(harness.state_mut(), &mut storage);
 
     let saved = serde_json::from_str::<UiState>(&storage.0["ui.json"]).expect("the UI state was saved");

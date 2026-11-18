@@ -80,6 +80,7 @@ fn what_belongs_to_the_old_project_is_reset() {
     assert_eq!(session.tool.stencil, None);
     assert_eq!(session.tool.brush.alpha_image, None);
     assert!(session.tool.path.points.is_empty());
+
     // The rest of the brush came along
     assert_ne!(session.tool.brush.size, another_project().tool.brush.size);
     assert_eq!(session.tool.brush.size, before_size);

@@ -20,12 +20,14 @@ pub mod file_cmds;
 pub mod fill_hit_test;
 pub mod fill_mode;
 pub mod filter_lib;
+mod frame_target;
 pub mod inspect;
 pub mod instance_cmds;
 pub mod layer_cmds;
 pub mod layer_ops;
 pub mod layer_selection;
 pub mod link_cmds;
+mod mask_bitmap;
 pub mod mask_cmds;
 pub mod mask_export;
 mod mask_preview_pixel;
@@ -45,6 +47,7 @@ pub mod pbr_cmds;
 mod polygon_fill;
 mod polygon_fill_drag;
 mod polygon_fill_mirror;
+mod stencil_look;
 // Mesh reimport reads files on native targets only
 #[cfg(not(target_arch = "wasm32"))]
 mod preserve;

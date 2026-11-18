@@ -193,6 +193,7 @@ fn the_export_plan_lists_the_materials_the_export_writes() {
     assert_eq!(listed, written);
     assert!(!plan(&mut s, OPENPBR, None).iter().any(|(f, _)| f.ends_with(".mtlx")));
     assert!(!plan(&mut s, OPENPBR, Some(false)).iter().any(|(f, _)| f.ends_with(".mtlx")));
-    // A template with no OpenPBR maps writes no material, so it lists none.
+
+    // A template with no OpenPBR maps writes no material, so it lists none
     assert!(!plan(&mut s, "Document channels + Normal + AO", Some(true)).iter().any(|(f, _)| f.ends_with(".mtlx")));
 }

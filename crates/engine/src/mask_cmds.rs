@@ -273,6 +273,7 @@ pub(crate) fn anchor_source(s: &Session, cmd: &str, reader: LayerId, anchor: Lay
         Some((owner, e)) if matches!(e.kind, EffectKind::Anchor) => owner,
         _ => return Err(bad(cmd, format!("{} is not an anchor point", anchor.0))),
     };
+
     let (ts, _, _) = s.doc.project.locate(reader).ok_or_else(|| bad(cmd, "layer not in a stack"))?;
     let order: Vec<LayerId> = s.doc.project.walk(ts).into_iter().map(|(id, _)| id).collect();
     let pos = |id: LayerId| order.iter().position(|x| *x == id);

@@ -34,8 +34,8 @@ fn covered(s: &Session, x: u32, y: u32) -> bool {
 fn the_bitmap_is_the_mask_the_composite_is_drawn_with_in_the_same_orientation() {
     let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 256).unwrap();
     let layer = LayerId(execute(&mut s, "layer.add.fill", &json!({"color": [1.0, 1.0, 1.0]})).unwrap()["layer"].as_u64().unwrap());
-    // What the stack shows without the layer, then with a white layer through an asymmetric mask:
-    // the base color becomes base + (1 - base) * mask, so the mask can be read back from it.
+
+    // A white layer gives output = base + (1 - base) * mask, so its mask can be recovered
     execute(&mut s, "layer.visible", &json!({"layer": layer.0, "visible": false})).unwrap();
     s.update();
     let base: Vec<f32> = (0..256 * 256).map(|i| s.caches[0].composite.value(Channel::BaseColor, i % 256, i / 256)[0]).collect();
@@ -58,6 +58,7 @@ fn the_bitmap_is_the_mask_the_composite_is_drawn_with_in_the_same_orientation() 
                 assert_eq!(value, 0.0, "uncovered texel ({x}, {y}) is black");
                 continue;
             }
+
             covered_texels += 1;
             distinct.insert((value * 100.0) as u32);
             let base = base[(y * 256 + x) as usize];
@@ -96,6 +97,7 @@ fn mask_export_writes_a_16_bit_gray_png() {
     assert_eq!(gray.dimensions(), (128, 128));
     let expected = s.mask_bitmaps(layer, true).unwrap().remove(0).gray16();
     assert_eq!(gray.as_raw(), &expected, "the file holds the bitmap, top row first");
+
     // 0.5 is a level 8-bit files cannot hold exactly
     assert!(gray.pixels().any(|p| p.0[0] == 32768), "the 16-bit level of 0.5");
 
@@ -117,6 +119,7 @@ fn a_tiled_set_exports_one_file_per_tile_at_each_tiles_size() {
 
     let bitmaps = s.mask_bitmaps(layer, true).unwrap();
     assert_eq!(bitmaps.iter().map(|b| (b.tile, b.width, b.height)).collect::<Vec<_>>(), [(Some(1001), 256, 256), (Some(1002), 128, 128)]);
+
     // The smaller tile fills the top-left corner of its block
     for (bitmap, block_x) in bitmaps.iter().zip([0, 256]) {
         for y in 0..bitmap.height {

@@ -52,6 +52,7 @@ impl ToolSettings {
     pub fn apply(&self, tool: &mut ToolState) {
         let alpha_image = tool.brush.alpha_image.take();
         tool.brush = self.brush.clone().sanitized();
+
         // An image alpha names a resource of the project that was open; the library alpha is global
         tool.brush.alpha_image = alpha_image;
         tool.stencil_look = self.stencil;

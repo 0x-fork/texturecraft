@@ -80,6 +80,7 @@ pub(super) fn show(app: &mut TextureCraftApp, ui: &mut Ui) {
         for (axis, name) in AXIS_NAMES.into_iter().enumerate() {
             ui.add_enabled_ui(movable[axis], |ui| slider(ui, name, &mut symmetry.offset[axis], -half_extent[axis]..=half_extent[axis], 2));
         }
+
         // One button per axis: the plane goes back to the middle of the model
         ui.horizontal(|ui| {
             let cell = vec2(ui.available_width() / AXIS_NAMES.len() as f32, ui.spacing().interact_size.y);

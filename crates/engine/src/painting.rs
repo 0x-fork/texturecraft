@@ -66,7 +66,8 @@ impl Session {
     /// when painting a mask. Must run inside the stroke's history snapshot.
     fn paint_target(&mut self) -> Result<PaintTarget> {
         let id = self.selected_layer().ok_or_else(|| EngineError::Other("select a layer to paint on".into()))?;
-        // Painting an instance paints its source (its own mask when it overrides the mask).
+
+        // Painting an instance paints its source unless its own mask overrides the mask
         let p = &self.doc.project;
         let id = if self.target == StackTarget::Mask { p.mask_owner(id) } else { p.content_layer(id).map_or(id, |l| l.id) };
         match self.target {
@@ -79,12 +80,13 @@ impl Session {
                 }
             }
             StackTarget::Effect(e) => match self.doc.project.effect(e) {
-                // Content paint effects hold channel pixels like a paint layer.
+                // Content paint effects hold channel pixels like a paint layer
                 Some((owner, eff)) if matches!(eff.kind, EffectKind::Paint) => {
                     let content = self.doc.project.layer(owner)?.content_effects.iter().any(|x| x.id == e);
                     Ok(if content { PaintTarget::Layer(e) } else { PaintTarget::Mask(e) })
                 }
-                // Path sublayers are painted only from their stored paths.
+
+                // Path sublayers are painted only from their stored paths
                 Some((owner, eff)) if matches!(eff.kind, EffectKind::Path(_)) && self.painting_paths => {
                     let content = self.doc.project.layer(owner)?.content_effects.iter().any(|x| x.id == e);
                     Ok(if content { PaintTarget::Layer(e) } else { PaintTarget::Mask(e) })
@@ -92,8 +94,8 @@ impl Session {
                 Some((_, eff)) if matches!(eff.kind, EffectKind::Path(_)) => {
                     Err(EngineError::Other("a path sublayer holds paths only: edit them with the Path tool, or paint on a paint sublayer".into()))
                 }
-                // A filter (or another effect) is selected, e.g. just added from the shelf: paint
-                // what lies beneath it, so the new paint goes through it.
+
+                // Paint below a selected non-paint effect so new paint passes through it
                 Some((owner, _)) => self.paint_target_below(owner, e),
                 None => Err(EngineError::Other("the selected effect is not a paint effect".into())),
             },
@@ -104,6 +106,7 @@ impl Session {
                 if let Some(top) = mask.effects.last().filter(|e| matches!(e.kind, EffectKind::Paint)) {
                     return Ok(PaintTarget::Mask(top.id));
                 }
+
                 mask.effects.push(Effect::new(eid, EffectKind::Paint));
                 Ok(PaintTarget::Mask(eid))
             }
@@ -195,7 +198,7 @@ impl Session {
         let ts = self.ts();
         let Ok(set) = self.doc.project.texture_set(ts) else { return BTreeMap::new() };
         let layer_channels = match target {
-            // A content paint effect paints its owner layer's channels.
+            // A content paint effect paints its owner layer's channels
             PaintTarget::Layer(id) => {
                 let owner = self.doc.project.effect(id).map(|(owner, _)| owner).unwrap_or(id);
                 self.doc.project.layer(owner).map(|l| l.channels.keys().copied().collect::<BTreeSet<_>>()).unwrap_or_default()
@@ -221,10 +224,11 @@ impl Session {
         let size = self.caches.get(ts).map(|c| c.size).unwrap_or((1024, 1024));
         let pickup = if quick_mask { None } else { self.pickup_mode(first_uv)? };
         if pickup.is_some() {
-            // Clone and smudge read the composite: bring it up to date first.
+            // Clone and smudge read the current composite
             self.update();
         }
-        // Cloning from the selected layer reads that layer alone.
+
+        // Cloning from the selected layer reads that layer alone
         let layer_source = match self.selected_layer() {
             Some(id) if pickup.is_some() && tool == Tool::Clone && self.tool.clone_from == CloneFrom::Layer && !self.paints_mask() => {
                 Some(self.flatten(ts, id).ok_or_else(|| EngineError::Other("clone from a paint or fill layer (folders have no content of their own)".into()))?)
@@ -244,7 +248,8 @@ impl Session {
             }
         };
         let values = target.map(|t| self.stroke_values(t)).unwrap_or_default();
-        // Clone and smudge on a mask read the mask as it was before the stroke.
+
+        // Clone and smudge on a mask read the mask as it was before the stroke
         let mask_source = match target {
             Some(PaintTarget::Mask(effect)) if pickup.is_some() => self.mask_values_before(ts, effect),
             _ => None,
@@ -261,6 +266,7 @@ impl Session {
             self.doc = before;
             return Err(EngineError::Other(msg.into()));
         }
+
         let depth = (!uv_mode).then(|| self.eye_depth(viewport));
         let stroke = Stroke::new(&self.tool.brush, &self.mesh);
         let mut canvas = StrokeCanvas::new(size.0, size.1);
@@ -277,13 +283,13 @@ impl Session {
                 m => m,
             };
             let mut pickup = match (&layer_source, mask_source) {
-                // On a mask the stroke reads the mask's own values.
+                // On a mask the stroke reads the mask's own values
                 (_, Some(values)) => Pickup::from_mask(mode, values, cache.gbuf.clone()),
                 (Some(flat), None) => Pickup::from_layer(mode, flat, size, cache.gbuf.clone(), values.keys().copied()),
                 (None, None) => Pickup::new(mode, cache.composite.clone(), cache.gbuf.clone(), values.keys().copied()),
             };
             if tool == Tool::Smudge && stroke.settings.symmetry.any() {
-                // Every mirrored copy of a smudge drags its own trail, in the 3D and the 2D view.
+                // Every mirrored copy of a smudge drags its own trail, in the 3D and the 2D view
                 pickup.isolate_copies();
             }
             canvas.pickup = Some(pickup);
@@ -338,13 +344,15 @@ impl Session {
             Tool::Clone => {
                 let src =
                     self.tool.clone_source.ok_or_else(|| EngineError::Other("set a clone source first: V + click on the mesh (tool.cloneSource)".into()))?;
-                // Not aligned: every stroke measures the offset from its own first point.
+
+                // Not aligned: every stroke measures the offset from its own first point
                 let kept = if self.tool.clone_aligned { src.offset } else { None };
                 let offset = match (kept, first_uv) {
                     (Some(o), _) => o,
                     (None, Some(p)) => [src.uv[0] - p.x, src.uv[1] - p.y],
                     (None, None) => return Err(EngineError::Other("start the clone stroke on the mesh".into())),
                 };
+
                 Ok(Some((PickupMode::Clone { offset: [0; 2] }, offset)))
             }
             _ => Ok(None),
@@ -430,6 +438,7 @@ impl Session {
         // The first sample is one stamp; a later one stamps every `step` along the segment from the previous
         let (start, segment, mut distance) = match progress.last.replace(uv) {
             None => (uv, Vec2::ZERO, 0.0),
+
             // Pressure can shrink the step below the carry from the preceding sample
             Some(previous) => (previous, uv - previous, (step - progress.carry).max(0.0)),
         };

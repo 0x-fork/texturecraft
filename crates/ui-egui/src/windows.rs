@@ -55,6 +55,7 @@ fn reset_ui(app: &mut TextureCraftApp, ctx: &egui::Context) {
     dialog("reset_ui", tr("Reset UI"), &mut open).show(ctx, |ui| {
         ui.label(tr("Reset the panels, view layout, zoom and every other view setting to their defaults? Settings and shortcuts stay. To reset only the panels, use Reset panel layout."));
         ui.add_space(8.0);
+
         // One row keeps the window to its contents; a bare right-to-left layout fills the screen height
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -262,6 +263,7 @@ pub(crate) fn display(app: &mut TextureCraftApp, ui: &mut Ui) {
         }
     });
     ui.add_space(6.0);
+
     // The switch gates all four amounts (the engine has one switch for the group); each amount 0 leaves that effect out
     let post_effect_fields = |d: &DisplaySettings| (d.post_effects, d.bloom, d.vignette, d.sharpen, d.grain);
     let post_effect_defaults = post_effect_fields(&DisplaySettings::default());
@@ -400,6 +402,7 @@ pub(crate) fn shader(app: &mut TextureCraftApp, ui: &mut Ui) {
 pub(crate) fn history(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tokens = Tokens::get(ui.ctx());
     let (done, undone) = (app.session.history_labels(), app.session.redo_labels());
+
     // A click on a step goes back (or forward) to it: steps to undo, or to redo when negative
     let mut jump = 0i64;
 
@@ -1115,8 +1118,7 @@ fn export_selection(app: &TextureCraftApp) -> Vec<usize> {
 /// Export the selected texture sets; false when a command failed (its error is already shown).
 #[cfg(not(target_arch = "wasm32"))]
 fn export_sets(app: &mut TextureCraftApp) -> bool {
-    // One command for every ticked set: the MaterialX file names are checked across all of them, so
-    // two sets that give the same name cannot overwrite each other's file.
+    // Check MaterialX names across selected sets to prevent overwrite
     let mut p = export_params(app);
     p["dir"] = json!(app.ui.export.dir);
     p["ts"] = json!(export_selection(app));
@@ -1131,7 +1133,8 @@ fn export_sets(app: &mut TextureCraftApp) -> bool {
         .filter(|w| w.starts_with("MaterialX:"))
         .map(str::to_owned)
         .collect();
-    // A MaterialX file that could not be written (wrong template, clashing names) must not pass silently.
+
+    // A MaterialX file that could not be written (wrong template, clashing names) must not pass silently
     let mut seen = std::collections::HashSet::new();
     warnings.retain(|w| seen.insert(w.clone()));
     for w in warnings {
@@ -1191,7 +1194,7 @@ fn exports_dds(app: &TextureCraftApp) -> bool {
 fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[texturecraft_engine::formats::ExportPreset]) {
     ui.label(caption(tr("General export parameters")));
     egui::Grid::new("exp_grid").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
-        // The browser downloads the files instead.
+        // The browser downloads the files instead
         #[cfg(not(target_arch = "wasm32"))]
         {
             ui.label(tr("Output directory"));
@@ -1300,7 +1303,8 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
             }
         });
         ui.end_row();
-        // The browser downloads a zip of textures and has no MaterialX writer.
+
+        // The browser downloads a zip of textures and has no MaterialX writer
         #[cfg(not(target_arch = "wasm32"))]
         {
             ui.label(tr("MaterialX"));
@@ -1311,7 +1315,7 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
         if exports_dds(app) {
             ui.label(tr("DDS compression"));
             ui.horizontal(|ui| {
-                // The block compressions go by their format names, untranslated.
+                // The block compressions go by their format names, untranslated
                 let label = |c: &str| match c {
                     "none" => tr("None").to_string(),
                     "bc1" => "BC1 / DXT1".to_string(),
@@ -1341,6 +1345,7 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
         app.ui.export.ask = None;
         return;
     }
+
     let mut open = true;
     let mut do_export = false;
     let presets = texturecraft_engine::formats::builtin_presets();
@@ -1359,6 +1364,7 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 crate::export_templates::tab(app, ui, &presets);
                 return;
             }
+
             ui.vertical(|ui| {
                 ui.set_width(180.0);
                 ui.label(RichText::new(tr("Texture sets")).strong());
@@ -1492,7 +1498,8 @@ mod tests {
         let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut h = harness();
         let app = h.state_mut();
-        // One call site, as File › Save As and the prompt's Save share one.
+
+        // One call site, as File › Save As and the prompt's Save share one
         for waiting in [false, true] {
             app.saving_for_prompt = waiting;
             ask_save_project(app, "file.saveAs");
@@ -1505,7 +1512,7 @@ mod tests {
     /// question open with buttons that still answer.
     #[test]
     fn a_change_after_the_dialog_saved_leaves_the_prompt_usable() {
-        // The harness keeps the process-wide language at English while this asserts on labels.
+        // The harness keeps the process-wide language at English while this asserts on labels
         let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut h = harness();
         let app = h.state_mut();
@@ -1532,6 +1539,7 @@ mod tests {
             crate::i18n::set_language("en");
             return;
         };
+
         let translated = crate::i18n::tr("Remove layer").to_string();
         let mut h = harness();
         {
@@ -1576,7 +1584,8 @@ mod tests {
         let plan = texturecraft_engine::execute(&mut app.session, "export.plan", &p).unwrap();
         let files = plan.as_array().unwrap();
         assert!(!files.is_empty() && files.iter().all(|f| f["format"] == "dds"), "{plan}");
-        // Saved dialog settings from before DDS still load.
+
+        // Saved dialog settings from before DDS still load
         let mut old = serde_json::to_value(&app.ui.export).unwrap();
         old.as_object_mut().unwrap().retain(|k, _| !k.starts_with("dds"));
         let loaded: crate::state::ExportUi = serde_json::from_value(old).unwrap();

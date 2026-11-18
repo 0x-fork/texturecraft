@@ -91,7 +91,8 @@ fn the_export_list_shows_the_material_files_only_when_ticked() {
     assert_eq!(listed(&h), 0);
     h.state_mut().ui.export.material_x = true;
     assert_eq!(listed(&h), h.state().session.set_count());
-    // The dialog's own list tab shows them.
+
+    // The dialog's own list tab shows them
     h.state_mut().ui.export.tab = 2;
     h.run_steps(3);
     assert!(h.query_all_by_label_contains(".mtlx").next().is_some(), "the List of exports tab names the .mtlx files");
@@ -104,7 +105,8 @@ fn the_option_is_kept_with_the_export_settings_and_reset_clears_it() {
     let json = serde_json::to_string(&settings).unwrap();
     let back: ExportUi = serde_json::from_str(&json).unwrap();
     assert!(back.material_x);
-    // Settings saved before the option existed load with it off.
+
+    // Settings saved before the option existed load with it off
     let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
     old.as_object_mut().unwrap().remove("material_x");
     assert!(!serde_json::from_value::<ExportUi>(old).unwrap().material_x);

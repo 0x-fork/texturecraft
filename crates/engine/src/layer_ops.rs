@@ -147,7 +147,7 @@ fn to_all_sets(s: &mut Session, p: &Value) -> Result<Value> {
             let new = if copy {
                 copy_tree(&src, id, &mut s.doc, ts, None, false, 0)?
             } else {
-                // On top of the set: clear its selection first.
+                // On top of the set: clear its selection first
                 s.select_none(ts);
                 crate::instance_cmds::make_instance(s, id, ts)?
             };

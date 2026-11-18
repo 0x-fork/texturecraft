@@ -430,13 +430,15 @@ async fn mesh_files_export_bake_and_reimport_in_the_workspace() {
     assert!(!textures.is_empty() && textures.iter().all(|t| base.join(t.as_str().unwrap()).is_file()), "{usda}");
     assert_eq!(tool(&c, "mesh_export", json!({"path": "out/cube.glb"})).await["path"], "out/cube.glb");
     assert!(base.join("out/cube.usda").is_file() && base.join("out/cube.glb").is_file());
-    // The loose usda arrives packaged with its textures.
+
+    // The loose usda arrives packaged with its textures
     let high = tool(&c, "bake_mesh_add", json!({"path": "out/cube.usda"})).await;
     assert_eq!(high["name"], "cube.usdz", "{high}");
     let cage = tool(&c, "bake_mesh_add", json!({"path": "out/cube.glb", "cage": true})).await;
     assert_eq!(cage["meshes"]["cage"]["name"], "cube.glb", "{cage}");
     assert_eq!(inspect(&c).await["bakeMeshes"]["highPoly"][0]["name"], "cube.usdz");
-    // A built-in mesh has no file to re-read; a file does.
+
+    // A built-in mesh has no file to re-read; a file does
     assert!(tool_err(&c, "mesh_reimport", json!({})).await.contains("built-in"));
     tool(&c, "mesh_reimport", json!({"path": "out/cube.glb", "preserveStrokes": true})).await;
     assert_eq!(inspect(&c).await["mesh"]["source"], "mesh.glb");
@@ -462,7 +464,8 @@ async fn textures_export_writes_dds() {
         let b = std::fs::read(base.join(f)).unwrap();
         assert_eq!(&b[..4], b"DDS ", "{f}");
         assert_eq!(&b[84..88], b"DXT5", "{f}: BC3 asked for");
-        // A 128 px set: 128, 64, … 1 is eight levels.
+
+        // A 128 px set: 128, 64, … 1 is eight levels
         assert_eq!((le32(&b, 12), le32(&b, 16), le32(&b, 28)), (128, 128, 8), "{f}");
     }
     let e = tool_err(&c, "textures_export", json!({"dir": "dds", "format": "dds", "ddsCompression": "bc7"})).await;

@@ -47,6 +47,7 @@ fn segment_samples<'a>(points: &'a [Vec2], corners: &'a [bool], closed: bool, st
     } as isize;
     (0..segments).map(move |s| {
         let (p1, p2) = (at(s), at(s + 1));
+
         // A corner ends its run: the neighbour beyond it is replaced by the corner itself
         let p0 = if corner(s) { p1 } else { at(s - 1) };
         let p3 = if corner(s + 1) { p2 } else { at(s + 2) };
@@ -149,14 +150,17 @@ mod tests {
         let corners = [false, false, true, false, false];
         let mixed = spline_segments_with_corners(&pts, &corners, false, 0.5);
         let smooth = spline_segments(&pts, false, 0.5);
+
         // The segments next to the corner differ; the corner point itself is still reached
         assert_ne!(mixed[1], smooth[1]);
         assert_ne!(mixed[2], smooth[2]);
         assert_eq!(mixed[1].last().copied(), Some(pts[2]));
+
         // Neither side of the corner overshoots past it: the turn is a cusp, not a loop
         let before = mixed[1][mixed[1].len() - 2];
         let after = mixed[2][0];
         assert!(before.x < 20.0 && after.x > 20.0);
+
         // Pure smooth input is unchanged, and a short or missing flag list means smooth
         assert_eq!(spline_segments_with_corners(&pts, &[], false, 0.5), smooth);
         assert_eq!(spline_segments_with_corners(&pts, &[false; 5], false, 0.5), smooth);

@@ -14,6 +14,7 @@ pub fn snap_line_end(start: Pos2, end: Pos2, step_degrees: f32) -> Pos2 {
     if step_degrees <= 0.0 || length == 0.0 {
         return end;
     }
+
     let step = step_degrees.to_radians();
     let angle = (offset.y.atan2(offset.x) / step).round() * step;
     start + Vec2::new(angle.cos(), angle.sin()) * length

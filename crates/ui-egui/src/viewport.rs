@@ -66,7 +66,8 @@ pub fn central(app: &mut TextureCraftApp, ui: &mut Ui) {
     }
 
     let stroke_end = ui.scope_id().with("paint_2d_stroke_end");
-    // A cancelled stroke can leave a pending 2D endpoint; do not attach it to a later gesture.
+
+    // A cancelled stroke can leave a pending 2D endpoint; do not attach it to a later gesture
     let pending_2d_endpoint = if !app.session.stroke_active() || !tool_acts(app) {
         ui.data_mut(|data| {
             let endpoint = data.get_temp(stroke_end);
@@ -783,6 +784,7 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
         {
             let (at, viewport) = (local(pointer), app.session.viewport);
             let mut params = json!({"x": at.x, "y": at.y, "viewport": [viewport.x, viewport.y]});
+
             // The id is a decal layer's or a mask fill effect's
             params[if app.session.doc.project.effect(target).is_some() { "effect" } else { "layer" }] = json!(target.0);
             app.run("layer.decal.set", params);
@@ -924,7 +926,7 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
     add_callback(app, ui, rect, frame, sync);
     polygon_fill_box_overlay(ui, rect, fill_box);
 
-    // Shelf drops: a material goes on top of the stack of the set under the pointer, an image opens the decal menu there, an alpha goes on the brush
+    // Route shelf drops by asset type to a layer, decal, or brush
     crate::shelf::drop_target(app, ui, &response, crate::shelf::DropZone::View3d);
 
     // Brush cursor; while a Ctrl+drag changes the brush it stays where the drag began
@@ -1185,7 +1187,8 @@ fn decal_overlay(app: &mut TextureCraftApp, ui: &Ui, rect: Rect) {
     }
 
     let tk = Tokens::get(ui.ctx());
-    // Placing follows the selection: another layer or effect selected stops it.
+
+    // Placing follows the selection: another layer or effect selected stops it
     let selected_decal = DecalFrame::selected(app).map(|(layer, effect, _)| effect.unwrap_or(layer));
     if app.placing_decal.is_some() && app.placing_decal != selected_decal {
         app.placing_decal = None;
@@ -1210,7 +1213,8 @@ fn decal_overlay(app: &mut TextureCraftApp, ui: &Ui, rect: Rect) {
     for stroke in [shadow, Stroke::new(1.2, frame_color)] {
         painter.add(egui::Shape::dashed_line(&outline, stroke, 6.0, 4.0));
     }
-    // The projection direction from the center.
+
+    // The projection direction from the center
     if let Some((o, _, _, n)) = texturecraft_engine::compose::pattern::decal_axes(&f.decal)
         && let Some(tip) = project(app, rect, o + n * f.decal.size[0].max(f.decal.size[1]) * 0.25)
     {
@@ -1218,7 +1222,8 @@ fn decal_overlay(app: &mut TextureCraftApp, ui: &Ui, rect: Rect) {
         painter.line_segment([f.center, tip], Stroke::new(1.4, tk.viewport_accent));
     }
     painter.circle(f.center, 3.5, tk.viewport_accent, Stroke::new(1.0, Color32::from_black_alpha(180)));
-    // Handles: white, the one under the pointer or being dragged in the accent color.
+
+    // Handles: white, the one under the pointer or being dragged in the accent color
     let fill = |g: DecalGrab| if active == Some(g) || (active.is_none() && hovered == Some(g)) { tk.viewport_accent } else { Color32::WHITE };
     let edge = Stroke::new(1.0, Color32::from_black_alpha(200));
     painter.line_segment([f.top, f.knob], shadow);
@@ -1374,6 +1379,7 @@ fn curve_on_screen(
             .map(|segment| segment.into_iter().map(|at| Some((at, true))).collect())
             .collect();
     }
+
     let s = &app.session;
     let surface = stored
         .and_then(|(eid, index)| stored_surface(app, ui, eid, index))
@@ -1540,6 +1546,7 @@ fn path_overlay(app: &TextureCraftApp, ui: &Ui, rect: Rect, resp: &egui::Respons
     let tk = Tokens::get(ui.ctx());
     let painter = ui.painter_at(rect);
     let hint = tr("Path: click adds a point, click the curve inserts one, drag moves it, Enter applies, Esc cancels");
+
     // Wrapped to the view: the hint is longer than a narrow split view
     let at = rect.left_bottom() + PATH_HINT_OFFSET;
     let wrap = (rect.right() - at.x - PATH_HINT_MARGIN).max(PATH_HINT_MIN_WIDTH);
@@ -1550,6 +1557,7 @@ fn path_overlay(app: &TextureCraftApp, ui: &Ui, rect: Rect, resp: &egui::Respons
     let hit = hover.map(|at| (at, path_hit(app, ui, (rect, uv), at, &show)));
     for (eid, i, other) in other_paths(app).iter().filter(|(_, _, other)| other.uv == uv) {
         let curve = curve_on_screen(app, ui, (rect, uv, true), other, Some((*eid, *i)), &show);
+
         // The path a click opens lights up
         let opened = matches!(hit, Some((_, PathHit::Stored(e, n))) if (e, n) == (*eid, *i));
         draw_path_curve(&painter, &curve, if opened { Color32::WHITE } else { Color32::WHITE.gamma_multiply(PATH_STORED_OPACITY) });
@@ -1578,6 +1586,7 @@ fn path_overlay(app: &TextureCraftApp, ui: &Ui, rect: Rect, resp: &egui::Respons
             // Keep the point's original index when earlier points project behind the camera
             let hovered = hover.is_some_and(|m| m.distance(handle) < HANDLE_GRAB);
             let radius = if hovered { PATH_POINT_RADIUS + PATH_POINT_HOVER_GROWTH } else { PATH_POINT_RADIUS };
+
             // A corner point is drawn as a square, a smooth one as a circle
             let marker = |radius: f32, fill: Color32, stroke: Stroke| {
                 if path.is_corner(index) {
@@ -2232,10 +2241,13 @@ fn view_2d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
         && !path_tool
         && brush_tool(app.session.tool.tool)
         && !response.dragged_by(PointerButton::Middle)
+
         // Egui keeps hover during drags; adjustment may continue outside the view
         && (adjusting || pointer_in_view)
+
         // Keep the brush outline at the press origin while adjusting
         && let Some(cursor_center) = if adjusting { ui.input(|input| input.pointer.press_origin()) } else { response.hover_pos().or_else(|| response.interact_pointer_pos()) }
+
         // Header pickers need the normal pointer
         && !view_header_rect(rect).is_some_and(|header| header.expand(2.0).contains(cursor_center))
         && !crate::nav_buttons::covers(app, rect, crate::nav_buttons::NavView::Uv, cursor_center)
@@ -2369,7 +2381,7 @@ fn bake_paint_overlay(app: &TextureCraftApp, ui: &Ui, painter: &egui::Painter, t
     let tex = match cached {
         Some((c, t)) if c == key => t,
         _ => {
-            // At most 256 texels a side: the overlay is a guide, not the map.
+            // At most 256 texels a side: the overlay is a guide, not the map
             let (w, h) = (k.width as usize, k.height as usize);
             let (ow, oh) = (w.min(256), h.min(256));
             let mut rgba = Vec::with_capacity(ow * oh * 4);

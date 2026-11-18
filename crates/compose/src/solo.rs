@@ -43,9 +43,11 @@ pub fn solo_project(project: &Project, layer: LayerId, ignore_mask: bool) -> Opt
         if !ignore_mask {
             continue;
         }
+
         let instance = drawn.instance_source().is_some();
         match drawn.mask.as_mut() {
             Some(mask) => mask.enabled = false,
+
             // An instance without its own mask draws its source's: an own, disabled one overrides it
             None if instance => drawn.mask = Some(Mask { enabled: false, ..Mask::new(MaskBackground::White) }),
             None => {}
@@ -60,6 +62,7 @@ fn contents(project: &Project, roots: &[LayerId], out: &mut BTreeSet<LayerId>, d
     if depth > MAX_DEPTH {
         return;
     }
+
     for id in roots {
         out.insert(*id);
         if let Some(layer) = project.layers.get(id) {

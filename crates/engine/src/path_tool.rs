@@ -99,6 +99,7 @@ impl PathState {
         if i >= self.points.len() || self.is_corner(i) == corner {
             return false;
         }
+
         self.corners.resize(self.points.len(), false);
         self.corners[i] = corner;
         true
@@ -153,10 +154,10 @@ impl PathState {
 /// A path sublayer's pixels after painting its first paths (`below`), with the mesh and
 /// texture size they were painted for.
 #[derive(Clone)]
-// shortcut: the key doesn't cover image resources a path's brush alpha reads; replacing one
-// leaves cached paths with the old alpha until a path below the edited one changes.
 pub(crate) struct PathCache {
-    eid: LayerId,
+    pub(crate) eid: LayerId,
+    // Alpha image resources are not part of this cache key
+    // Replacing an alpha takes effect when a cached path changes
     key: (u64, Option<(u32, u32)>),
     below: Vec<PathShape>,
     mask: Option<texturecraft_texel::TileImage>,
@@ -180,7 +181,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Path",
             ["Tools"],
             Some("7"),
-            "{points?: [[x,y],...] viewport pixels on the mesh | uvPoints?: [[u,v],...], corners?: [bool,...] one per point (true: the curve turns sharply there; default smooth, applies to the points given in this call), viewport?: [w,h], closed?, fill?, commit?: bool, clear?: bool} — selects the Path tool and edits its curve; commit adds the path to the selected path sublayer (or a new one), painted with the current brush or filled when closed and filled. While a stored path is edited (path.edit), changes repaint it at once",
+            "{points?: [[x,y],...] viewport pixels on the mesh | uvPoints?: [[u,v],...], corners?: [bool,...] up to one per point (true: the curve turns sharply there; missing entries are smooth; applies to supplied points or the current curve), viewport?: [w,h], closed?, fill?, commit?: bool, clear?: bool} — selects the Path tool and edits its curve; commit adds the path to the selected path sublayer (or a new one), painted with the current brush or filled when closed and filled. While a stored path is edited (path.edit), changes repaint it at once",
             always,
             path
         ),
@@ -217,41 +218,58 @@ pub fn specs() -> Vec<CommandSpec> {
 /// Set the curve from command parameters, then preview or commit it in the supplied viewport
 fn path(s: &mut Session, p: &Value) -> Result<Value> {
     const CMD: &str = "tool.path";
+    let viewport = viewport_of(s, p);
+    let clear = boolp(p, "clear") == Some(true);
+
+    let placed = match (points_param(CMD, p, "points")?, points_param(CMD, p, "uvPoints")?) {
+        (Some(pixels), _) => {
+            if pixels.len() > MAX_PATH_POINTS {
+                return Err(bad(CMD, format!("at most {MAX_PATH_POINTS} control points")));
+            }
+
+            Some((
+                pixels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, pixel)| s.pick(*pixel, viewport).map(|hit| hit.pos).ok_or_else(|| bad(CMD, format!("point {i} misses the mesh"))))
+                    .collect::<Result<Vec<_>>>()?,
+                false,
+            ))
+        }
+        (None, Some(uvs)) => {
+            if uvs.len() > MAX_PATH_POINTS {
+                return Err(bad(CMD, format!("at most {MAX_PATH_POINTS} control points")));
+            }
+
+            Some((uvs.iter().map(|uv| uv.clamp(Vec2::ZERO, Vec2::ONE).extend(0.0)).collect(), true))
+        }
+        (None, None) => None,
+    };
+    let point_count = placed.as_ref().map_or(if clear { 0 } else { s.tool.path.points.len() }, |(points, _)| points.len());
+    let corners = match p.get("corners") {
+        Some(value) => {
+            let flags = value.as_array().ok_or_else(|| bad(CMD, "`corners` must be an array of booleans"))?;
+            if flags.len() > point_count || flags.len() > MAX_PATH_POINTS {
+                return Err(bad(CMD, "`corners` has more flags than control points"));
+            }
+
+            Some(flags.iter().map(Value::as_bool).collect::<Option<Vec<_>>>().ok_or_else(|| bad(CMD, "`corners` must be an array of booleans"))?)
+        }
+        None => None,
+    };
+
     if s.tool.tool != Tool::Path {
         set_tool(s, Tool::Path)?;
     }
-
-    let viewport = viewport_of(s, p);
-    if boolp(p, "clear") == Some(true) {
+    if clear {
         s.cancel_path();
     }
-
-    let placed = match (points_param(CMD, p, "points")?, points_param(CMD, p, "uvPoints")?) {
-        (Some(pixels), _) => Some((
-            pixels
-                .iter()
-                .enumerate()
-                .map(|(i, pixel)| s.pick(*pixel, viewport).map(|hit| hit.pos).ok_or_else(|| bad(CMD, format!("point {i} misses the mesh"))))
-                .collect::<Result<Vec<_>>>()?,
-            false,
-        )),
-        (None, Some(uvs)) => Some((uvs.iter().map(|uv| uv.clamp(Vec2::ZERO, Vec2::ONE).extend(0.0)).collect(), true)),
-        (None, None) => None,
-    };
     if let Some((points, uv)) = placed {
-        if points.len() > MAX_PATH_POINTS {
-            return Err(bad(CMD, format!("at most {MAX_PATH_POINTS} control points")));
-        }
-
         s.tool.path.points = points;
         s.tool.path.corners.clear();
         s.tool.path.uv = uv;
     }
-    if let Some(flags) = p.get("corners") {
-        let flags = flags
-            .as_array()
-            .and_then(|a| a.iter().map(Value::as_bool).collect::<Option<Vec<_>>>())
-            .ok_or_else(|| bad(CMD, "`corners` must be an array of booleans"))?;
+    if let Some(flags) = corners {
         s.tool.path.corners = flags;
     }
     if let Some(v) = boolp(p, "closed") {
@@ -354,6 +372,7 @@ fn read_paint(shape: &PathShape) -> Result<PathPaint> {
 /// The Path tool state showing a stored path (finite points only, at most [`MAX_PATH_POINTS`])
 fn state_of(shape: &PathShape) -> PathState {
     let points = shape.points.iter().filter(|p| p.iter().all(|v| v.is_finite())).take(MAX_PATH_POINTS).map(|p| Vec3::from_array(*p)).collect();
+
     // Points dropped as unreadable shift the later flags with them
     let corners = if shape.corners.is_empty() {
         Vec::new()
@@ -513,6 +532,7 @@ impl Session {
         // JSON round trips can change float representation without changing the paint settings
         read_paint(stored).is_ok_and(|paint| {
             let current = self.path_shape(paint.camera, Vec2::from_array(stored.viewport));
+
             // Normalised like the current flags: a short, long or all-smooth stored list must not count as a change
             let stored_corners = state_of(stored).corner_flags();
             (&current.points, &current.corners, current.uv, current.closed, current.fill)
@@ -561,6 +581,7 @@ impl Session {
                 }
                 return Ok(true);
             }
+
             return Ok(false);
         }
 
@@ -948,8 +969,9 @@ impl Session {
             }
             _ => 0,
         };
-        // Each path goes through the regular stroke and fill code with its own settings; their
-        // own history entries are dropped (the caller records one step).
+
+        // Regular stroke and fill code paints each path with its own settings
+        // Discard its history entries because the caller records one undo step
         let saved = (self.tool.clone(), self.camera, self.target, self.quick_mask.editing);
         let history = (std::mem::take(&mut self.undo), std::mem::take(&mut self.redo));
         self.target = StackTarget::Effect(eid);
@@ -1033,9 +1055,11 @@ impl Session {
         if pts.is_empty() {
             return Err(EngineError::Other("the path has no points: click the surface to add some".into()));
         }
+
         if fill && pts.len() < 3 {
             return Err(EngineError::Other("a filled path needs at least three points".into()));
         }
+
         let curve = spline_with_corners(&pts, &corners, closed, if uv { STEP_UV } else { STEP_PX });
         Ok(if fill {
             json!({ "filledTiles": self.lasso_fill(curve, uv, viewport)? })
@@ -1163,7 +1187,8 @@ mod tests {
             eid = r["committed"]["effect"].as_u64().unwrap();
         }
         let eid = texturecraft_core::LayerId(eid);
-        // Live edits of the middle path reuse the bottom path's pixels.
+
+        // Live edits of the middle path reuse the bottom path's pixels
         execute(&mut s, "path.edit", &json!({"effect": eid.0, "index": 1})).unwrap();
         for v in [0.4, 0.45] {
             execute(&mut s, "tool.path", &json!({"uvPoints": [[0.1, v], [0.5, v], [0.9, v]]})).unwrap();
@@ -1176,6 +1201,32 @@ mod tests {
         s.render_paths(eid, 0).unwrap();
         assert_eq!(cached, pixels(&s, eid), "same pixels as painting every path");
         assert!(!cached.is_empty());
+
+        execute(&mut s, "path.edit", &json!({"effect": eid.0, "index": 1})).unwrap();
+        execute(&mut s, "tool.path", &json!({"uvPoints": [[0.1, 0.35], [0.9, 0.4]]})).unwrap();
+        let cached_tiles = s.path_cache.as_ref().map_or(0, |cache| cache.layers.iter().map(|(_, image)| image.allocated_count()).sum::<usize>());
+        assert!(cached_tiles > 0);
+
+        execute(&mut s, "effect.remove", &json!({"effect": eid.0})).unwrap();
+        let remaining_tiles = s.path_cache.as_ref().map_or(0, |cache| cache.layers.iter().map(|(_, image)| image.allocated_count()).sum::<usize>());
+        assert_eq!(remaining_tiles, 0);
+        assert!(s.path_cache.is_none(), "deleting the path effect releases its cached tiles");
+    }
+
+    #[test]
+    fn failed_edit_releases_cached_path_tiles() {
+        let mut session = Session::new_project("t", texturecraft_geom::primitives::sphere(1.0, 12, 6), "builtin:test", None, 128).unwrap();
+        let mut image = TileImage::new(64, 64, 1);
+        let tile = Arc::new(vec![1u16; texturecraft_texel::TILE_AREA]);
+        let retained = Arc::downgrade(&tile);
+        image.set_tile(0, 0, Some(tile));
+        session.path_cache = Some(PathCache { eid: LayerId(0), key: (0, None), below: Vec::new(), mask: Some(image), layers: Vec::new() });
+
+        let result: Result<()> = session.edit("Rejected edit", |_| Err(EngineError::Other("rejected".into())));
+
+        assert!(result.is_err());
+        assert!(session.path_cache.is_none());
+        assert!(retained.upgrade().is_none(), "the discarded document cannot retain the cache's tile");
     }
 
     #[test]

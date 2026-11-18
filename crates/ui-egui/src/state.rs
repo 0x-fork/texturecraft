@@ -46,7 +46,7 @@ pub struct RenderUi {
 
 impl Default for RenderUi {
     fn default() -> Self {
-        // The web traces on one thread: fewer bounces keep it interactive.
+        // The web traces on one thread: fewer bounces keep it interactive
         RenderUi { max_samples: 256, bounces: if cfg!(target_arch = "wasm32") { 3 } else { 6 }, denoise: true, cpu: false }
     }
 }

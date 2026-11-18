@@ -174,10 +174,11 @@ fn the_active_layer_row_has_its_own_strong_fill_and_a_wide_edge_at_scale_two() {
             && rect.contains(egui::pos2(rect.center().x, row.center().y))),
         "a 4 point accent edge marks the row"
     );
+
     // Neighbouring rows keep the alternating shades
     assert!(rects.iter().all(|(rect, color)| *color != fill || rect.contains(row.center())), "only the active row carries the highlight");
 
-    // The lettering keeps its contrast on the stronger fill in every theme.
+    // The lettering keeps its contrast on the stronger fill in every theme
     let lum = |c: egui::Color32| {
         let f = |v: u8| {
             let v = f32::from(v) / 255.0;
@@ -206,6 +207,7 @@ fn the_layer_eye_looks_clearly_different_when_visible_and_hidden_at_scale_two() 
     let tokens = texturecraft_ui_egui::theme::Tokens::get(&h.ctx);
     let row = h.get_by_label("Active one").rect();
     let eye_center = egui::pos2(row.left() + 7.0 + 8.0, row.center().y);
+
     // What is painted on the eye: (glyph, glyph colour, chip fill behind it)
     let eye = |h: &Harness<'_, TextureCraftApp>| {
         let painted = shapes(h);
@@ -253,6 +255,7 @@ fn narrow_harness() -> Harness<'static, TextureCraftApp> {
 fn layer_toolbar_stays_on_one_row_in_a_1280_by_800_window() {
     let h = narrow_harness();
     let buttons = ["Add paint layer", "Add fill layer", "Add folder"].map(|label| h.get_by_label(label).rect());
+
     // The effect menu button is the wand left of the paint button (effect rows draw wands too)
     let wand = h
         .query_all_by_label(egui_phosphor::regular::MAGIC_WAND)

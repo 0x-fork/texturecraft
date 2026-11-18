@@ -332,6 +332,7 @@ pub fn decal_uv(d: &Decal, p: Vec3, nrm: Vec3) -> Option<(Vec2, f32)> {
     if facing <= 0.0 || lx.abs() > 0.5 || ly.abs() > 0.5 || lz > depth || !(lx.is_finite() && ly.is_finite()) {
         return None;
     }
+
     let w = smoothstep(0.0, 0.3, facing) * (1.0 - smoothstep(0.75 * depth, depth, lz));
     Some((flip_uv(Vec2::new(lx + 0.5, 0.5 - ly), d.flip), w))
 }
@@ -348,10 +349,10 @@ pub fn decal_uv_symmetric(d: &Decal, p: Vec3, nrm: Vec3, center: Vec3) -> Option
     let direct = decal_uv(d, p, nrm);
     let Some(symmetry) = d.symmetry else { return direct };
     let axis = usize::from(symmetry.axis.min(2));
-    let (mut mp, mut mn) = (p, nrm);
-    mp[axis] = 2.0 * (center[axis] + symmetry.offset) - p[axis];
-    mn[axis] = -nrm[axis];
-    let mirrored = decal_uv(d, mp, mn).map(|(uv, w)| {
+    let (mut mirrored_position, mut mirrored_normal) = (p, nrm);
+    mirrored_position[axis] = 2.0 * (center[axis] + symmetry.offset) - p[axis];
+    mirrored_normal[axis] = -nrm[axis];
+    let mirrored = decal_uv(d, mirrored_position, mirrored_normal).map(|(uv, w)| {
         let uv = match symmetry.flip {
             DecalFlip::None => uv,
             DecalFlip::U => Vec2::new(1.0 - uv.x, uv.y),
@@ -509,7 +510,8 @@ mod tests {
         assert!(decal_uv(&d, Vec3::new(1.1, 0.0, 0.0), z).is_none(), "outside the frame");
         assert!(decal_uv(&d, Vec3::ZERO, -z).is_none(), "back faces");
         assert!(decal_uv(&d, Vec3::new(0.0, 0.0, 0.6), z).is_none(), "beyond the depth");
-        // Rotated a quarter turn and shifted: the frame turns with it.
+
+        // Rotated a quarter turn and shifted: the frame turns with it
         let r = Decal { rotation: 90.0, offset: [1.0, 0.0], ..d };
         let (uv, _) = decal_uv(&r, Vec3::new(1.0, 0.9, 0.0), z).unwrap();
         assert!((uv.x - 0.95).abs() < 1e-4 && (uv.y - 0.5).abs() < 1e-4, "{uv}");

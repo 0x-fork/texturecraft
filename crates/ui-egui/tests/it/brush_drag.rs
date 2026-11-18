@@ -29,17 +29,20 @@ fn ctrl_drag_changes_the_brush_instead_of_painting_or_orbiting() {
         let s = &h.state().session;
         (s.tool.brush.clone(), s.camera.yaw, s.history_labels().len())
     };
-    // Right drag to the right and up: a bigger, harder brush; the camera stays.
+
+    // Right drag to the right and up: a bigger, harder brush; the camera stays
     drag(&mut h, PointerButton::Secondary, c, vec2(80.0, -40.0), Modifiers::COMMAND);
     let b = h.state().session.tool.brush.clone();
     assert!(b.size > brush.size && b.hardness > brush.hardness, "{} {} → {} {}", brush.size, brush.hardness, b.size, b.hardness);
     assert_eq!(h.state().session.camera.yaw, yaw, "no orbit");
-    // Left drag to the left and up: less flow, a turned brush, and no stroke.
+
+    // Left drag to the left and up: less flow, a turned brush, and no stroke
     drag(&mut h, PointerButton::Primary, c, vec2(-80.0, -40.0), Modifiers::COMMAND);
     let b2 = h.state().session.tool.brush.clone();
     assert!(b2.flow < b.flow && b2.angle != b.angle, "{} {} → {} {}", b.flow, b.angle, b2.flow, b2.angle);
     assert_eq!(h.state().session.history_labels().len(), history, "nothing painted");
-    // Without Ctrl, a right drag orbits again and the brush keeps its values.
+
+    // Without Ctrl, a right drag orbits again and the brush keeps its values
     drag(&mut h, PointerButton::Secondary, c, vec2(80.0, -40.0), Modifiers::NONE);
     assert_ne!(h.state().session.camera.yaw, yaw);
     assert_eq!(h.state().session.tool.brush, b2);
@@ -80,7 +83,8 @@ fn shift_wheel_changes_the_brush_size_in_the_3d_view_and_does_not_zoom() {
     assert_eq!(h.state().session.camera.distance, distance, "no zoom");
     wheel(&mut h, c, -20.0, Modifiers::SHIFT);
     assert!(h.state().session.tool.brush.size < bigger);
-    // Without Shift the wheel zooms and keeps the size.
+
+    // Without Shift the wheel zooms and keeps the size
     let size = h.state().session.tool.brush.size;
     wheel(&mut h, c, 20.0, Modifiers::NONE);
     assert_eq!(h.state().session.tool.brush.size, size);
@@ -103,7 +107,8 @@ fn shift_during_a_ctrl_right_drag_changes_size_and_hardness_in_fine_steps() {
     let c = h.state().viewport_rect.center();
     let before = h.state().session.tool.brush.clone();
     let history = h.state().session.history_labels().len();
-    // Right drag to the right and up: bigger and harder. Once with Ctrl, once with Ctrl+Shift.
+
+    // Compare Ctrl and Ctrl+Shift on the same right drag
     drag(&mut h, PointerButton::Secondary, c, vec2(10.0, -40.0), Modifiers::COMMAND);
     let coarse = h.state().session.tool.brush.clone();
     h.state_mut().session.tool.brush = before.clone();

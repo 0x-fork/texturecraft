@@ -70,6 +70,7 @@ fn decode(f: &ExportedFile) -> DynamicImage {
     if ext == "dds" {
         return decode_dds(&f.bytes);
     }
+
     image::load_from_memory_with_format(&f.bytes, ImageFormat::from_extension(ext).unwrap()).unwrap()
 }
 
@@ -352,9 +353,11 @@ fn every_format_encodes_and_decodes() {
                 if format == FileFormat::Exr && f.name.starts_with("la") {
                     continue; // Y/A EXR: covered by `exr_values_are_linear`.
                 }
+
                 assert_eq!(decode(f).dimensions(), (RES, RES), "{}", f.name);
             }
-            // Roughness 0.25 everywhere survives every format (JPEG within its loss).
+
+            // Roughness 0.25 everywhere survives every format (JPEG within its loss)
             let px = decode(find(&files, "OcclusionRoughnessMetallic.")).to_rgba32f().get_pixel(1, 1)[1];
             assert!((px - 0.25).abs() < 0.01, "{format:?}/{depth}: {px}");
             let base = find(&files, "_BaseColor.");
@@ -489,7 +492,8 @@ fn converted_maps_invert_and_derive_normals() {
     assert_eq!(hn.get_pixel(30, 30), full.get_pixel(30, 30), "without a normal channel the final normal is the height normal");
     let (a, b) = (hn.get_pixel(30, 30), decode(find(&files, "dx")).to_rgb8().get_pixel(30, 30).to_owned());
     assert!(a[1] > 136 && (a[1] as i32 + b[1] as i32 - 255).abs() <= 1, "DirectX flips green: {a:?} vs {b:?}");
-    // Converted maps only exist when their source channel does.
+
+    // Converted maps only exist when their source channel does
     let fx = Fx::new(&default_channels());
     let only = ExportPreset { name: "c".into(), maps: vec![gray_map("rough", virt(VirtualMap::Roughness)), rgb("hn", VirtualMap::HeightNormal)] };
     let names: Vec<String> = list_outputs(&fx.project, 0, "m", &ExportOptions::new(only)).unwrap().into_iter().map(|p| p.name).collect();
@@ -498,7 +502,7 @@ fn converted_maps_invert_and_derive_normals() {
 
 #[test]
 fn uv_tiles_export_one_file_per_tile_without_padding_across() {
-    // Tiles 1001 (left block: red, only x < 16 covered) and 1002 (right block: blue).
+    // Tiles 1001 (left block: red, only x < 16 covered) and 1002 (right block: blue)
     let mut project = Project::new("My Project", "builtin:udim_plane");
     let mut ts = TextureSet::new("Body Set", 0, RES);
     ts.uv_tiles = vec![1001, 1002];
@@ -535,10 +539,12 @@ fn uv_tiles_export_one_file_per_tile_without_padding_across() {
     assert_eq!(names, ["Body_Set_color.1001.png", "Body_Set_color.1002.png"]);
     let (left, right) = (decode(&files[0]).to_rgb8(), decode(&files[1]).to_rgb8());
     assert_eq!((left.width(), left.height(), right.width()), (RES, RES, RES));
-    // Infinite padding fills tile 1001 from its own island only.
+
+    // Infinite padding fills tile 1001 from its own island only
     assert!(left.pixels().all(|p| p.0 == [255, 0, 0]), "tile 1001 is red");
     assert!(right.pixels().all(|p| p.0 == [0, 0, 255]), "tile 1002 is blue");
-    // `$udim` placed by the template; a size applies per tile; the atlas is one image.
+
+    // `$udim` placed by the template; a size applies per tile; the atlas is one image
     let mut named = preset.clone();
     named.maps[0].file = "$udim_$textureSet".into();
     let opts = ExportOptions { size: Some(32), ..ExportOptions::new(named) };
@@ -562,7 +568,8 @@ fn the_udim_name_is_the_file_name_with_its_tile_number_as_placeholder() {
     };
     let placeholder = Some("Body_<UDIM>.png".to_string());
     assert_eq!(udim_names("$textureSet_$udim".into()), [placeholder.clone(), placeholder]);
-    // The length limit cuts the longer placeholder where it doesn't cut the tile number: none then.
+
+    // The length limit cuts the longer placeholder where it doesn't cut the tile number: none then
     assert_eq!(udim_names(format!("{}_$udim_$textureSet", "a".repeat(MAX_STEM - 10))), [None, None]);
 }
 
@@ -672,7 +679,8 @@ fn colour_space_names_the_files_and_warns_when_integer_files_clamp() {
     assert!(aces.warnings.iter().any(|w| w.contains("clamped")), "{:?}", aces.warnings);
     assert!(plan(Some(ColorSpace::AcesCg), Some(FileFormat::Exr)).warnings.is_empty(), "float files keep the values");
     assert!(plan(None, None).warnings.is_empty() && plan(Some(ColorSpace::LinearRec709), None).warnings.is_empty());
-    // The planned names are the rendered names.
+
+    // The planned names are the rendered names
     let opts = ExportOptions { color_space: Some(ColorSpace::Aces2065), ..ExportOptions::new(named) };
     let names: Vec<String> = fx.render(&opts).into_iter().map(|f| f.name).collect();
     assert_eq!(names, list_outputs(&fx.project, 0, "sphere", &opts).unwrap().into_iter().map(|p| p.name).collect::<Vec<_>>());
@@ -709,13 +717,15 @@ fn a_chosen_colour_space_is_embedded_as_an_icc_profile() {
             if depth == 16 && matches!(format, FileFormat::Jpeg | FileFormat::Webp) {
                 continue;
             }
+
             for space in ColorSpace::ALL {
                 let mut warnings = Vec::new();
                 let bytes = encode(format, depth, (8, 8), 3, &data, &[false; 3], Some(space), DdsOptions::default(), &mut warnings).unwrap();
                 assert_eq!(embedded_icc(format, &bytes), crate::icc::profile(space), "{format:?} {depth}-bit {space:?}");
                 assert!(warnings.is_empty(), "{warnings:?}");
             }
-            // No colour space chosen (a data map, or the default): nothing is embedded.
+
+            // No colour space chosen (a data map, or the default): nothing is embedded
             let bytes = encode(format, depth, (8, 8), 3, &data, &[false; 3], None, DdsOptions::default(), &mut Vec::new()).unwrap();
             assert_eq!(embedded_icc(format, &bytes), None, "{format:?} {depth}-bit");
         }
@@ -779,20 +789,23 @@ fn inverted_channels_write_one_minus_the_source() {
             let files = fx.render(&ExportOptions::new(p));
             let img = decode(find(&files, "packed")).to_rgba16();
             let p = img.get_pixel(9, 9).0;
-            // Compare 16-bit values for both depths: an 8-bit file widens to value * 257.
+
+            // Compare 16-bit values for both depths: an 8-bit file widens to value * 257
             p.map(i32::from)
         };
         let plain = px(preset(Vec::new()));
         let inv = px(preset(vec![Dest::R, Dest::A]));
         let tol = if depth == 8 { 257 } else { 2 };
-        // Roughness 0.25 inverts to 0.75, constant alpha 1 to 0; G and B stay.
+
+        // Roughness 0.25 inverts to 0.75, constant alpha 1 to 0; G and B stay
         assert!((inv[0] - (65535 - plain[0])).abs() <= tol, "depth {depth}: R {} vs {}", inv[0], 65535 - plain[0]);
         assert!((inv[0] - 49151).abs() <= tol, "depth {depth}: R {}", inv[0]);
         assert!(inv[3] <= tol, "depth {depth}: A {}", inv[3]);
         assert_eq!((inv[1], inv[2]), (plain[1], plain[2]), "depth {depth}: channels not listed stay as they are");
         assert!((plain[0] - 16384).abs() <= tol && plain[3] == 65535, "depth {depth}: un-inverted {plain:?}");
     }
-    // Gray maps and float files too.
+
+    // Gray maps and float files too
     let gray = gray_map("g", SourceRef::Channel { channel: Channel::Metallic, component: 0 });
     let gray = MapSpec { inverted: vec![Dest::L], ..gray };
     let files = fx.render(&ExportOptions::new(ExportPreset { name: "inv".into(), maps: vec![gray] }));
@@ -810,7 +823,8 @@ fn inverted_flag_round_trips_and_old_json_loads() {
     let preset = ExportPreset { name: "Mine".into(), maps: vec![map.clone()] };
     let json = preset_to_json(&preset).unwrap();
     assert_eq!(preset_from_json(&json).unwrap(), preset);
-    // A file written before the flag existed has no `inverted` and keeps none on save.
+
+    // A file written before the flag existed has no `inverted` and keeps none on save
     map.inverted.clear();
     let old = ExportPreset { name: "Old".into(), maps: vec![map] };
     let json = preset_to_json(&old).unwrap();
@@ -850,18 +864,20 @@ fn inverting_a_colour_channel_inverts_the_linear_value_before_encoding() {
         decode(find(&fx.render(&opts), "col")).to_rgb8()
     };
     let (plain, inv) = (base(Vec::new(), None), base(vec![Dest::R], None));
-    // Texel (9, 9): linear red 9/63, written as sRGB.
+
+    // Texel (9, 9): linear red 9/63, written as sRGB
     let want = linear_to_srgb(1.0 - 9.0 / 63.0) * 255.0;
     assert!((inv.get_pixel(9, 9)[0] as f32 - want).abs() <= 1.0, "{} vs {want}", inv.get_pixel(9, 9)[0]);
     assert_eq!(inv.get_pixel(9, 9).0[1..], plain.get_pixel(9, 9).0[1..], "G and B stay");
-    // A size override goes through the resize path: the left-most texels are 1 - 0 -> white red.
+
+    // A size override goes through the resize path: the left-most texels are 1 - 0 -> white red
     let half = base(vec![Dest::R], Some(RES / 2));
     assert_eq!(half.width(), RES / 2);
     assert!(half.get_pixel(0, 5)[0] >= 250, "{}", half.get_pixel(0, 5)[0]);
 }
 
 // ---------------------------------------------------------------------------------------------
-// DDS.
+// DDS
 
 const DDPF_FOURCC: u32 = 0x4;
 const DDSCAPS_MIPMAP: u32 = 0x40_0000;
@@ -915,7 +931,7 @@ fn block_compressed_dds_stays_within_the_block_error() {
             for (got, want) in dd.pixels().zip(pp.pixels()) {
                 let colour = (0..3).map(|k| got[k].abs_diff(want[k])).max().unwrap();
                 if compression == DdsCompression::Bc1 {
-                    // BC1 alpha is on or off; transparent texels are black.
+                    // BC1 alpha is on or off; transparent texels are black
                     assert!(got[3] == 0 || got[3] == 255, "{}: {got:?}", d.name);
                     if want[3] <= 100 || want[3] >= 155 {
                         assert_eq!(got[3] == 255, want[3] >= 128, "{}: {got:?} vs {want:?}", d.name);
@@ -925,9 +941,9 @@ fn block_compressed_dds_stays_within_the_block_error() {
                     }
                 } else {
                     assert!(got[3].abs_diff(want[3]) <= 4, "{}: alpha {got:?} vs {want:?}", d.name);
-                    // Near black the sRGB ramps in red and green are steep, so a 4x4 block spans
-                    // a square of about 0-62 in both: four colours on one line can be up to about
-                    // 30 levels off in one channel there. Transparent texels' colour is never seen.
+
+                    // Near black, a 4x4 sRGB block can have about 30 levels of colour error
+                    // Transparent texels have no visible colour
                     assert!(want[3] == 0 || colour <= 36, "{}: {got:?} vs {want:?}", d.name);
                 }
             }
@@ -950,8 +966,8 @@ fn dds_data_start(b: &[u8]) -> usize {
 #[test]
 fn automatic_dds_compression_writes_normals_as_bc5_and_they_keep_their_convention() {
     let mut fx = fx_with_alpha();
-    // A normal tilted up and turning from left to right, so the DirectX green flip and the
-    // rebuilt Z show.
+
+    // Tilted normals expose the DirectX green flip and reconstructed Z
     fx.set_all(Channel::Normal, |x, _| [0.3 + x as f32 / 157.5, 0.8, 0.9]);
     let preset = builtin_preset("glTF PBR Metal Roughness").unwrap();
     let files = fx.render(&dds_opts(&preset, DdsCompression::Auto, false));
@@ -973,7 +989,8 @@ fn automatic_dds_compression_writes_normals_as_bc5_and_they_keep_their_conventio
         for (got, want) in bc5.pixels().zip(exact.pixels()) {
             assert!(got[0].abs_diff(want[0]) <= 4 && got[1].abs_diff(want[1]) <= 4, "{format:?}: X and Y {got:?} vs {want:?}");
             assert_eq!(got[2], 0, "BC5 has no third channel");
-            // What a renderer does: Z from X and Y of the unit normal.
+
+            // What a renderer does: Z from X and Y of the unit normal
             let (x, y) = (unit(got[0]), unit(got[1]));
             let z = (1.0 - x * x - y * y).max(0.0).sqrt();
             assert!((z - unit(want[2])).abs() < 0.06, "{format:?}: Z {z} vs {want:?}");
@@ -1054,7 +1071,8 @@ fn explicit_dds_compressions_ignore_the_map_kind() {
             assert_eq!(decode(&f).dimensions(), (RES, RES));
         }
     }
-    // The preset's 16-bit maps are written with the DX10 header (a FourCC); at 8 bits there is none.
+
+    // The preset's 16-bit maps are written with the DX10 header (a FourCC); at 8 bits there is none
     let opts = ExportOptions { bit_depth_override: Some(8), ..dds_opts(&preset, DdsCompression::None, false) };
     for f in fx.render(&opts) {
         assert_eq!(le32(&f.bytes, 80) & DDPF_FOURCC, 0, "{}: uncompressed", f.name);
@@ -1064,7 +1082,8 @@ fn explicit_dds_compressions_ignore_the_map_kind() {
 #[test]
 fn dds_mipmaps_add_the_whole_chain_below_the_same_top_level() {
     let fx = Fx::new(&default_channels());
-    // Gray (BC4), normal (BC5) and colour maps with every compression.
+
+    // Gray (BC4), normal (BC5) and colour maps with every compression
     let preset = builtin_preset("Document channels + Normal + AO").unwrap();
     for compression in DdsCompression::ALL {
         let flat = fx.render(&dds_opts(&preset, compression, false));
@@ -1088,7 +1107,8 @@ fn dds_follows_the_bit_depth_up_to_16_bits() {
     let eight = fx.render(&dds_opts(&preset, DdsCompression::None, false));
     assert!(list_outputs(&fx.project, 0, "sphere", &dds_opts(&preset, DdsCompression::None, false)).unwrap().iter().all(|p| p.bit_depth == 8));
     assert!(eight.iter().all(|f| dxgi(&f.bytes).is_none()), "8 bits: the legacy header");
-    // 16 and 32 bits ask for 16: uncompressed files are R16G16B16A16_UNORM (DXGI 11).
+
+    // 16 and 32 bits ask for 16: uncompressed files are R16G16B16A16_UNORM (DXGI 11)
     for depth in [16u8, 32] {
         let opts = ExportOptions { bit_depth_override: Some(depth), ..dds_opts(&preset, DdsCompression::None, false) };
         assert!(list_outputs(&fx.project, 0, "sphere", &opts).unwrap().iter().all(|p| p.format == FileFormat::Dds && p.bit_depth == 16));
@@ -1119,7 +1139,8 @@ fn dds_round_trip(data: &[f32], n: usize, depth: u8, compression: craft_dds::Dds
 #[test]
 fn a_16_bit_normal_exported_to_bc5_has_less_error_than_the_8_bit_path() {
     let data: Vec<f32> = (0..64 * 64).flat_map(|i| [ramp(i % 64, 64), ramp(i / 64, 64), 0.9]).collect();
-    // X and Y of every texel at 16 bits, and the decoded BC5 (red, green, blue 0).
+
+    // X and Y of every texel at 16 bits, and the decoded BC5 (red, green, blue 0)
     let want: Vec<u16> = data.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1]]).map(|v| (v * 65535.0 + 0.5) as u16).collect();
     let xy = |d: Vec<u16>| d.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1]]).collect::<Vec<_>>();
     let eight = mean_error(&xy(dds_round_trip(&data, 3, 8, craft_dds::DdsCompression::Bc5)), &want);
@@ -1161,7 +1182,8 @@ fn uncompressed_dds_at_16_bits_reads_back_exactly() {
         let data: Vec<f32> = (0..64 * 64 * n).map(|i| ramp(i / n % 64 + i % n * 7, 90)).collect();
         let want: Vec<u16> = data.iter().map(|v| (v * 65535.0 + 0.5) as u16).collect();
         let got = dds_round_trip(&data, n, 16, craft_dds::DdsCompression::None);
-        // RGB comes back as RGBA with full alpha.
+
+        // RGB comes back as RGBA with full alpha
         let got: Vec<u16> = if n == 3 { got.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect() } else { got };
         assert_eq!(got, want, "{n} components");
     }
@@ -1182,7 +1204,8 @@ fn a_preset_with_dds_maps_round_trips_and_exports_dds() {
     assert_eq!(names, ["Body_Set_albedo.dds", "Body_Set_rough.png"]);
     assert_eq!(list_outputs(&fx.project, 0, "sphere", &opts).unwrap().first().map(|p| p.bit_depth), Some(16), "the template's 16 bits");
     assert_eq!(&files[0].bytes[84..88], b"DXT1", "automatic: colour without alpha is BC1");
-    // The options themselves survive a serde round trip, and old option JSON without them loads.
+
+    // The options themselves survive a serde round trip, and old option JSON without them loads
     let with = ExportOptions { dds: DdsExport { compression: DdsCompression::Bc3, mipmaps: true }, ..opts.clone() };
     assert_eq!(serde_json::from_str::<ExportOptions>(&serde_json::to_string(&with).unwrap()).unwrap().dds, with.dds);
     let mut old = serde_json::to_value(&opts).unwrap();

@@ -801,7 +801,8 @@ mod tests {
         let back: Project = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
         assert_eq!(back.effect(anchor).map(|(owner, _)| owner), Some(id));
-        // Projects saved before content effects existed load with empty stacks.
+
+        // Projects saved before content effects existed load with empty stacks
         let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
         for l in v["layers"].as_object_mut().unwrap().values_mut() {
             l.as_object_mut().unwrap().remove("content_effects");

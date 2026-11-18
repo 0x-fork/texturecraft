@@ -120,6 +120,7 @@ pub struct ShelfDrag {
 pub fn apply(app: &mut TextureCraftApp, asset: &Asset) {
     let (cmd, params) = match asset {
         Asset::Material(id) if texturecraft_engine::materials::brush_values(id).is_some() => ("tool.material", json!({"material": id})),
+
         // A smart material (several layers) is no brush material: a click only highlights its tile, dragging adds the layers
         Asset::Material(_) | Asset::Library(_) => return,
         Asset::SmartMask(id) => ("mask.smart.apply", json!({"name": id})),
@@ -138,6 +139,7 @@ pub fn apply(app: &mut TextureCraftApp, asset: &Asset) {
         Asset::Alpha(id) => ("tool.brush", json!({"alpha": {"library": id}})),
         Asset::Texture(name) => ("layer.add.image", json!({"name": name})),
     };
+
     app.run(cmd, params);
 }
 

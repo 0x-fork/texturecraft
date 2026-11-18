@@ -205,6 +205,7 @@ impl Session {
         let mut mini = crate::material_lib::one_set_document(set, name);
         let id = mini.project.alloc_id();
         let mut holder = Layer::new(id, name, LayerKind::Paint, &set.channel_list());
+
         // The mask comes back switched on whatever state it was saved in
         holder.mask = Some(Mask { enabled: true, ..copy_mask(&self.doc, &mask, &mut mini, set.size()) });
         mini.project.insert_layer(0, holder, None, false)?;
@@ -234,6 +235,7 @@ impl Session {
         self.edit(&format!("Apply smart mask {label}"), |s| {
             let (ts, _, _) = s.doc.project.locate(layer).ok_or_else(|| EngineError::Other("layer not in a stack".into()))?;
             let size = s.doc.project.texture_set(ts)?.size();
+
             // An image whose name the project already uses for other bytes comes in under a new name
             let mut renames = BTreeMap::new();
             for (name, bytes) in &resources {
@@ -291,6 +293,7 @@ fn copy_mask(src: &crate::session::Document, mask: &Mask, dst: &mut crate::sessi
             dst.pixels.masks.insert(e.id, crate::layer_ops::fit(img, size, &[0, 0]));
         }
     }
+
     // Sources that read an anchor effect of this mask follow it to its new id
     for source in copy.effects.iter_mut().flat_map(|effect| sources_mut(&mut effect.kind)) {
         if let Source::Anchor { anchor, .. } = source

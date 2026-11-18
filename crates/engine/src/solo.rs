@@ -36,6 +36,7 @@ fn solo(s: &mut Session, p: &Value) -> Result<Value> {
             if s.doc.project.locate(layer).is_none() {
                 return Err(bad("view.solo", "the layer is not in a stack"));
             }
+
             Some(Solo { layer, ignore_mask: boolp(p, "ignoreMask").unwrap_or(false) })
         }
     };
@@ -50,6 +51,7 @@ impl Session {
         if self.solo == solo {
             return;
         }
+
         self.solo = solo;
         for cache in &mut self.caches {
             // What the cache holds was composited from the other stack

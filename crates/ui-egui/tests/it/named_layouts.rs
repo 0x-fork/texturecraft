@@ -87,6 +87,7 @@ fn a_layout_is_renamed_and_deleted_from_the_manage_dialog() {
 
     harness.get_by_role_and_label(Role::Button, "Rename").click();
     harness.run_steps(2);
+
     // The field starts with the old name; typing continues it
     dialog_input(&harness).type_text("2");
     harness.run_steps(2);

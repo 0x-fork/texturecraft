@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod ask;
 mod bake_job;
 pub mod bake_mode;
 mod bake_scene;
@@ -28,15 +29,21 @@ pub mod id_color_pick;
 mod inactive_set_hint;
 pub mod keymap;
 pub mod layer_panel;
+mod layout_dialog;
 mod levels_editor;
 mod levels_handle;
 mod levels_properties;
 mod line_snap;
+mod list_action;
 mod mask_preview_image;
 mod material_preview_image;
 pub mod menus;
+mod name_error;
+mod named_layout;
 pub mod named_layouts;
+mod nav_button;
 pub mod nav_buttons;
+mod nav_view;
 pub mod new_project_advanced;
 mod orb_shape;
 pub mod parity;
@@ -69,6 +76,7 @@ pub mod shelf_view;
 mod smart_mask_menu;
 mod soft_box;
 pub mod state;
+mod surface_paint_point;
 pub mod symmetry;
 pub mod theme;
 pub mod thumbs;
@@ -338,6 +346,7 @@ impl TextureCraftApp {
                         self.camera_glide = Some(CameraGlide { from, to: self.session.camera, start: self.last_time });
                         self.session.camera = from;
                     }
+
                     // Already at the destination: drop a glide an earlier command in the same frame started
                     Some(_) => self.camera_glide = None,
                     None => self.settle_camera_glide(id, before),
@@ -652,14 +661,17 @@ impl TextureCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn autosave(&mut self, now: f64) {
         let period = self.ui.prefs.autosave_minutes as f64 * 60.0;
-        // The clock starts at the first unsaved change.
+
+        // The clock starts at the first unsaved change
         if period <= 0.0 || !self.session.modified {
             self.next_autosave = now + period;
             return;
         }
+
         if now < self.next_autosave {
             return;
         }
+
         self.next_autosave = now + period;
         let dir = user_dir("autosave");
         let path = dir.join(format!(
@@ -713,7 +725,8 @@ impl TextureCraftApp {
         c.pitch = mix(a.pitch, b.pitch);
         c.distance = mix(a.distance, b.distance);
         c.fov = mix(a.fov, b.fov);
-        // Orthographic switches at the end (the projections cannot be blended).
+
+        // Switch orthographic mode at the end because projections cannot blend
         c.ortho = if t >= 1.0 { b.ortho } else { a.ortho };
         self.session.camera = c;
         self.session.revision = self.session.revision.wrapping_add(1);

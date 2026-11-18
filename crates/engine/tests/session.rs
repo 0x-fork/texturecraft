@@ -823,6 +823,7 @@ fn blending_set_gives_each_channel_its_own_mode_and_opacity_in_one_undo_step() {
     execute(&mut s, "edit.undo", &Value::Null).unwrap();
     assert_eq!(read(&s), before, "one undo step restores every listed channel");
     execute(&mut s, "edit.redo", &Value::Null).unwrap();
+
     // A channel the layer has disabled stays disabled
     execute(&mut s, "layer.blend", &json!({"layer": layer, "channel": "metallic", "enabled": false})).unwrap();
     execute(&mut s, "layer.blending.set", &json!({"layer": layer, "channels": {"metallic": {"opacity": 0.1}}})).unwrap();

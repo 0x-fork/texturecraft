@@ -171,7 +171,8 @@ fn solo_keeps_one_material_channel() {
 #[test]
 fn decals_project_an_image_from_a_frame_placed_on_the_surface() {
     let mut s = session();
-    // A red disc on a transparent background.
+
+    // A red disc on a transparent background
     let name = s
         .import_resource_bytes("logo.png", png(32, 32, |x, y| if (x as i32 - 16).pow(2) + (y as i32 - 16).pow(2) < 196 { [255, 0, 0, 255] } else { [0; 4] }))
         .unwrap();
@@ -184,9 +185,11 @@ fn decals_project_an_image_from_a_frame_placed_on_the_surface() {
     assert!(matches!(f.projection, Projection::Decal(_)));
     assert!(red(at(&mut s, Channel::BaseColor, 200.0, 200.0)), "the decal shows where it was placed");
     assert!(!red(at(&mut s, Channel::BaseColor, 120.0, 200.0)), "and only there");
-    // The image's transparent corners leave the surface as it was.
+
+    // The image's transparent corners leave the surface as it was
     assert!(!red(at(&mut s, Channel::BaseColor, 200.0 + 30.0, 200.0 - 30.0)));
-    // Bigger, then moved along its plane, then re-placed with a click.
+
+    // Bigger, then moved along its plane, then re-placed with a click
     execute(&mut s, "layer.decal.set", &json!({"size": 1.2})).unwrap();
     assert!(red(at(&mut s, Channel::BaseColor, 160.0, 200.0)));
     execute(&mut s, "layer.decal.set", &json!({"size": 0.4, "offset": [0.6, 0.0], "rotation": 45})).unwrap();
@@ -196,7 +199,8 @@ fn decals_project_an_image_from_a_frame_placed_on_the_surface() {
     assert!(red(at(&mut s, Channel::BaseColor, 170.0, 180.0)));
     let inspect = execute(&mut s, "project.inspect", &Value::Null).unwrap().to_string();
     assert!(inspect.contains("Decal projection") && inspect.contains("\"rotation\":45"), "inspect shows the decal");
-    // Not a decal; one undo step per edit.
+
+    // Not a decal; one undo step per edit
     let plain = id(execute(&mut s, "layer.add.fill", &Value::Null).unwrap(), "layer");
     assert!(execute(&mut s, "layer.decal.set", &json!({"layer": plain.0, "size": 1})).is_err());
     execute(&mut s, "edit.undo", &Value::Null).unwrap();
@@ -259,6 +263,7 @@ fn a_mask_fill_effects_decal_is_edited_like_a_layer_decal() {
 #[test]
 fn decals_keep_the_image_aspect_and_flip_their_image() {
     let mut s = session();
+
     // Twice as wide as tall, left half red and right half blue
     let name = s.import_resource_bytes("wide.png", png(8, 4, |x, _| if x < 4 { [255, 0, 0, 255] } else { [0, 0, 255, 255] })).unwrap();
     let r = execute(&mut s, "layer.add.decal", &json!({"image": name, "x": 200, "y": 200, "size": 0.5})).unwrap();
@@ -715,7 +720,8 @@ fn directx_normal_images_flip_green() {
     assert!(fill(&mut s, json!({"normalFormat": "sideways"})).is_err());
     assert!(fill(&mut s, json!({"image": name, "normalFormat": 1})).is_err(), "not a string");
     assert!(fill(&mut s, json!({"value": [0.5, 0.5, 1.0], "normalFormat": "directX"})).is_err(), "not an image");
-    // Marking an image on a channel that is off leaves it off.
+
+    // Marking an image on a channel that is off leaves it off
     fill(&mut s, json!({"enabled": false})).unwrap();
     fill(&mut s, json!({"normalFormat": "directX"})).unwrap();
     assert!(!s.doc.project.layer(layer).unwrap().channels.contains_key(&Channel::Normal));
@@ -831,9 +837,11 @@ fn a_decal_moved_onto_another_facing_surface_keeps_a_valid_frame_with_the_carrie
     let mut s = Session::new_project("t", primitives::cube(2.0), "builtin:cube", None, 256).unwrap();
     s.viewport = Vec2::new(400.0, 400.0);
     let name = s.import_resource_bytes("logo.png", png(8, 4, |_, _| [255, 0, 0, 255])).unwrap();
+
     // On the +Z face, its up turned halfway between world X and Y, size and turn set by the user
     let place = json!({"image": name, "position": [0.0, 0.0, 1.0], "normal": [0.0, 0.0, 1.0], "up": [1.0, 1.0, 0.0], "size": [0.6, 0.3], "rotation": 25});
     let layer = id(execute(&mut s, "layer.add.decal", &place).unwrap(), "layer");
+
     // Onto the +Y face: the up turns with the surface and follows the old up's direction in it
     let r = execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "position": [0.2, 1.0, 0.1], "normal": [0.0, 1.0, 0.0]})).unwrap();
     let up = plane_up(&r["decal"]);
@@ -841,16 +849,19 @@ fn a_decal_moved_onto_another_facing_surface_keeps_a_valid_frame_with_the_carrie
     assert!(up.x > 0.5, "the old up's X side stays on the X side: {up}");
     assert_eq!(r["decal"]["rotation"], json!(25.0), "the user's turn stays");
     assert_eq!(r["decal"]["size"], json!([0.6_f32, 0.3_f32]), "and the size");
+
     // Straight up the face with the old up along the new normal: no degenerate frame, nothing arbitrary
     let r =
         execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "position": [0.0, 0.0, 1.0], "normal": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0]})).unwrap();
     assert_eq!(plane_up(&r["decal"]), Vec3::Y);
     let r = execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "position": [0.0, 1.0, 0.0], "normal": [0.0, 1.0, 0.0]})).unwrap();
     assert!((plane_up(&r["decal"]) - Vec3::NEG_Z).length() < 1e-4, "the up that pointed up the +Z face points away over the edge: {:?}", r["decal"]["up"]);
+
     // Onto the opposite face there is no smallest turn: the frame is still valid and follows the camera rule
     let r = execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "position": [0.0, -1.0, 0.0], "normal": [0.0, -1.0, 0.0]})).unwrap();
     let up = plane_up(&r["decal"]);
     assert!((up.length() - 1.0).abs() < 1e-4 && up.dot(Vec3::Y).abs() < 1e-4, "{up}");
+
     // An explicit up still wins
     let r =
         execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "position": [1.0, 0.0, 0.0], "normal": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0]})).unwrap();
@@ -866,6 +877,7 @@ fn a_decal_dragged_over_the_sphere_never_flips_its_up_between_steps() {
     let name = s.import_resource_bytes("logo.png", png(8, 8, |_, _| [255, 0, 0, 255])).unwrap();
     let place = json!({"image": name, "position": [0.0, 0.0, 1.0], "normal": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0], "size": 0.3});
     let layer = id(execute(&mut s, "layer.add.decal", &place).unwrap(), "layer");
+
     // Over the pole (the old up lies along the normal there) and down the far side, in 5 degree steps
     let mut last = Vec3::Y;
     for step in 0..=72 {
@@ -877,6 +889,7 @@ fn a_decal_dragged_over_the_sphere_never_flips_its_up_between_steps() {
         assert!(up.dot(last) > 0.0, "step {step}: up turned from {last} to {up}");
         last = up;
     }
+
     // The same drag through viewport points (what the 3D view sends), from the middle to the edge
     for step in 0..25 {
         let r = execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "x": 200.0 + step as f32 * 2.0, "y": 200.0 - step as f32 * 2.0, "merge": true}))

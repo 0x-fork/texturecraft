@@ -16,6 +16,7 @@ pub fn inactive_set_under(session: &Session, screen: Vec2) -> Option<String> {
     if !paints_active_set(session.tool.tool) {
         return None;
     }
+
     let set = session.texture_set_at(screen, session.viewport).filter(|set| *set != session.ts())?;
     session.doc.project.texture_sets.get(set).map(|texture_set| texture_set.name.clone())
 }

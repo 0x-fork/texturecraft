@@ -1,58 +1,13 @@
 //! Orbit, pan and zoom buttons in the corner of the 3D and 2D views. Pressing one with the primary button (mouse or pen tip) and
 //! dragging moves the view like the mouse shortcuts do, without painting, so a pen and tablet can navigate without a keyboard or wheel.
 
-use egui::{Area, CursorIcon, Order, PointerButton, Rect, Sense, Ui, Vec2, pos2, vec2};
-use egui_phosphor::regular as icon;
-
 use crate::TextureCraftApp;
-use crate::i18n::{n_, tr};
+use crate::i18n::tr;
+pub use crate::nav_button::NavButton;
+pub use crate::nav_view::NavView;
 use crate::theme::Tokens;
 use crate::viewport::{DRAG_ZOOM_PER_POINT, ORBIT_RADIANS_PER_POINT, UV_VIEW_MAX_ZOOM, UV_VIEW_MIN_ZOOM, UV_WHEEL_ZOOM_PER_POINT};
-
-/// Which view a column of buttons belongs to
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NavView {
-    /// The 3D view: orbit, pan and zoom
-    Scene,
-    /// The 2D view: pan and zoom
-    Uv,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum NavButton {
-    Orbit,
-    Pan,
-    Zoom,
-}
-
-impl NavView {
-    /// The buttons of the view, top to bottom
-    pub fn buttons(self) -> &'static [NavButton] {
-        match self {
-            NavView::Scene => &[NavButton::Orbit, NavButton::Pan, NavButton::Zoom],
-            NavView::Uv => &[NavButton::Pan, NavButton::Zoom],
-        }
-    }
-}
-
-impl NavButton {
-    fn icon(self) -> &'static str {
-        match self {
-            NavButton::Orbit => icon::ARROWS_CLOCKWISE,
-            NavButton::Pan => icon::HAND_GRABBING,
-            NavButton::Zoom => icon::MAGNIFYING_GLASS,
-        }
-    }
-
-    fn tooltip(self, view: NavView) -> &'static str {
-        match (self, view) {
-            (NavButton::Orbit, _) => n_("Orbit: press and drag to turn the view around the model"),
-            (NavButton::Pan, _) => n_("Pan: press and drag to move the view"),
-            (NavButton::Zoom, NavView::Scene) => n_("Zoom: press and drag up to move closer, down to move away"),
-            (NavButton::Zoom, NavView::Uv) => n_("Zoom: press and drag up to zoom in, down to zoom out"),
-        }
-    }
-}
+use egui::{Area, CursorIcon, Order, PointerButton, Rect, Sense, Ui, Vec2, pos2, vec2};
 
 /// Button side, gap between buttons and the distance from the view's right edge, in points
 const BUTTON_SIZE: f32 = 30.0;
@@ -96,6 +51,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ui: &Ui, rect: Rect, view: NavView
     if !app.ui.nav_buttons {
         return;
     }
+
     let Some(strip) = strip_rect(rect, view) else { return };
     let tokens = Tokens::get(ui.ctx());
     let area_id = ui.scope_id().with(("nav_buttons", view));
