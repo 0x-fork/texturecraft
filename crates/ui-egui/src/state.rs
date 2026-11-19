@@ -379,7 +379,9 @@ impl SetExport {
 /// A running texture export: the texture sets still to write, one per frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExportJob {
-    pub pending: Vec<usize>,
+    /// Each texture set still to write with its `file.exportTextures` parameters (output folder
+    /// included), taken when Export was clicked: later edits of the settings do not reach them.
+    pub pending: Vec<(usize, serde_json::Value)>,
     pub total: usize,
     /// File names written so far.
     pub written: Vec<String>,
@@ -441,6 +443,10 @@ pub struct ExportUi {
     /// Output templates tab: the selected user preset being edited (saved whenever it is valid).
     #[serde(skip)]
     pub draft: Option<texturecraft_engine::formats::ExportPreset>,
+    /// Output templates tab: for each map of `draft`, its index in the saved template (None: added
+    /// since), so the texture set overrides of a map follow it when the draft is saved.
+    #[serde(skip)]
+    pub draft_maps: Vec<Option<usize>>,
     /// Output templates tab: the new name while renaming the selected preset.
     #[serde(skip)]
     pub renaming: Option<String>,
@@ -483,6 +489,7 @@ impl Default for ExportUi {
             tab: 0,
             page: None,
             draft: None,
+            draft_maps: Vec::new(),
             renaming: None,
             rename_key: false,
             ask: None,

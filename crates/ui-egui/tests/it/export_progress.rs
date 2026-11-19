@@ -3,6 +3,7 @@
 
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
+use serde_json::json;
 use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::state::{ConsoleLine, ExportJob};
 
@@ -72,16 +73,36 @@ fn export_shows_progress_logs_the_steps_and_keeps_the_window_open() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[test]
-fn cancel_export_stops_the_export() {
-    let (mut h, dir) = harness("cancel");
-
-    // A long export: the texture sets several times over
+/// A long export: the texture sets several times over, into `dir`
+fn long_export(h: &mut Harness<'_, TextureCraftApp>, dir: &std::path::Path) {
     let sets: Vec<usize> = (0..h.state().session.set_count()).collect();
-    let pending: Vec<usize> = sets.iter().copied().cycle().take(sets.len() * 8).collect();
+    let params = json!({"dir": dir.display().to_string()});
+    let pending: Vec<(usize, serde_json::Value)> = sets.iter().copied().cycle().take(sets.len() * 8).map(|ts| (ts, params.clone())).collect();
     let e = &mut h.state_mut().ui.export;
     e.tab = 2;
     e.job = Some(ExportJob { total: pending.len(), pending, ..ExportJob::default() });
+}
+
+/// How many texture sets the session wrote so far
+fn exports(h: &Harness<'_, TextureCraftApp>) -> usize {
+    h.state().session.log.iter().filter(|l| l.starts_with("Exported ")).count()
+}
+
+/// Run frames until the export ends (or a bound)
+fn finish(h: &mut Harness<'_, TextureCraftApp>) {
+    for _ in 0..64 {
+        if h.state().ui.export.job.is_none() {
+            break;
+        }
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+}
+
+#[test]
+fn cancel_export_stops_the_export() {
+    let (mut h, dir) = harness("cancel");
+    long_export(&mut h, &dir);
     h.run_steps(2);
     assert!(h.query_by_label("Cancel Export").is_some());
     assert!(h.query_all_by_label_contains("%").next().is_some(), "the bar shows the percent");
@@ -137,5 +158,97 @@ fn open_output_directory_asks_the_system_to_show_the_folder() {
     // The test harness has no window: the folder is recorded instead of shown
     assert_eq!(h.state().file_dialogs.shown_folders(), std::slice::from_ref(&dir));
     assert!(dir.is_dir(), "a missing folder is created first");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_settings_at_export_are_kept_while_it_runs() {
+    let (mut h, dir) = harness("frozen");
+    let moved = dir.with_extension("moved");
+    let _ = std::fs::remove_dir_all(&moved);
+    click(&mut h, "Export");
+    h.run_steps(1);
+    assert!(h.state().ui.export.job.is_some());
+
+    // Another folder and size chosen while it runs reach none of the files
+    h.state_mut().ui.export.dir = moved.display().to_string();
+    h.state_mut().ui.export.size = 128;
+    finish(&mut h);
+    assert!(!moved.exists(), "nothing was written to the folder chosen later");
+    let written: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
+    let sets = h.state().session.set_count();
+    assert_eq!(exports(&h), sets, "every texture set was written");
+    for f in written.iter().filter(|p| p.extension().is_some_and(|e| e == "png")) {
+        let width = u32::from_be_bytes(std::fs::read(f).unwrap()[16..20].try_into().unwrap());
+        assert_eq!(width, 256, "{} keeps the size of the start", f.display());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn texture_sets_writing_the_same_file_name_do_not_start_an_export() {
+    let (mut h, dir) = harness("clash");
+
+    // A template without $textureSet gives every set the same file name (kept in a scratch library)
+    let library = dir.with_extension("library");
+    let _ = std::fs::remove_dir_all(&library);
+    std::fs::create_dir_all(&library).unwrap();
+    h.state_mut().session.load_export_presets(library.clone());
+    let maps = json!([{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]);
+    h.state_mut().run("export.preset.save", json!({"preset": {"name": "Same", "maps": maps}})).unwrap();
+    h.state_mut().ui.export.preset = "Same".into();
+    h.run_steps(4);
+    click(&mut h, "Export");
+    h.run_steps(2);
+    assert!(h.state().ui.export.job.is_none(), "no export runs");
+    assert_eq!(exports(&h), 0);
+    assert!(!dir.join("same.png").exists());
+    assert!(console(&h).iter().any(|l| l.contains("both export same.png")), "{:?}", console(&h));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&library);
+}
+
+#[test]
+fn opening_another_project_stops_the_export() {
+    let (mut h, dir) = harness("project");
+    long_export(&mut h, &dir);
+    h.run_steps(2);
+    let before = exports(&h);
+    assert!(before > 0 && h.state().ui.export.job.is_some());
+
+    h.state_mut().session = texturecraft_engine::sample_session(256, 64).unwrap();
+    h.run_steps(4);
+    assert!(h.state().ui.export.job.is_none());
+    assert_eq!(exports(&h), 0, "the new project exported nothing");
+    assert!(console(&h).iter().any(|l| l == "Export stopped: another project was opened"), "{:?}", console(&h));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn export_is_disabled_without_a_ticked_texture_set() {
+    let (mut h, dir) = harness("none");
+    let sets = h.state().session.set_count();
+    h.state_mut().ui.export.skip = (0..sets).collect();
+    h.run_steps(2);
+    click(&mut h, "Export");
+    h.run_steps(2);
+    let e = &h.state().ui.export;
+    assert!(e.job.is_none() && e.console.is_empty() && e.tab == 0, "Export did nothing");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn closing_the_window_writes_no_further_texture_set() {
+    let (mut h, dir) = harness("close");
+    long_export(&mut h, &dir);
+    h.run_steps(2);
+    let before = exports(&h);
+    assert!(h.state().ui.export.job.is_some());
+    h.get_by_role_and_label(egui::Role::Button, "Close window").click();
+    h.run_steps(1);
+    assert!(!h.state().ui.windows.export);
+    h.run_steps(2);
+    assert_eq!(exports(&h), before, "the frame that closed the window wrote nothing");
+    assert!(h.state().ui.export.job.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }

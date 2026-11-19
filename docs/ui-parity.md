@@ -242,7 +242,10 @@ Free rotation uses the same Alt+left drag (and right drag) as the constrained on
   tree per texture set (file, size such as "1024x1024 (Texture Set size)", file type, bit depth;
   the full path as tooltip) with *Open output directory* at the top right. The files are
   written when a texture set is done, so its "Writing ..." lines follow its work instead of
-  coming one by one.
+  coming one by one. Each set's settings and the output directory are taken when Export is
+  clicked; Export is greyed with no texture set ticked. Two texture sets that would write a file
+  of the same name stop the export before it writes anything (the console and a message say
+  which); closing the window or opening another project stops it.
 - **OUTPUT TEMPLATES** ([#674](https://github.com/storytold/texturecraft/issues/674)): the left
   list is titled *Presets* and lists the templates sorted by name, without the template list's
   first group. A right click on a preset offers *Rename*, *Duplicate* and *Remove* (Rename and

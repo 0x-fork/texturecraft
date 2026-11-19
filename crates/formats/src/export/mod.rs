@@ -913,13 +913,14 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
             let mut data = data;
             let mut warnings = p.warnings;
             let convert = is_color(map) && (space != ColorSpace::Srgb || float) && space != ColorSpace::LinearRec709;
-            if convert && rgb {
+            // PGM writes colour as its luminance, weighted on the Rec.709 values before conversion
+            if convert && rgb && p.format != FileFormat::Pgm {
                 data.par_chunks_mut(n).for_each(|px| {
                     if let [r, g, b, ..] = px {
                         [*r, *g, *b] = space.from_linear_rec709([*r, *g, *b]);
                     }
                 });
-            } else if convert {
+            } else if convert && !rgb {
                 warnings.push(format!("\"{}\" packs colour into one channel (L), so it is written in linear Rec.709, not {}", p.name, space.name()));
             }
             let srgb: Vec<bool> = lay.iter().map(|(d, _)| *d != Dest::A && is_color(map) && !float && space == ColorSpace::Srgb).collect();

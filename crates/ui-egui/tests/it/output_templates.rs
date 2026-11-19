@@ -5,6 +5,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use serde_json::json;
 use texturecraft_ui_egui::TextureCraftApp;
+use texturecraft_ui_egui::state::{MapExport, SetExport};
 
 /// A user template library folder removed with its owner
 struct Library(std::path::PathBuf);
@@ -62,7 +63,10 @@ fn the_tab_has_the_reference_layout_and_texts() {
     }
     assert!(h.get_all_by_role(egui::Role::ComboBox).any(|c| c.value().as_deref() == Some("OpenPBR")));
     let maps = h.state().session.export_preset("Mine").unwrap().maps.len();
-    assert!(h.query_by_label(&format!("{maps} output maps will be exported.")).is_some());
+    let ts = h.state().session.ts();
+    let plan = h.state_mut().run("export.plan", json!({"preset": "Mine", "ts": ts})).unwrap();
+    let exported = plan.as_array().unwrap().len();
+    assert!(h.query_by_label(&format!("{exported} output maps will be exported.")).is_some());
     for create in ["Gray", "RGB", "R+G+B", "RGB+A", "R+G+B+A"] {
         assert!(h.query_by_label(create).is_some(), "{create}");
     }
@@ -192,4 +196,42 @@ fn texture_set_overrides_follow_a_renamed_template_and_drop_a_removed_one() {
     // Cancel goes back to the settings the window opened with, minus the removed template
     click(&mut h, "Cancel");
     assert!(h.state().ui.export.sets.values().all(|o| o.preset.as_deref() != Some("Yours") && o.preset.as_deref() != Some("Mine")));
+}
+
+#[test]
+fn the_footer_counts_only_the_maps_the_texture_set_exports() {
+    let library = Library::new("count");
+    let mut h = harness(&library);
+
+    // Two maps; the texture set has no sheen, so only roughness is written
+    let channel = |c: &str| json!([["L", {"Channel": {"channel": c}}]]);
+    let maps = json!([
+        {"file": "$textureSet_rough", "format": "Png", "bit_depth": 8, "channels": channel("Roughness")},
+        {"file": "$textureSet_sheen", "format": "Png", "bit_depth": 8, "channels": channel("SheenWeight")},
+    ]);
+    h.state_mut().run("export.preset.save", json!({"preset": {"name": "Mine", "maps": maps}})).unwrap();
+    h.run_steps(4);
+    let ts = h.state().session.ts();
+    let plan = h.state_mut().run("export.plan", json!({"preset": "Mine", "ts": ts})).unwrap();
+    assert_eq!(plan.as_array().unwrap().len(), 1, "the sample set has no sheen: {plan}");
+    assert!(h.query_all_by_label_contains("Not exported").next().is_some(), "the sheen card says so");
+    assert!(h.query_by_label("1 output maps will be exported.").is_some());
+    assert!(h.query_by_label("2 output maps will be exported.").is_none());
+}
+
+#[test]
+fn per_map_settings_follow_their_map_when_the_template_reorders_it() {
+    let library = Library::new("reorder");
+    let mut h = harness(&library);
+
+    // The first texture set leaves out the template's first map
+    let off = MapExport { enabled: false, file_type: None };
+    h.state_mut().ui.export.sets.insert(0, SetExport { maps_template: "Mine".into(), maps: [(0, off.clone())].into(), ..SetExport::default() });
+    h.run_steps(2);
+    let first = h.state().session.export_preset("Mine").unwrap().maps[0].file.clone();
+    h.get_all_by_label("Move down").next().unwrap().click();
+    h.run_steps(4);
+    assert_eq!(h.state().session.export_preset("Mine").unwrap().maps[1].file, first, "the map moved down");
+    let maps = h.state().ui.export.sets.get(&0).map(|o| o.maps.clone()).unwrap_or_default();
+    assert_eq!(maps, [(1, off)].into(), "the setting moved with its map");
 }

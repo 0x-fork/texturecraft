@@ -185,6 +185,7 @@ fn sync_draft(app: &mut TextureCraftApp) {
         Some(saved) => {
             if e.draft.as_ref().is_none_or(|d| d.name != saved.name || (d != saved && d.validate().is_ok())) {
                 e.draft = Some(saved.clone());
+                e.draft_maps = (0..saved.maps.len()).map(Some).collect();
             }
         }
     }
@@ -618,31 +619,55 @@ fn outputs(app: &mut TextureCraftApp, ui: &mut Ui) {
         });
     });
     ui.label(RichText::new(tr("Drag and drop maps on output's channels to setup your export.")).color(tk.text_dim));
-    ui.label(trf("{n} output maps will be exported.", &[("n", &n)]));
+    // The maps the current texture set has sources for (no count when the plan fails)
+    if let Ok(names) = &preview {
+        let exported = names.iter().flatten().count();
+        ui.label(trf("{n} output maps will be exported.", &[("n", &exported)]));
+    }
     if !editable {
         return;
     }
+
+    // Where each map came from in the saved template, moved along with the maps
+    let mut origin = app.ui.export.draft_maps.clone();
+    if origin.len() != n {
+        origin = (0..n).map(Some).collect();
+    }
     match action {
-        Some(MapAction::Add(l)) => preset.maps.push(new_map(l)),
-        Some(MapAction::Up(i)) if i > 0 && i < n => preset.maps.swap(i, i - 1),
-        Some(MapAction::Down(i)) if i + 1 < n => preset.maps.swap(i, i + 1),
+        Some(MapAction::Add(l)) => {
+            preset.maps.push(new_map(l));
+            origin.push(None);
+        }
+        Some(MapAction::Up(i)) if i > 0 && i < n => {
+            preset.maps.swap(i, i - 1);
+            origin.swap(i, i - 1);
+        }
+        Some(MapAction::Down(i)) if i + 1 < n => {
+            preset.maps.swap(i, i + 1);
+            origin.swap(i, i + 1);
+        }
         Some(MapAction::Remove(i)) if i < n => {
             preset.maps.remove(i);
+            origin.remove(i);
         }
         _ if !changed => return,
         _ => {}
     }
-    commit(app, preset);
+    commit(app, preset, origin);
 }
 
-/// Keep the edited draft; save it when valid.
-fn commit(app: &mut TextureCraftApp, preset: ExportPreset) {
+/// Keep the edited draft; save it when valid. `origin` gives each map's index in the saved
+/// template: once saved, the texture set overrides of the maps follow them.
+fn commit(app: &mut TextureCraftApp, preset: ExportPreset, mut origin: Vec<Option<usize>>) {
     if preset.validate().is_ok()
         && let Ok(v) = serde_json::to_value(&preset)
+        && app.run("export.preset.save", json!({ "preset": v })).is_some()
     {
-        app.run("export.preset.save", json!({ "preset": v }));
+        crate::export_window::template_maps_moved(&mut app.ui.export, &preset.name, &origin);
+        origin = (0..preset.maps.len()).map(Some).collect();
     }
     app.ui.export.draft = Some(preset);
+    app.ui.export.draft_maps = origin;
 }
 
 /// The file each map produces for the current texture set with the dialog's settings (None:

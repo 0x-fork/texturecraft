@@ -4,7 +4,7 @@
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use texturecraft_ui_egui::TextureCraftApp;
-use texturecraft_ui_egui::state::SetExport;
+use texturecraft_ui_egui::state::{ConsoleLine, FileType, SetExport};
 
 /// The Export textures window open on the first texture set's page
 fn harness() -> Harness<'static, TextureCraftApp> {
@@ -98,7 +98,8 @@ fn the_header_menu_switches_every_override() {
     click(&mut h, "Enable override for all items");
     let o = overrides(&h);
     assert!(o.preset.is_some() && o.file_type.is_some() && o.size.is_some() && o.padding.is_some(), "{o:?}");
-    assert_eq!(o.file_type.unwrap().format, "png");
+    // The default template writes 8- and 16-bit files: the override keeps them until a type is picked
+    assert_eq!(o.file_type.unwrap().format, "");
     page_menu(&mut h);
     click(&mut h, "Disable override for all items");
     assert!(h.state().ui.export.sets.is_empty());
@@ -132,6 +133,8 @@ fn export_writes_each_set_with_its_overrides_and_cancel_drops_them() {
         h.run_steps(1);
     }
     h.run_steps(2);
+    let finished = h.state().ui.export.console.iter().any(|l| matches!(l, ConsoleLine::Done(t) if t == "Export successfully finished"));
+    assert!(h.state().ui.export.job.is_none() && finished, "the export finished");
     let sets: Vec<String> = h.state().session.doc.project.texture_sets.iter().map(|t| format!("_{}_", t.name)).collect();
     let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "png")).collect();
     let of = |set: &str| files.iter().filter(|f| f.file_name().unwrap().to_string_lossy().contains(set)).collect::<Vec<_>>();
@@ -142,6 +145,7 @@ fn export_writes_each_set_with_its_overrides_and_cancel_drops_them() {
 
     // The other sets keep their own size
     for set in &sets[1..] {
+        assert!(!of(set).is_empty(), "{set} was written");
         for f in of(set) {
             assert_eq!(png_width(f), 256, "{}", f.display());
         }
@@ -183,4 +187,74 @@ fn overrides_stay_with_their_texture_set_and_their_project() {
     h.state_mut().ui.windows.export = true;
     h.run_steps(4);
     assert!(h.state().ui.export.sets.is_empty() && h.state().ui.export.skip.is_empty());
+}
+
+#[test]
+fn a_file_type_override_starts_from_the_type_of_the_template() {
+    let mut h = harness();
+    let library = folder("library");
+    std::fs::create_dir_all(&library).unwrap();
+    h.state_mut().session.load_export_presets(library.clone());
+    let maps = serde_json::json!([{"file": "$textureSet_rough", "format": "Exr", "bit_depth": 32, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]);
+    h.state_mut().run("export.preset.save", serde_json::json!({"preset": {"name": "One EXR", "maps": maps}})).unwrap();
+    h.state_mut().ui.export.preset = "One EXR".into();
+    h.run_steps(4);
+    assert!(h.state().ui.export.format.is_empty(), "Based on output template");
+    toggle(&mut h, 1);
+    assert_eq!(overrides(&h).file_type, Some(FileType { format: "exr".into(), bit_depth: 32, dithering: false }), "not png");
+    let _ = std::fs::remove_dir_all(&library);
+}
+
+#[test]
+fn cancel_keeps_each_tick_with_its_texture_set_after_they_trade_names() {
+    let mut h = harness();
+    let names: Vec<String> = h.state().session.doc.project.texture_sets.iter().map(|t| t.name.clone()).collect();
+    h.state_mut().ui.export.skip = vec![1];
+    click(&mut h, "Save settings");
+    h.state_mut().ui.windows.export = true;
+    h.run_steps(4);
+
+    // While the window is open the two texture sets trade names: the tick follows the name
+    for (ts, name) in [(0, "swap"), (1, names[0].as_str()), (0, names[1].as_str())] {
+        texturecraft_engine::execute(&mut h.state_mut().session, "textureSet.rename", &serde_json::json!({"ts": ts, "name": name})).unwrap();
+    }
+    h.run_steps(4);
+    assert_eq!(h.state().ui.export.skip, vec![0]);
+    click(&mut h, "Cancel");
+    h.state_mut().ui.windows.export = true;
+    h.run_steps(4);
+    assert_eq!(h.state().ui.export.skip, vec![0], "Cancel and reopening keep the tick off the set named {}", names[1]);
+}
+
+#[test]
+fn reset_all_then_cancel_restores_the_ticks_and_overrides() {
+    let mut h = harness();
+    let e = &mut h.state_mut().ui.export;
+    e.skip = vec![1];
+    e.sets.insert(1, SetExport { size: Some(128), ..SetExport::default() });
+    click(&mut h, "Save settings");
+    h.state_mut().ui.windows.export = true;
+    h.run_steps(4);
+    click(&mut h, "Reset all");
+    assert!(h.state().ui.export.skip.is_empty() && h.state().ui.export.sets.is_empty(), "Reset all clears them");
+    click(&mut h, "Cancel");
+    assert_eq!(h.state().ui.export.skip, vec![1]);
+    assert_eq!(h.state().ui.export.sets.get(&1).and_then(|o| o.size), Some(128), "Cancel brings the override back");
+}
+
+#[test]
+fn ticks_saved_before_settings_named_their_project_are_kept() {
+    let session = texturecraft_engine::sample_session(256, 64).unwrap();
+    let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
+    h.state_mut().ui.prefs.language = "en".into();
+    h.run_steps(4);
+
+    // Older settings: a tick off, no owner
+    let e = &mut h.state_mut().ui.export;
+    (e.skip, e.owner, e.owner_id) = (vec![1], Vec::new(), None);
+    e.sets.insert(1, SetExport { size: Some(128), ..SetExport::default() });
+    h.state_mut().ui.windows.export = true;
+    h.run_steps(4);
+    assert_eq!(h.state().ui.export.skip, vec![1]);
+    assert_eq!(h.state().ui.export.sets.get(&1).and_then(|o| o.size), Some(128));
 }

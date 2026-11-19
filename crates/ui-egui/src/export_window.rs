@@ -204,14 +204,55 @@ fn export_selection(app: &TextureCraftApp) -> Vec<usize> {
 }
 
 /// Start exporting the selected texture sets: the window shows LIST OF EXPORTS, the console and
-/// a progress bar, and writes one texture set per frame.
+/// a progress bar, and writes one texture set per frame. Each set's settings and the output
+/// folder are taken now, so changing them while it runs does not change what it writes.
 #[cfg(not(target_arch = "wasm32"))]
 fn start_export(app: &mut TextureCraftApp) {
-    let pending = export_selection(app);
+    let selection = export_selection(app);
+    if selection.is_empty() {
+        return;
+    }
+    let dir = app.ui.export.dir.clone();
+    let pending: Vec<(usize, serde_json::Value)> = selection
+        .into_iter()
+        .map(|ts| {
+            let mut p = set_params(app, ts);
+            p["dir"] = json!(dir);
+            (ts, p)
+        })
+        .collect();
+    let clash = name_clash(app, &pending);
     let e = &mut app.ui.export;
     e.tab = 2;
     e.console = vec![ConsoleLine::Step(tr("Preparing export...").into())];
+    if let Some(error) = clash {
+        e.console.push(ConsoleLine::Step(error.clone()));
+        app.toast(error, true);
+        return;
+    }
     e.job = Some(crate::state::ExportJob { total: pending.len(), pending, written: Vec::new(), frame: 0 });
+}
+
+/// Two texture sets that would write a file of the same name (ignoring case, as Windows and macOS
+/// do): the later one would replace the earlier one's file, so the export does not start.
+#[cfg(not(target_arch = "wasm32"))]
+fn name_clash(app: &mut TextureCraftApp, pending: &[(usize, serde_json::Value)]) -> Option<String> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (ts, params) in pending {
+        // A plan that fails stops the export at that set with its own error
+        let Ok(plan) = texturecraft_engine::execute(&mut app.session, "export.plan", params) else { continue };
+        for file in plan.as_array().into_iter().flatten().filter_map(|f| f.get("file").and_then(serde_json::Value::as_str)) {
+            let first = *seen.entry(file.to_ascii_lowercase()).or_insert(*ts);
+            if first != *ts {
+                let name = |i: usize| app.session.doc.project.texture_sets.get(i).map(|t| t.name.clone()).unwrap_or_default();
+                return Some(trf(
+                    "Texture sets {first} and {second} both export {file}: add $textureSet to the template's file names or rename a texture set",
+                    &[("first", &name(first)), ("second", &name(*ts)), ("file", &file)],
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// In the browser the textures download (one zip for several files).
@@ -242,12 +283,13 @@ fn export_step(app: &mut TextureCraftApp, frame: u64) {
         app.ui.export.job = None;
         return;
     }
-    let ts = job.pending.remove(0);
+    let (ts, mut p) = job.pending.remove(0);
     let name = app.session.doc.project.texture_sets.get(ts).map(|t| t.name.clone()).unwrap_or_default();
     let set = || ConsoleLine::Set(name.clone());
     app.ui.export.console.extend([set(), set(), ConsoleLine::Step(tr("Computing textures results").into())]);
-    let mut p = set_params(app, ts);
-    p["dir"] = json!(app.ui.export.dir);
+
+    // The settings taken at Export; the set's index may have moved since
+    p["ts"] = json!(ts);
     let Some(r) = app.run("file.exportTextures", p) else {
         app.ui.export.job = None;
         return;
@@ -306,7 +348,8 @@ pub(crate) fn set_params(app: &TextureCraftApp, ts: usize) -> serde_json::Value 
     if let Some(preset) = &o.preset {
         p["preset"] = json!(preset);
     }
-    if let Some(t) = &o.file_type {
+    // An empty file type keeps the template's
+    if let Some(t) = o.file_type.as_ref().filter(|t| !t.format.is_empty()) {
         p["format"] = json!(t.format);
         p["bitDepth"] = json!(t.bit_depth);
         p["dithering"] = json!(t.dithering);
@@ -705,6 +748,16 @@ fn inherited(app: &TextureCraftApp, ts: usize) -> Inherited {
     Inherited { preset: e.preset.clone(), file_type: FileType { format, bit_depth, dithering }, size, padding: (e.padding.clone(), e.dilation) }
 }
 
+/// The file type texture set `ts` gets from its output template: the one its maps share, or an
+/// empty one when they differ (the override keeps the template's file types until one is picked)
+fn template_file_type(app: &mut TextureCraftApp, ts: usize) -> FileType {
+    let rows = map_rows(app, ts);
+    match rows.split_first() {
+        Some((first, rest)) if rest.iter().all(|r| r.inherited == first.inherited) => first.inherited.clone(),
+        _ => FileType { format: String::new(), bit_depth: 0, dithering: false },
+    }
+}
+
 /// Switch one override of `o` on (from what the set inherits) or off
 fn toggle(o: &mut SetExport, row: usize, from: &Inherited) {
     match row {
@@ -722,7 +775,12 @@ fn file_type_combo(ui: &mut Ui, id: (&str, usize, usize), t: &mut FileType) {
 
 /// A texture set's page: its overrides of the global settings
 fn set_page(app: &mut TextureCraftApp, ui: &mut Ui, ts: usize, builtins: &[ExportPreset]) {
-    let from = inherited(app, ts);
+    let mut from = inherited(app, ts);
+
+    // "Based on output template": the override starts from what the template writes
+    if app.ui.export.format.is_empty() && app.ui.export.sets.get(&ts).is_none_or(|o| o.file_type.is_none()) {
+        from.file_type = template_file_type(app, ts);
+    }
     let own = app.session.doc.project.texture_sets.get(ts).map_or(1024, |t| t.resolution);
     let (first, rest) = template_groups(app, builtins);
     let first: Vec<(&str, bool)> = first.into_iter().filter(|(n, _)| !NOT_PER_SET.contains(n)).collect();
@@ -929,7 +987,8 @@ fn selected_texture_count(app: &mut TextureCraftApp) -> usize {
 }
 
 /// Keep the texture set ticks and overrides with their texture sets: dropped for another project,
-/// moved with a texture set by name, dropped with a removed one
+/// moved with a texture set by name, dropped with a removed one. A running export follows its
+/// texture sets the same way; another project stops it.
 fn follow_texture_sets(app: &mut TextureCraftApp) {
     let project = &app.session.doc.project;
     let mut owner = vec![project.name.clone()];
@@ -937,6 +996,14 @@ fn follow_texture_sets(app: &mut TextureCraftApp) {
     let id = app.session.project_id;
     let e = &mut app.ui.export;
     if e.owner == owner && e.owner_id == Some(id) {
+        return;
+    }
+
+    // Settings saved before they named their project keep their ticks and overrides (when the
+    // window opens; Reset all keeps the owner)
+    if e.owner.is_empty() && e.opened_with.is_none() {
+        e.owner = owner;
+        e.owner_id = Some(id);
         return;
     }
     let same_project = match e.owner_id {
@@ -954,6 +1021,15 @@ fn follow_texture_sets(app: &mut TextureCraftApp) {
     follow(e);
     if let Some(before) = e.opened_with.as_deref_mut() {
         follow(before);
+        (before.owner, before.owner_id) = (owner.clone(), Some(id));
+    }
+    if let Some(job) = e.job.as_mut() {
+        if same_project {
+            job.pending = std::mem::take(&mut job.pending).into_iter().filter_map(|(i, p)| moved(i).map(|j| (j, p))).collect();
+        } else {
+            e.job = None;
+            e.console.push(ConsoleLine::Step(tr("Export stopped: another project was opened").into()));
+        }
     }
     e.owner = owner;
     e.owner_id = Some(id);
@@ -991,6 +1067,22 @@ pub(crate) fn template_renamed(e: &mut ExportUi, old: &str, new: Option<&str>) {
                     }
                 }
             }
+        }
+        e.sets.retain(|_, o| !o.is_default());
+    };
+    follow(e);
+    if let Some(before) = e.opened_with.as_deref_mut() {
+        follow(before);
+    }
+}
+
+/// The maps of template `template` were saved in a new order: `origin` gives each map's index
+/// before. The texture set overrides of its maps follow them (removed maps lose theirs), in the
+/// settings the window opened with too.
+pub(crate) fn template_maps_moved(e: &mut ExportUi, template: &str, origin: &[Option<usize>]) {
+    let follow = |e: &mut ExportUi| {
+        for o in e.sets.values_mut().filter(|o| o.maps_template == template) {
+            o.maps = std::mem::take(&mut o.maps).into_iter().filter_map(|(i, m)| origin.iter().position(|x| *x == Some(i)).map(|j| (j, m))).collect();
         }
         e.sets.retain(|_, o| !o.is_default());
     };
@@ -1133,11 +1225,15 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             if app.ui.export.tab != 2
                 && ui.button(tr("Reset all")).on_hover_text(tr("Resets all settings to their default values, including all textures.")).clicked()
             {
-                let opened_with = app.ui.export.opened_with.take();
-                app.ui.export = ExportUi { opened_with, ..ExportUi::default() };
+                // The settings stay the project's: its ticks and overrides in `opened_with` stay too
+                let e = &mut app.ui.export;
+                let (opened_with, owner, owner_id) = (e.opened_with.take(), std::mem::take(&mut e.owner), e.owner_id);
+                app.ui.export = ExportUi { opened_with, owner, owner_id, ..ExportUi::default() };
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(primary_button(ui, tr("Export"))).on_hover_text(tr("Exports all selected textures and additional files")).clicked() {
+                // Nothing to write without a ticked texture set
+                let any = !export_selection(app).is_empty();
+                if ui.add_enabled(any, primary_button(ui, tr("Export"))).on_hover_text(tr("Exports all selected textures and additional files")).clicked() {
                     do_export = true;
                 }
 
@@ -1154,6 +1250,13 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     });
     crate::export_templates::ask(app, ctx);
 
+    // Closing the window is Cancel; it stops an export before it writes another texture set
+    if canceled || !open {
+        app.ui.export.job = None;
+        cancel(app);
+        return;
+    }
+
     // One texture set per frame, after the window showed the state before it
     if app.ui.export.job.is_some() && !do_export {
         export_step(app, ctx.cumulative_frame_nr());
@@ -1165,10 +1268,5 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             job.frame = ctx.cumulative_frame_nr();
         }
         ctx.request_repaint();
-    }
-
-    // Closing the window is Cancel
-    if canceled || !open {
-        cancel(app);
     }
 }

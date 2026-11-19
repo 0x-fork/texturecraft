@@ -927,6 +927,15 @@ fn pgm_is_a_binary_graymap() {
     let want = (linear_to_srgb(0.2126 * r + 0.7152 * g + 0.0722 * b) * 255.0).round();
     assert!((f32::from(f.bytes[header.len() + 63]) - want).abs() <= 1.0, "{} vs {want}", f.bytes[header.len() + 63]);
 
+    // In another colour space the luminance is still that of the colour, not of its converted primaries
+    let opts = ExportOptions { color_space: Some(ColorSpace::AcesCg), ..one_map(FileFormat::Pgm, 16, rgba_half_alpha()) };
+    let f = find(&fx.render(&opts), "out.pgm").bytes.clone();
+    let header = b"P5\n64 64\n65535\n";
+    let at = header.len() + 63 * 2;
+    let got = f32::from(u16::from_be_bytes([f[at], f[at + 1]])) / 65535.0;
+    let want = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    assert!((got - want).abs() < 1e-3, "ACEScg luminance {got} vs {want}");
+
     // Gray + alpha only loses the alpha
     let la = vec![(Dest::L, SourceRef::Channel { channel: Channel::Roughness, component: 0 }), (Dest::A, SourceRef::Constant(0.5))];
     let f = &fx.render(&one_map(FileFormat::Pgm, 8, la))[0];

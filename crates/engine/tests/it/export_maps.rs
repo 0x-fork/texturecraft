@@ -43,3 +43,21 @@ fn a_map_index_outside_the_preset_is_refused() {
     assert!(e.to_string().contains("`map` must be the index"), "{e}");
     assert!(execute(&mut s, "export.plan", &json!({"maps": [{"map": 0, "format": "nope"}]})).is_err());
 }
+
+#[test]
+fn a_file_name_an_earlier_texture_set_exports_is_not_overwritten() {
+    let mut s = session();
+    assert!(s.set_count() >= 2);
+
+    // A template without $textureSet gives every set the same file name
+    let preset = json!({"name": "same", "maps": [{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]});
+    let plan = execute(&mut s, "export.plan", &json!({"preset": preset, "ts": "all"})).unwrap();
+    assert_eq!(plan.as_array().unwrap().len(), s.set_count(), "every set has roughness: {plan}");
+    let dir = std::env::temp_dir().join(format!("tc_export_same_name_{}", std::process::id()));
+    let r = execute(&mut s, "file.exportTextures", &json!({"dir": dir.display().to_string(), "preset": preset, "ts": "all"})).unwrap();
+    let files: Vec<&str> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert_eq!(files.len(), 1, "only the first set's file is written: {r}");
+    let warnings = r["warnings"].as_array().unwrap();
+    assert_eq!(warnings.iter().filter(|w| w.as_str().unwrap().contains("an earlier texture set exports")).count(), s.set_count() - 1, "{r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
