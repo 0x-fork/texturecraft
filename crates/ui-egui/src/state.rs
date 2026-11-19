@@ -447,6 +447,9 @@ pub struct ExportUi {
     /// since), so the texture set overrides of a map follow it when the draft is saved.
     #[serde(skip)]
     pub draft_maps: Vec<Option<usize>>,
+    /// Output templates tab: the saved template `draft_maps` counts from.
+    #[serde(skip)]
+    pub draft_base: Option<texturecraft_engine::formats::ExportPreset>,
     /// Output templates tab: the new name while renaming the selected preset.
     #[serde(skip)]
     pub renaming: Option<String>,
@@ -490,6 +493,7 @@ impl Default for ExportUi {
             page: None,
             draft: None,
             draft_maps: Vec::new(),
+            draft_base: None,
             renaming: None,
             rename_key: false,
             ask: None,

@@ -357,6 +357,9 @@ mod web {
             let opts = texturecraft_engine::file_cmds::export_options(&app.session, params, "file.exportTextures").map_err(|e| e.to_string())?;
             files.extend(app.session.export_files(&[*ts], &opts).map_err(|e| e.to_string())?);
         }
+
+        // One zip holds each name once: a later set's file named like an earlier one's is left out
+        texturecraft_engine::formats::skip_repeated_names(&mut files);
         app.session.log.extend_warnings(files.iter().flat_map(|f| f.warnings.iter().cloned()));
         let name = match files.as_slice() {
             [] => return Err("the preset produced no files".into()),

@@ -235,3 +235,35 @@ fn per_map_settings_follow_their_map_when_the_template_reorders_it() {
     let maps = h.state().ui.export.sets.get(&0).map(|o| o.maps.clone()).unwrap_or_default();
     assert_eq!(maps, [(1, off)].into(), "the setting moved with its map");
 }
+
+#[test]
+fn moves_under_an_unfinished_edit_are_forgotten_when_the_template_is_saved_elsewhere() {
+    let library = Library::new("stale");
+    let mut h = harness(&library);
+    let off = MapExport { enabled: false, file_type: None };
+    h.state_mut().ui.export.sets.insert(0, SetExport { maps_template: "Mine".into(), maps: [(0, off.clone())].into(), ..SetExport::default() });
+    h.run_steps(2);
+    let saved = h.state().session.export_preset("Mine").unwrap();
+    let last = saved.maps.len() - 1;
+
+    // An unfinished edit (an empty file name is not saved) moves the first map down
+    h.state_mut().ui.export.draft.as_mut().unwrap().maps[last].file.clear();
+    h.run_steps(2);
+    h.get_all_by_label("Move down").next().unwrap().click();
+    h.run_steps(4);
+
+    // An agent saves the template in that order meanwhile: overrides now count from it
+    let mut agent = saved.clone();
+    agent.maps.swap(0, 1);
+    h.state_mut().run("export.preset.save", json!({ "preset": agent })).unwrap();
+    h.run_steps(2);
+
+    // The edit is finished and the first map moved down once more: the override at 0 moves to 1
+    h.state_mut().ui.export.draft.as_mut().unwrap().maps[last].file = saved.maps[last].file.clone();
+    h.get_all_by_label("Move down").next().unwrap().click();
+    h.run_steps(4);
+    let now = h.state().session.export_preset("Mine").unwrap();
+    assert_eq!(now.maps[1].file, saved.maps[1].file, "{:?}", now.maps.iter().map(|m| &m.file).collect::<Vec<_>>());
+    let maps = h.state().ui.export.sets.get(&0).map(|o| o.maps.clone()).unwrap_or_default();
+    assert_eq!(maps, [(1, off)].into(), "counted from the agent's order, not the edit's old base");
+}

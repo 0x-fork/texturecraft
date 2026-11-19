@@ -218,6 +218,12 @@ fn start_export(app: &mut TextureCraftApp) {
         .map(|ts| {
             let mut p = set_params(app, ts);
             p["dir"] = json!(dir);
+
+            // The template itself, so editing it on OUTPUT TEMPLATES meanwhile changes nothing
+            let preset = p.get("preset").and_then(serde_json::Value::as_str).and_then(|name| app.session.export_preset(name));
+            if let Some(v) = preset.and_then(|t| serde_json::to_value(t).ok()) {
+                p["preset"] = v;
+            }
             (ts, p)
         })
         .collect();
@@ -348,11 +354,21 @@ pub(crate) fn set_params(app: &TextureCraftApp, ts: usize) -> serde_json::Value 
     if let Some(preset) = &o.preset {
         p["preset"] = json!(preset);
     }
-    // An empty file type keeps the template's
-    if let Some(t) = o.file_type.as_ref().filter(|t| !t.format.is_empty()) {
-        p["format"] = json!(t.format);
-        p["bitDepth"] = json!(t.bit_depth);
-        p["dithering"] = json!(t.dithering);
+    // An empty file type keeps the template's, whatever the global one
+    match &o.file_type {
+        Some(t) if t.format.is_empty() => {
+            if let Some(p) = p.as_object_mut() {
+                for key in ["format", "bitDepth", "dithering"] {
+                    p.remove(key);
+                }
+            }
+        }
+        Some(t) => {
+            p["format"] = json!(t.format);
+            p["bitDepth"] = json!(t.bit_depth);
+            p["dithering"] = json!(t.dithering);
+        }
+        None => {}
     }
     if let Some(size) = o.size {
         p["size"] = json!(size);
@@ -1025,7 +1041,11 @@ fn follow_texture_sets(app: &mut TextureCraftApp) {
     }
     if let Some(job) = e.job.as_mut() {
         if same_project {
+            let queued = job.pending.len();
             job.pending = std::mem::take(&mut job.pending).into_iter().filter_map(|(i, p)| moved(i).map(|j| (j, p))).collect();
+
+            // Removed sets leave the count too, so the bar keeps its pace
+            job.total -= queued - job.pending.len();
         } else {
             e.job = None;
             e.console.push(ConsoleLine::Step(tr("Export stopped: another project was opened").into()));

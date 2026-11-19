@@ -262,7 +262,9 @@ impl Session {
         reservation.save_bytes(&self.project_snapshot()).map_err(fe)
     }
 
-    /// Render every export file for texture sets `sets` (in memory; works on the web).
+    /// Render every export file for texture sets `sets` (in memory; works on the web). A file
+    /// named like one an earlier set exports is left out, with a warning (see
+    /// [`texturecraft_formats::skip_repeated_names`]).
     pub fn export_files(&mut self, sets: &[usize], opts: &ExportOptions) -> Result<Vec<ExportedFile>> {
         if self.solo.is_none() {
             self.update();
@@ -285,6 +287,9 @@ impl Session {
             };
             out.extend(texturecraft_formats::render_maps(&input, opts).map_err(fe)?);
         }
+
+        // A later set's file would replace an earlier set's of the same name
+        texturecraft_formats::skip_repeated_names(&mut out);
         Ok(out)
     }
 }
@@ -611,22 +616,8 @@ fn export_textures(s: &mut Session, p: &Value) -> Result<Value> {
     let opts = export_options(s, p, "file.exportTextures")?;
     let sets = sets_param(s, p, "file.exportTextures")?;
     std::fs::create_dir_all(&dir).map_err(|e| bad("file.exportTextures", format!("cannot create {dir}: {e}")))?;
-    let mut files = s.export_files(&sets, &opts)?;
+    let files = s.export_files(&sets, &opts)?;
     let mut warnings: Vec<String> = files.iter().flat_map(|f| f.warnings.iter().cloned()).collect();
-
-    // A file named like one an earlier texture set exports would replace it: it is not written.
-    // Case-insensitive, as Windows and macOS file systems are; one set's names never repeat.
-    let mut names = std::collections::HashSet::new();
-    files.retain(|f| {
-        let unique = names.insert(f.name.to_ascii_lowercase());
-        if !unique {
-            warnings.push(format!(
-                "\"{}\" has the name of a file an earlier texture set exports, so it was not written; add $textureSet to the template's file names or rename a texture set",
-                f.name
-            ));
-        }
-        unique
-    });
     let mut written = texturecraft_formats::write_files(&files, std::path::Path::new(&dir)).map_err(fe)?;
     if p.get("materialX").and_then(Value::as_bool).unwrap_or(false) {
         written.extend(write_materialx(s, &sets, &opts, std::path::Path::new(&dir), &mut warnings)?);

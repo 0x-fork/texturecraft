@@ -43,9 +43,10 @@ grayscale image (the whole tile atlas for a UV-tiled set).
 `file.exportTextures` and `export.plan` take `maps: [{map, enabled?, format?, bitDepth?}]`: per
 map of the template (`map` is its index in the template's maps) its own file type and bit depth,
 which win over the export's `format` and `bitDepth`, or `enabled: false` to leave it out. A
-left-out map keeps its file name reserved, so the other maps keep theirs. A file of
-`file.exportTextures` named like one an earlier texture set of the same call exports (ignoring
-case) is not written, with a warning, instead of replacing it. The Export textures
+left-out map keeps its file name reserved, so the other maps keep theirs. A file named
+like one an earlier texture set of the same export writes (ignoring case) is left out with a
+warning instead of replacing it, in `file.exportTextures`, the automation `textures.export` and
+the browser download. The Export textures
 window's Output maps rows send it. `format` takes the export window's names (`bmp`, `jpeg`, `jng`,
 `pgm`, `png`, `targa`, `tiff`, `hdr`, `exr`, `webp`, `psd`) or the extensions; `bitDepth` 32 is
 float for TIFF, EXR and HDR. `dithering: true` (also per map) dithers 8-bit integer files with

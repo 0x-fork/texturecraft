@@ -1366,6 +1366,32 @@ fn write_exr((w, h): (u32, u32), n: usize, data: &[f32], half: bool, space: Opti
     Ok(out.into_inner())
 }
 
+/// Leave out each file named like an earlier one of `files` (ignoring case, as Windows and macOS
+/// file systems do): written into the same folder it would replace that file. One texture set's
+/// names never repeat, so a repeat comes from a later set. The kept file's warnings say so; the
+/// left-out file's own warnings go with it.
+pub fn skip_repeated_names(files: &mut Vec<ExportedFile>) {
+    let mut first: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut kept: Vec<ExportedFile> = Vec::with_capacity(files.len());
+    for f in std::mem::take(files) {
+        match first.get(&f.name.to_ascii_lowercase()) {
+            Some(&i) => {
+                if let Some(k) = kept.get_mut(i) {
+                    k.warnings.push(format!(
+                        "\"{}\" of a later texture set has the name of a file an earlier texture set exports, so it was not written; add $textureSet to the template's file names or rename a texture set",
+                        f.name
+                    ));
+                }
+            }
+            None => {
+                first.insert(f.name.to_ascii_lowercase(), kept.len());
+                kept.push(f);
+            }
+        }
+    }
+    *files = kept;
+}
+
 /// Write exported files into `dir` (created if missing), each atomically (`name.tmp`, then
 /// rename). Names must be plain file names.
 #[cfg(not(target_arch = "wasm32"))]

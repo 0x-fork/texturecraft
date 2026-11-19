@@ -465,6 +465,24 @@ mod tests {
     }
 
     #[test]
+    fn export_does_not_let_a_later_texture_set_replace_an_earlier_ones_file() {
+        let dir = std::env::temp_dir().join(format!("tc-headless-same-name-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let session = texturecraft_engine::sample_session(128, 64).unwrap();
+        let mut client = Headless::new_with_brush_dir(session, Filesystem::TrustedLocal, dir.join("brushes"));
+        let sets = client.session.set_count();
+        assert!(sets >= 2);
+
+        // A template without $textureSet gives every set the same file name
+        let preset = json!({"name": "same", "maps": [{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]});
+        let r = client.export(&json!({"dir": dir.join("tex").display().to_string(), "preset": preset, "ts": "all"})).unwrap();
+        assert_eq!(r["files"].as_array().unwrap().len(), 1, "only the first set's file is written: {r}");
+        let warned = r["warnings"].as_array().unwrap().iter().filter(|w| w.as_str().unwrap().contains("so it was not written")).count();
+        assert_eq!(warned, sets - 1, "{r}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn untrusted_headless_keeps_brushes_in_memory_only() {
         let brush_dir = std::env::temp_dir().join(format!("tc-headless-denied-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&brush_dir);

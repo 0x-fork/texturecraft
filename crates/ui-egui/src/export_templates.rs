@@ -186,6 +186,12 @@ fn sync_draft(app: &mut TextureCraftApp) {
             if e.draft.as_ref().is_none_or(|d| d.name != saved.name || (d != saved && d.validate().is_ok())) {
                 e.draft = Some(saved.clone());
                 e.draft_maps = (0..saved.maps.len()).map(Some).collect();
+                e.draft_base = Some(saved.clone());
+            } else if e.draft_base.as_ref() != Some(saved) {
+                // Saved anew elsewhere under an unfinished edit: the draft's moves no longer
+                // count from the saved order, so they are forgotten
+                e.draft_maps.clear();
+                e.draft_base = Some(saved.clone());
             }
         }
     }
@@ -665,6 +671,7 @@ fn commit(app: &mut TextureCraftApp, preset: ExportPreset, mut origin: Vec<Optio
     {
         crate::export_window::template_maps_moved(&mut app.ui.export, &preset.name, &origin);
         origin = (0..preset.maps.len()).map(Some).collect();
+        app.ui.export.draft_base = app.session.export_preset(&preset.name);
     }
     app.ui.export.draft = Some(preset);
     app.ui.export.draft_maps = origin;

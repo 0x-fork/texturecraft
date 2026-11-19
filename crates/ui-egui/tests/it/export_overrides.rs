@@ -258,3 +258,17 @@ fn ticks_saved_before_settings_named_their_project_are_kept() {
     assert_eq!(h.state().ui.export.skip, vec![1]);
     assert_eq!(h.state().ui.export.sets.get(&1).and_then(|o| o.size), Some(128));
 }
+
+#[test]
+fn an_empty_file_type_override_keeps_the_template_types_under_a_global_one() {
+    let mut h = harness();
+    assert!(h.query_all_by_label("png   16 bits").next().is_some(), "the default template has a 16-bit map");
+
+    // The override kept the template's types (a mixed template); then a global type is chosen
+    let keep = FileType { format: String::new(), bit_depth: 0, dithering: false };
+    h.state_mut().ui.export.sets.insert(0, SetExport { file_type: Some(keep), ..SetExport::default() });
+    let e = &mut h.state_mut().ui.export;
+    (e.format, e.bit_depth) = ("png".into(), 8);
+    h.run_steps(4);
+    assert!(h.query_all_by_label("png   16 bits").next().is_some(), "the set still writes the template's types");
+}

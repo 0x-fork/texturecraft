@@ -252,3 +252,45 @@ fn closing_the_window_writes_no_further_texture_set() {
     assert!(h.state().ui.export.job.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_template_at_export_is_kept_while_it_runs() {
+    let (mut h, dir) = harness("template");
+    let library = dir.with_extension("library");
+    let _ = std::fs::remove_dir_all(&library);
+    std::fs::create_dir_all(&library).unwrap();
+    h.state_mut().session.load_export_presets(library.clone());
+    let map = |file: &str, channel: &str| json!({"file": file, "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": channel}}]]});
+    let both = json!([map("$textureSet_rough", "Roughness"), map("$textureSet_metal", "Metallic")]);
+    h.state_mut().run("export.preset.save", json!({"preset": {"name": "Two", "maps": both}})).unwrap();
+    h.state_mut().ui.export.preset = "Two".into();
+    h.run_steps(4);
+    click(&mut h, "Export");
+    h.run_steps(1);
+    assert!(h.state().ui.export.job.is_some());
+
+    // The template loses a map while the export runs: the remaining sets still write it
+    h.state_mut().run("export.preset.save", json!({"preset": {"name": "Two", "maps": [map("$textureSet_metal", "Metallic")]}})).unwrap();
+    finish(&mut h);
+    for set in h.state().session.doc.project.texture_sets.iter().map(|t| t.name.clone()).collect::<Vec<_>>() {
+        let stem = texturecraft_engine::formats::export::sanitize_file_stem(&format!("{set}_rough"));
+        assert!(dir.join(format!("{stem}.png")).exists(), "{stem}.png");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&library);
+}
+
+#[test]
+fn a_texture_set_that_leaves_the_export_leaves_its_count() {
+    let (mut h, dir) = harness("count");
+    long_export(&mut h, &dir);
+    h.run_steps(2);
+
+    // A rename the export cannot follow drops the set's queued writes
+    texturecraft_engine::execute(&mut h.state_mut().session, "textureSet.rename", &json!({"ts": 1, "name": "renamed"})).unwrap();
+    h.run_steps(1);
+    let job = h.state().ui.export.job.clone().expect("the other sets are still queued");
+    assert!(job.pending.iter().all(|(ts, _)| *ts != 1));
+    assert_eq!(job.total - job.pending.len(), exports(&h), "the bar counts the writes done");
+    let _ = std::fs::remove_dir_all(&dir);
+}
