@@ -317,6 +317,7 @@ pub(crate) fn actions_page(ui: &mut egui::Ui, keymap: &mut Keymap, recorder: &Bi
             });
             let edit = trf("Edit the shortcut of {item}", &[("item", &tr(b.label))]);
             if icon_button(ui, ic::PENCIL_SIMPLE, &edit, waiting, 20.0).clicked() {
+                ctx.data_mut(|data| data.remove::<usize>(Id::unique(CAPTURE)));
                 capture = if waiting { None } else { Some(i) };
             }
         });
@@ -347,6 +348,7 @@ fn pressed(ctx: &egui::Context, bindings: &Bindings) -> Option<KeyboardShortcut>
 pub fn window(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let tk = Tokens::get(ctx);
     if !app.ui.windows.shortcuts {
+        ctx.data_mut(|data| data.remove::<usize>(Id::unique(CAPTURE)));
         return;
     }
 
@@ -401,6 +403,7 @@ pub fn window(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     let text = if waiting { tr("Press a key...") } else { current.unwrap_or("-") };
                     let key = egui::Button::new(RichText::new(text).monospace()).selected(waiting).min_size(vec2(130.0, 0.0));
                     if ui.add(key).on_hover_text(tr("Click, then press the new shortcut (Esc cancels)")).clicked() {
+                        stop_settings_capture(ctx);
                         capture = if waiting { None } else { Some(i) };
                     }
                     let bound = current.is_some();

@@ -15,7 +15,8 @@ const BUTTON_WIDTH: f32 = 130.0;
 
 /// The prompt, while File > Export Mesh waits on it
 pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    if !app.ui.windows.mesh_export_options {
+    if app.ui.windows.mesh_export_options != Some(app.session.project_id) {
+        app.ui.windows.mesh_export_options = None;
         return;
     }
 
@@ -40,10 +41,10 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     });
 
     if export {
-        app.ui.windows.mesh_export_options = false;
+        app.ui.windows.mesh_export_options = None;
         crate::windows::file_action(app, ctx, "file.exportMesh");
     } else if cancel || !open {
-        app.ui.windows.mesh_export_options = false;
+        app.ui.windows.mesh_export_options = None;
     }
 }
 

@@ -87,10 +87,10 @@ when combined, `patch` follows `model`, then the flat command parameters apply. 
 still targets the active set for scripts that need individual control.
 
 Bake presets are saved settings in the UI state (Mesh Map Bakers > Presets). Loading one is
-`bake.settings {ts: <index>, model: <the preset's settings>, preserveEnabled: true}`; Apply to All
+`bake.settings {ts: <index>, model: <the preset's settings>, preserveEnabled: true, preset: true}`; Apply to All
 Texture Sets is the same with `ts: "all"` and the active set's `model`. Both are one undo step.
-When a bake started in the app ends, a toast gives the maps baked, the time and the failed sets, and
-the session log gets `Bake finished: N maps in T` and `Bake of texture set N failed: <error>`.
+When a bake started in the app ends, a toast counts the new maps and failed sets, and shows the
+elapsed time. On failure, the toast can open the Log. The session log gets `Bake finished: N maps in T` and `Bake of texture set N failed: <error>`.
 
 The bake texture-set list shows visibility eyes and expandable UV tile rows. Visibility affects
 the viewport independently of bake inclusion. Its resolution menus edit the texture-set size
@@ -162,7 +162,7 @@ keeps its state in a throwaway file.
 | `ui.inspect` | | UI state, viewport rect, fps, bake progress (`baking`, 0..1), the running bake's stage (`bakeStatus`, e.g. "Baking Ambient Occlusion (2/4)") and live preview (`bakePreview`, see *Live bake preview*), toasts, `titleBar` (who draws the title bar this run: `app`, `integrated` on macOS, or `system`) |
 | `ui.menu.list` | | the menu catalog: `{menu, submenu, label, id, shortcut, implemented, enabled}` |
 | `ui.menu.invoke` | `{id}` | behaves like a menu click (may open a window; `ui.resetUi` opens its question; `file.exportMesh` opens the Mesh Export Options prompt, whose Export asks for the file; `ui.view.export` opens the right bar's Export panel). `{"id": "ui.layout.apply", "name": "<layout>"}` switches to a panel layout saved under Window > Layouts (panels only; mode, zoom and wireframes stay) and errors when no layout has that name. `{"id": "ui.layout.swap"}` swaps the 3D and 2D views of the split layout (F4) |
-| `ui.menu.invoke` ids `ui.help.releaseNotes`, `ui.help.exportLog` | `{id}` | Help > Release notes... opens the releases page in the browser; Help > Export log... asks where to save the log as a text file (a save dialog, like the menu click) |
+| `ui.menu.invoke` ids `ui.help.releaseNotes`, `ui.help.exportLog` | `{id}` | Help > Release notes... opens the releases page in the browser; Help > Export log... exports the session log with each entry’s recorded UTC time and severity (a save dialog on desktop, a download on the web) |
 | `ui.reset` | | resets the panels, view layout, zoom and every other view setting at once, without the question the Reset UI menu item asks; settings and shortcuts stay |
 | `ui.bake.start` | `{ts?: index \| [indices]}` (default: the sets ticked in Bake mode) | Opens Bake mode and bakes in the background like the Bake button: the 3D view shows the maps landing on the model as they finish (see *Live bake preview*). → the `bake.preview` state. Errors when a bake is already running |
 | `ui.bake.cancel` | | Stops the running bake; the set being baked keeps the maps it had, sets already finished stay applied, and the previous view mode comes back |
@@ -252,8 +252,10 @@ Other preferences set through `ui.set {"prefs": {...}}`: `language` (`""` follow
 language), `work_threads` (worker threads for painting, baking and export; 0 uses every logical
 CPU; read at startup), `rotation_speed` (default 2), `zoom_speed` and `wheel_speed` (default 1,
 each from 0.1 to 10) with `zoom_inverse` and `wheel_inverse`, `gpu_raytracing` (false keeps bake
-rays on the CPU) and `libraries` (added library locations as `{"name", "path"}`; the shelf lists
-the saved smart materials and masks in each folder).
+rays on the CPU) and `libraries` (the folders the shelf scans for saved smart materials and masks).
+For example, the `libraries` field can contain `[{"name": "Studio", "path": "/assets/studio"}]`.
+Use an absolute path on the host running TextureCraft. To change one preference, read `state.prefs`
+with `ui.inspect`, update that field and send the full `prefs` object to `ui.set`.
 
 ## MCP server
 
@@ -523,7 +525,7 @@ cameras, fixed views and `camera.set` yaw/pitch put a free camera level. `camera
 (whole 90° steps; the angles first go to the nearest step) is the command behind the Alt+Shift+left drag
 ("Camera snap rotate"); `camera.snapRotate.left|right|up|down` are its menu forms. `camera.next` and
 `camera.previous` go to the next or previous saved camera (wrapping; from a view that is no saved
-camera, the first or the last). The commands have no default keys and are bindable in Settings ▸ Keyboard.
+camera, the first or the last). The commands have no default keys and are bindable in Settings ▸ Shortcuts.
 None is an undo step.
 
 `viewport.view {mode: "normalHeightMesh"}` is the combined "Normal+height+mesh" view: the surface normal
@@ -532,12 +534,11 @@ tangent-space form.
 
 ## MaterialCraft materials
 
-A `.mcmat` portable material (MaterialCraft's format, read here by `formats::mcmat`; the manifest is
-documented in MaterialCraft's `docs/control-protocol.md` § Portable materials) becomes a fill layer
-whose channel sources are its cooked maps and whose `link` (shown by `project.inspect`) holds the
-graph's exposed inputs, presets and image inputs. Both apps use the shared `craft-mcmat` container.
-Versions 1 and 2 are accepted; version 1 contains a legacy JSON `.mcraft` source that current
-MaterialCraft cannot reopen, so its cooked maps remain usable but re-cooking needs a compatible older version.
+A v3 `.mcmat` holds a published SBS graph and its source assets. TextureCraft uses the shared `craft-mcmat` reader and cooks the archive through `materialcraft-cli`. The resulting fill stores its channel textures and the original archive in the project. Linked cooks use the Settings percentage of available RAM. A cook that exceeds the estimated budget reports the required and configured byte counts without replacing the current fill. Its exposed values, presets and mesh-map inputs appear in `project.inspect`. Republish older MCMAT files from their original authoring project. Procedural imports and re-cooks require the desktop CLI. Saved projects retain their baked maps for use in the browser.
+
+Saving and linked cooks share one reservation for the configured RAM allowance. Autosave waits
+until a cook releases the reservation. An explicit save or cook that conflicts with the other
+operation returns a busy error and can be retried.
 
 | Command | Params |
 |---|---|
@@ -545,9 +546,9 @@ MaterialCraft cannot reopen, so its cooked maps remain usable but re-cooking nee
 | `material.link.set` | `{layer?, id, value, cook?: true}`: a number, `[..]`, a bool, `"#rrggbb"` or a typed `{"t", "v"}`; re-cooks unless `cook: false` |
 | `material.link.preset` | `{layer?, name, cook?: true}` |
 | `material.link.cook` | `{layer?}`: re-cook at the texture set's resolution with its baked mesh maps (after a bake or a resize) |
-| `material.link.saveSource` | `{layer?, path}`: the `.mcraft` or `.sbs` source, to open in MaterialCraft |
+| `material.link.saveSource` | `{layer?, path}`: the original linked source with its `.mcmat`, `.mcraft` or `.sbs` extension |
 
-Re-cooks use `materialcraft-cli batch` to open the saved graph by name and run `file.exportMaterial` with its size, values and inputs:
+For a 1024-pixel texture set, TextureCraft requests `materialcraft-cli export source.mcmat maps --profile maps --size 1024x1024` with repeated `--set` and `--input` arguments. It discovers the published image inputs through `info` when the texture set supplies mesh maps. The desktop worker decodes the returned maps before installing the fill at its original drop target. The executable is resolved from
 `$MATERIALCRAFT_CLI`, else `materialcraft-cli` next to the TextureCraft executable, else on `PATH`
 (the app is `$MATERIALCRAFT` / `materialcraft`). Baked maps feed graph input nodes whose identifier
 matches the map's shared id (`ambientOcclusion`, `curvature`, `thickness`, `position`,

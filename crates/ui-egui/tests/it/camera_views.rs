@@ -337,6 +337,25 @@ fn next_and_previous_camera_commands_move_between_saved_cameras() {
 }
 
 #[test]
+fn next_camera_advances_from_the_destination_before_the_glide_ends() {
+    let mut harness = slow_glide_harness();
+    for (name, yaw) in [("Near", 20), ("Far", 50)] {
+        let app = harness.state_mut();
+        app.run("camera.set", json!({"yaw": yaw})).unwrap();
+        app.run("camera.add", json!({"name": name})).unwrap();
+    }
+    let app = harness.state_mut();
+    app.run("camera.set", json!({"yaw": 0})).unwrap();
+    app.run("camera.next", json!({})).unwrap();
+    app.run("camera.next", json!({})).unwrap();
+    assert!(app.session.camera.yaw.abs() < 1e-3, "the glide starts at the displayed view");
+
+    harness.run_steps(60);
+
+    assert!((harness.state().session.camera.yaw.to_degrees() - 50.0).abs() < 0.5, "two presses reach the second camera");
+}
+
+#[test]
 fn the_view_picker_offers_the_combined_normal_view() {
     let mut h = harness();
     h.get_all_by_role(egui::Role::ComboBox).find(|node| node.value().as_deref() == Some("Material")).expect("the view picker").click();

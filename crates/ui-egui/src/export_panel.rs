@@ -48,7 +48,7 @@ pub(crate) fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
     ui.vertical_centered(|ui| {
         let size = [EXPORT_BUTTON_WIDTH, ui.spacing().interact_size.y];
         if ui.add_enabled(project_open, egui::Button::new(tr("Export Mesh...")).min_size(size.into())).clicked() {
-            app.ui.windows.mesh_export_options = true;
+            app.ui.windows.mesh_export_options = Some(app.session.project_id);
             app.ui.rail_panel = None;
         }
         if ui.add_enabled(project_open, primary_button(ui, tr("Export Textures...")).min_size(size.into())).clicked() {

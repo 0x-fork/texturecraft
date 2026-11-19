@@ -166,7 +166,7 @@ pub fn shade(s: &Session) -> Shade {
         height_strength: s.doc.project.texture_sets.get(s.ts()).map(|t| t.atlas_height_strength()).unwrap_or(1.0),
         view_mode,
         channel,
-        // The app's default (only the 2D view draws it).
+        // Only the 2D view uses this default
         wireframe: true,
         ..Shade::from_project(&s.doc.project)
     }

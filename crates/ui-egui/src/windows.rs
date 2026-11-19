@@ -307,48 +307,30 @@ fn about(app: &mut TextureCraftApp, ctx: &egui::Context) {
     app.ui.windows.about = open;
 }
 
-/// The text Help ▸ Export log... saves: a header with the export time, then every log line with
-/// its level. The session log keeps plain lines with no time or level of their own, so every line
-/// is written as `INFO`.
-pub(crate) fn log_text(lines: &[String], exported_at: &str) -> String {
-    let mut out = format!("TextureCraft log, exported {exported_at}\n");
-    for line in lines {
-        out.push_str(&format!("[{exported_at}] INFO  {line}\n"));
+/// Render the session log as text, preserving each entry's occurrence time and severity.
+fn log_text(entries: &[texturecraft_engine::LogEntry]) -> String {
+    use std::fmt::Write as _;
+
+    const UTC_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.6fZ";
+    let mut text = String::from("TextureCraft log, exported ");
+    let _ = chrono::Utc::now().naive_utc().format(UTC_FORMAT).write_to(&mut text);
+    text.push('\n');
+
+    for entry in entries {
+        let timestamp = entry.time.naive_utc().format(UTC_FORMAT);
+        for line in entry.message.split('\n') {
+            text.push('[');
+            let _ = timestamp.write_to(&mut text);
+            let _ = writeln!(text, "] {:5} {line}", entry.level.as_str());
+        }
     }
-    out
-}
 
-/// The current UTC time as `YYYY-MM-DD HH:MM:SS`.
-#[cfg(not(target_arch = "wasm32"))]
-fn now_utc() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    utc_text(secs)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn now_utc() -> String {
-    utc_text((js_sys::Date::now() / 1000.0) as i64)
-}
-
-/// Unix seconds as `YYYY-MM-DD HH:MM:SS` (UTC).
-fn utc_text(secs: i64) -> String {
-    let (days, rest) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // Civil date from a day count (proleptic Gregorian)
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}", rest / 3600, rest % 3600 / 60, rest % 60)
+    text
 }
 
 /// Help ▸ Export log...: saves the whole log to a text file chosen in a save dialog.
 pub(crate) fn export_log(app: &mut TextureCraftApp) {
-    let text = log_text(&app.session.log, &now_utc());
+    let text = log_text(app.session.log.entries());
     #[cfg(not(target_arch = "wasm32"))]
     app.ask_file(FileDialog::save().filter(tr("Text file"), &["txt"]).file_name("texturecraft-log.txt"), Bound::App, move |app, paths| {
         let Some(path) = paths.first() else { return };
@@ -459,7 +441,7 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
                 {
                     let name = result["material"].as_str().unwrap_or_default();
                     for warning in result["warnings"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str) {
-                        app.session.log.push(format!("MaterialX {name}: {warning}"));
+                        app.session.log.warn(format!("MaterialX {name}: {warning}"));
                     }
                     app.toast(trf("Imported {name}", &[("name", &name)]), false);
                     app.ui.dock.focus(crate::docking::Panel::Layers);
@@ -624,7 +606,7 @@ pub(crate) fn export_params(app: &TextureCraftApp) -> serde_json::Value {
     p
 }
 
-fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[texturecraft_engine::formats::ExportPreset]) {
+fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui) {
     ui.label(caption(tr("General Export Parameters")));
     egui::Grid::new("exp_grid").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
         // The browser downloads the files instead
@@ -646,8 +628,8 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
         ui.label(tr("Output template"));
         let before = app.ui.export.preset.clone();
         egui::ComboBox::from_id_salt("exp_preset").width(360.0).selected_text(app.ui.export.preset.clone()).show_ui(ui, |ui| {
-            for p in presets {
-                ui.selectable_value(&mut app.ui.export.preset, p.name.clone(), &p.name);
+            for preset in texturecraft_engine::formats::builtin_presets() {
+                ui.selectable_value(&mut app.ui.export.preset, preset.name.clone(), preset.name);
             }
             if !app.session.export_presets.list.is_empty() {
                 ui.separator();
@@ -749,25 +731,22 @@ fn export_settings_tab(app: &mut TextureCraftApp, ui: &mut Ui, presets: &[textur
 /// Height of the Export textures window's tab body, above its buttons
 const EXPORT_BODY_HEIGHT: f32 = 440.0;
 
-/// How many files the export writes for the ticked texture sets
-fn selected_texture_count(app: &mut TextureCraftApp) -> usize {
+/// Plan only the files for the checked texture sets.
+fn selected_export_plan(app: &mut TextureCraftApp) -> texturecraft_engine::Result<serde_json::Value> {
     let mut params = export_params(app);
-    params["ts"] = json!("all");
-    let Ok(plan) = texturecraft_engine::execute(&mut app.session, "export.plan", &params) else { return 0 };
-    let skipped = |file: &serde_json::Value| file.get("ts").and_then(serde_json::Value::as_u64).is_some_and(|ts| app.ui.export.skip.contains(&(ts as usize)));
-    plan.as_array().into_iter().flatten().filter(|file| !skipped(file)).count()
+    params["ts"] = json!(export_selection(app));
+    texturecraft_engine::execute(&mut app.session, "export.plan", &params)
 }
 
 pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
-    let tk = Tokens::get(ctx);
     if !app.ui.windows.export {
         app.ui.export.ask = None;
         return;
     }
 
+    let tokens = Tokens::get(ctx);
     let mut open = true;
     let mut do_export = false;
-    let presets = texturecraft_engine::formats::builtin_presets();
     dialog("export_textures", tr("Export textures"), &mut open).fixed_size(vec2(900.0, 520.0)).show(ctx, |ui| {
         // Nothing to export without a project
         if !app.session.project_open {
@@ -776,9 +755,9 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
         }
 
         ui.horizontal(|ui| {
-            for (i, t) in [tr("Settings"), tr("Output templates"), tr("List of exports")].iter().enumerate() {
-                if ui.selectable_label(app.ui.export.tab == i as u8, caption(&t.to_uppercase())).clicked() {
-                    app.ui.export.tab = i as u8;
+            for (index, title) in [tr("Settings"), tr("Output templates"), tr("List of exports")].iter().enumerate() {
+                if ui.selectable_label(app.ui.export.tab == index as u8, caption(&title.to_uppercase())).clicked() {
+                    app.ui.export.tab = index as u8;
                 }
             }
 
@@ -790,10 +769,11 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
             });
         });
         ui.separator();
+        let mut selected_count = None;
         ui.allocate_ui_with_layout(vec2(ui.available_width(), EXPORT_BODY_HEIGHT), egui::Layout::left_to_right(egui::Align::Min), |ui| {
             ui.set_height(EXPORT_BODY_HEIGHT);
             if app.ui.export.tab == 1 {
-                crate::export_templates::tab(app, ui, &presets);
+                crate::export_templates::tab(app, ui, &texturecraft_engine::formats::builtin_presets());
                 return;
             }
 
@@ -802,45 +782,40 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
 
                 // The settings apply to every texture set; there are no per-set settings yet
                 let _ = ui.selectable_label(true, RichText::new(tr("Global settings")).strong());
-                for i in 0..app.session.set_count() {
-                    let name = app.session.doc.project.texture_sets.get(i).map(|t| t.name.clone()).unwrap_or_default();
-                    let mut on = !app.ui.export.skip.contains(&i);
-                    if ui.checkbox(&mut on, name).changed() {
-                        if on {
-                            app.ui.export.skip.retain(|x| *x != i);
+                for (index, set) in app.session.doc.project.texture_sets.iter().enumerate() {
+                    let mut checked = !app.ui.export.skip.contains(&index);
+                    if ui.checkbox(&mut checked, &set.name).changed() {
+                        if checked {
+                            app.ui.export.skip.retain(|skipped| *skipped != index);
                         } else {
-                            app.ui.export.skip.push(i);
+                            app.ui.export.skip.push(index);
                         }
                     }
                 }
             });
             ui.separator();
             ui.vertical(|ui| match app.ui.export.tab {
-                0 => export_settings_tab(app, ui, &presets),
-                _ => {
-                    let mut params = export_params(app);
-                    params["ts"] = json!("all");
-                    match texturecraft_engine::execute(&mut app.session, "export.plan", &params) {
-                        Ok(v) => {
-                            egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
-                                for f in v.as_array().into_iter().flatten() {
-                                    let ts = f.get("ts").and_then(|t| t.as_u64()).unwrap_or(0) as usize;
-                                    if !app.ui.export.skip.contains(&ts) {
-                                        ui.label(RichText::new(f.get("file").and_then(|x| x.as_str()).unwrap_or_default()).monospace());
-                                    }
-                                }
-                            });
-                        }
-                        Err(e) => {
-                            ui.label(RichText::new(e.to_string()).color(tk.danger));
-                        }
+                0 => export_settings_tab(app, ui),
+                _ => match selected_export_plan(app) {
+                    Ok(plan) => {
+                        let files = plan.as_array().map(Vec::as_slice).unwrap_or_default();
+                        selected_count = Some(files.len());
+                        egui::ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
+                            for file in files {
+                                ui.label(RichText::new(file.get("file").and_then(|value| value.as_str()).unwrap_or_default()).monospace());
+                            }
+                        });
                     }
-                }
+                    Err(error) => {
+                        selected_count = Some(0);
+                        ui.label(RichText::new(error.to_string()).color(tokens.danger));
+                    }
+                },
             });
         });
         ui.add_space(8.0);
         ui.separator();
-        let selected = selected_texture_count(app);
+        let selected = selected_count.unwrap_or_else(|| selected_export_plan(app).ok().and_then(|plan| plan.as_array().map(Vec::len)).unwrap_or(0));
         ui.horizontal(|ui| {
             if ui.button(tr("Reset all")).clicked() {
                 app.ui.export = crate::state::ExportUi::default();
@@ -1005,9 +980,16 @@ mod log_export_tests {
     use super::*;
 
     #[test]
-    fn utc_text_formats_known_instants() {
-        assert_eq!(utc_text(0), "1970-01-01 00:00:00");
-        assert_eq!(utc_text(1_709_164_799), "2024-02-28 23:59:59");
-        assert_eq!(utc_text(1_709_164_800), "2024-02-29 00:00:00");
+    fn log_text_keeps_distinct_recorded_times_and_levels() {
+        use texturecraft_engine::{LogEntry, LogLevel};
+
+        let entries = [
+            LogEntry { time: chrono::DateTime::from_timestamp(1_709_164_799, 0).unwrap(), level: LogLevel::Info, message: "Loaded".into() },
+            LogEntry { time: chrono::DateTime::from_timestamp(1_709_164_800, 0).unwrap(), level: LogLevel::Warning, message: "Skipped".into() },
+        ];
+
+        let text = log_text(&entries);
+
+        assert_eq!(text.lines().skip(1).collect::<Vec<_>>(), ["[2024-02-28T23:59:59.000000Z] INFO  Loaded", "[2024-02-29T00:00:00.000000Z] WARN  Skipped"]);
     }
 }

@@ -160,6 +160,7 @@ fn the_close_button_a_press_outside_and_escape_close_it() {
     assert!(popup_closed(&harness), "Close");
 
     click_rail(&mut harness, "Log");
+
     // The Assets panel's tab, left of the viewport and clear of the popup (the Log has an Assets tab too)
     harness.get_all_by_label("Assets").min_by(|a, b| a.rect().left().total_cmp(&b.rect().left())).unwrap().click();
     harness.run_steps(SETTLE_FRAMES);

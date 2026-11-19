@@ -11,7 +11,7 @@ use texturecraft_ui_egui::file_dialogs::Answer;
 fn harness() -> Harness<'static, TextureCraftApp> {
     let mut session = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
     session.log.push("first line".into());
-    session.log.push("second line".into());
+    session.log.warn("second line".into());
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
     h.state_mut().ui.prefs.language = "en".into();
     h.run_steps(4);
@@ -27,6 +27,10 @@ fn click_help_item(h: &mut Harness<'_, TextureCraftApp>, label: &str) {
 
 #[test]
 fn release_notes_opens_the_releases_page() {
+    for id in ["ui.help.releaseNotes", "ui.help.exportLog"] {
+        assert!(texturecraft_ui_egui::keymap::bindings().iter().any(|binding| binding.id == id));
+    }
+
     let mut h = harness();
     h.get_by_label("Help").click();
     h.run_steps(3);
@@ -83,13 +87,13 @@ fn export_log_writes_every_line_with_time_and_level() {
     let text = std::fs::read_to_string(&file).expect("the log file was written");
     let lines: Vec<&str> = text.lines().collect();
     assert!(lines[0].starts_with("TextureCraft log, exported "));
-    let logged = h.state().session.log.clone();
+    let logged = h.state().session.log.entries();
     assert!(logged.len() >= 2);
-    for (written, line) in lines[1..].iter().zip(&logged) {
-        assert!(written.starts_with("[20"), "time first: {written}");
-        assert!(written.contains("] INFO  "), "level: {written}");
-        assert!(written.ends_with(line.as_str()), "{written}");
+    for (written, entry) in lines[1..].iter().zip(logged) {
+        let expected = format!("[{}] {:5} {}", entry.time.format("%Y-%m-%dT%H:%M:%S%.6fZ"), entry.level.as_str(), entry.message);
+        assert_eq!(*written, expected);
     }
+    assert!(text.contains("] WARN  second line"));
     assert_eq!(lines.len(), logged.len() + 1);
     let _ = std::fs::remove_dir_all(&dir);
 }

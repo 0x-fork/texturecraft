@@ -89,6 +89,24 @@ fn camera_angles(harness: &Harness<'_, TextureCraftApp>) -> (f32, f32) {
 }
 
 #[test]
+fn swapping_waits_for_the_active_stroke_to_finish() {
+    let mut harness = split_app();
+    let context = harness.ctx.clone();
+    let app = harness.state_mut();
+    app.session.begin_stroke_uv(texturecraft_engine::geom::glam::Vec2::splat(0.5), 1.0).unwrap();
+
+    texturecraft_ui_egui::menus::invoke(app, &context, "ui.layout.swap");
+
+    assert!(!app.ui.swap_views);
+    assert!(app.session.stroke_active());
+    app.session.end_stroke().unwrap();
+
+    texturecraft_ui_egui::menus::invoke(app, &context, "ui.layout.swap");
+
+    assert!(app.ui.swap_views);
+}
+
+#[test]
 fn dragging_the_divider_resizes_the_views_within_their_minimum_width() {
     let mut harness = split_app();
     let views_left = harness.state().viewport_rect.left();

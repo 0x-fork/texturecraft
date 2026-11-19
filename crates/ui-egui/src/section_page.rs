@@ -6,11 +6,11 @@ use crate::i18n::tr;
 use crate::theme::caption;
 use crate::widgets::icon_button;
 
-/// One section of a page: its tab's icon, and its title (the tab's tooltip and, in capitals, the section's heading)
-pub(crate) struct PageSection {
-    pub icon: &'static str,
-    pub title: &'static str,
-}
+mod page_section;
+mod page_state;
+
+pub(crate) use page_section::PageSection;
+use page_state::PageState;
 
 /// Size of a section tab
 const TAB_SIZE: f32 = 28.0;
@@ -20,19 +20,6 @@ const REACHED_TOLERANCE: f32 = 4.0;
 
 /// Space above every section heading after the first
 const SECTION_GAP: f32 = 10.0;
-
-/// What a page remembers between frames
-#[derive(Clone, Default)]
-struct PageState {
-    /// Where each section's heading starts in the scrolled content
-    tops: Vec<f32>,
-    /// The highlighted tab
-    active: usize,
-    /// A tab clicked on the last frame, whose section the view scrolls to on this one
-    jump: Option<usize>,
-    /// The clicked section stays highlighted while the view stays where the jump left it, even when the page cannot scroll that far
-    pinned: Option<(usize, f32)>,
-}
 
 /// The section tabs, then the sections in one scroll area; `body` draws section `index` under its heading
 pub(crate) fn show(ui: &mut Ui, id_salt: &str, sections: &[PageSection], mut body: impl FnMut(&mut Ui, usize)) {

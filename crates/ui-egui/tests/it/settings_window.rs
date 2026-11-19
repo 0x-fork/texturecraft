@@ -102,6 +102,7 @@ fn the_general_page_lists_the_reference_sections_in_order_without_privacy() {
         .query_all(egui_kittest::kittest::by().predicate(|node| node.label().or_else(|| node.value()).is_some_and(|text| SECTIONS.contains(&text.as_str()))))
         .filter_map(|node| node.accesskit_node().label().or_else(|| node.accesskit_node().value()))
         .collect();
+
     // A label on screen also has a node for its text run
     shown.dedup();
     assert_eq!(shown, SECTIONS.map(String::from).to_vec());
@@ -280,6 +281,25 @@ fn library_locations_cannot_change_while_a_project_is_open() {
 }
 
 #[test]
+fn changing_the_layout_through_control_keeps_pending_edits() {
+    let mut harness = harness(texturecraft_engine::Session::closed().unwrap());
+    open_settings(&mut harness);
+    click(&mut harness, "Libraries");
+    type_into(&mut harness, "Name", "Studio");
+    harness.state_mut().ui.bake_preset_name = "Fast preview".into();
+    let context = harness.ctx.clone();
+
+    let parameters = serde_json::json!({"layout": "Only3D"});
+    let reply = texturecraft_ui_egui::control::handle(harness.state_mut(), &context, "ui.set", &parameters);
+    harness.run_steps(2);
+
+    assert_eq!(reply["ok"], true);
+    let draft = harness.state().ui.windows.settings_draft.as_ref().unwrap();
+    assert_eq!(draft.library_name, "Studio");
+    assert_eq!(harness.state().ui.bake_preset_name, "Fast preview");
+}
+
+#[test]
 fn closing_the_window_from_elsewhere_stops_waiting_for_a_key() {
     let mut h = harness(texturecraft_engine::sample_session(128, 32).unwrap());
     open_settings(&mut h);
@@ -290,7 +310,9 @@ fn closing_the_window_from_elsewhere_stops_waiting_for_a_key() {
 
     // Reset UI, a layout or the control channel can close the window
     h.state_mut().ui.windows.settings = false;
+    h.state_mut().ui.windows.settings_draft = None;
     h.run_steps(3);
+
     assert!(!texturecraft_ui_egui::keymap::capturing(&h.ctx), "shortcuts work again");
     assert!(h.state().ui.windows.settings_draft.is_none());
 }

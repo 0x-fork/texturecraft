@@ -432,6 +432,7 @@ pub struct Session {
     pub(crate) multi: BTreeMap<usize, crate::layer_selection::MultiSelection>,
     pub target: StackTarget,
     pub camera: OrbitCamera,
+    pub(crate) selected_camera_name: Option<String>,
     pub view: ViewMode,
     /// The layer shown alone in the viewport (not saved, not in the history; see [`crate::solo`]).
     pub solo: Option<crate::Solo>,
@@ -463,7 +464,7 @@ pub struct Session {
     /// Bumps on every document change.
     pub revision: u64,
     /// Messages for the UI (status bar / toasts).
-    pub log: Vec<String>,
+    pub log: crate::SessionLog,
     /// The last stroke's camera visibility buffer: reused while the camera, view size and mesh
     /// are unchanged, so back-to-back dabs start instantly.
     pub(crate) depth_cache: Option<DepthCache>,
@@ -510,6 +511,7 @@ impl Session {
             multi: BTreeMap::new(),
             target: StackTarget::Content,
             camera,
+            selected_camera_name: None,
             view: ViewMode::Material,
             solo: None,
             bake_preview: None,
@@ -526,7 +528,7 @@ impl Session {
             project_open: true,
             modified: false,
             revision: 1,
-            log: Vec::new(),
+            log: crate::SessionLog::default(),
             depth_cache: None,
             polygon_fill_drag: None,
             export_presets: Default::default(),
@@ -594,7 +596,7 @@ impl Session {
             mesh,
             mesh_source,
         )?;
-        s.log.extend(log);
+        s.log.extend_warnings(log);
         Ok(s)
     }
 
@@ -929,6 +931,8 @@ impl Session {
     }
 
     fn after_history(&mut self, other: &Document) {
+        // Pending operations may still hold layer IDs from the discarded snapshot
+        self.doc.project.next_id = self.doc.project.next_id.max(other.project.next_id);
         self.modified = true;
 
         // Layers picked together belong to the stack they were picked in

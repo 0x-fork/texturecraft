@@ -11,10 +11,12 @@ use crate::shelf_view::ShelfView;
 
 mod import_resources;
 mod import_row;
+mod library_location;
 mod project_config;
 mod resource_usage;
 pub use import_resources::ImportResources;
 pub use import_row::ImportRow;
+pub use library_location::LibraryLocation;
 pub use project_config::ProjectConfig;
 pub use resource_usage::ResourceUsage;
 
@@ -87,7 +89,7 @@ pub struct Windows {
     pub export_mesh: bool,
     /// File › Export Mesh: the Mesh Export Options prompt before the file choice
     #[serde(skip)]
-    pub mesh_export_options: bool,
+    pub mesh_export_options: Option<u64>,
     /// Edit > Project Configuration: what is chosen so far, applied by OK.
     #[serde(skip)]
     pub project_config: Option<ProjectConfig>,
@@ -166,14 +168,6 @@ pub struct Prefs {
     pub libraries: Vec<LibraryLocation>,
 }
 
-/// A folder the user added as a library: its name and path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct LibraryLocation {
-    pub name: String,
-    pub path: String,
-}
-
 /// The orbit speed the built-in navigation runs at.
 pub const DEFAULT_ROTATION_SPEED: f32 = 2.0;
 /// The range of the camera speed sliders.
@@ -226,7 +220,10 @@ impl Prefs {
         if self.work_threads == 0 {
             return false;
         }
-        rayon::ThreadPoolBuilder::new().num_threads(self.work_threads as usize).build_global().is_ok()
+
+        let available_threads = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let work_threads = (self.work_threads as usize).min(available_threads);
+        rayon::ThreadPoolBuilder::new().num_threads(work_threads).build_global().is_ok()
     }
 
     /// The 3D view's orbit per dragged point, relative to the built-in speed.

@@ -37,7 +37,6 @@ pub(crate) fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
     });
 
     let mut display = app.session.doc.project.display.clone();
-    let before = display.clone();
     let mut import_hdr = false;
     section_page::show(ui, "display_settings", &SECTIONS, |ui, index| match index {
         0 => import_hdr = environment(app, ui, &mut display),
@@ -46,12 +45,16 @@ pub(crate) fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
         _ => viewer(app, ui, &mut display),
     });
 
-    if display != before {
-        if display.fov != before.fov {
+    if display != app.session.doc.project.display {
+        if display.fov != app.session.doc.project.display.fov {
             app.session.camera.fov = display.fov;
         }
+
         app.session.doc.project.display = display;
+        app.session.modified = true;
+        app.session.revision = app.session.revision.wrapping_add(1);
     }
+
     if import_hdr {
         let ctx = ui.ctx().clone();
         crate::web_files::import_environment(app, &ctx);
@@ -191,7 +194,8 @@ fn cameras(app: &mut TextureCraftApp, ui: &mut Ui) {
             if icon_button(ui, ic::VIDEO_CAMERA, tr("View through this camera"), current == Some(i), 20.0).clicked() {
                 app.run("camera.select", json!({"index": i}));
             }
-            // The name being typed lives in egui's memory until the field loses focus.
+
+            // Keep an in-progress name in egui memory until focus leaves the field
             let id = ui.scope_id().with(("camera_name", i));
             let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| name.clone());
             let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(ui.available_width() - 26.0));

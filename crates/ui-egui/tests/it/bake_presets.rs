@@ -3,6 +3,7 @@
 use egui::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+use serde_json::json;
 use texturecraft_engine::core::{BakeAntialiasing, BakeResolution, BakedMap};
 use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::docking::Panel;
@@ -129,9 +130,24 @@ fn run_to_the_end(harness: &mut Harness<'static, TextureCraftApp>) {
         if harness.state().bake.is_none() {
             return;
         }
+
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     panic!("the bake did not finish");
+}
+
+#[test]
+fn apply_to_all_preserves_settings_from_legacy_flat_parameters() {
+    let mut harness = harness();
+    let settings = json!({"ts": 0, "dilation": 192, "maxFrontal": 0.2, "ao": {"rays": 512, "maxDistance": 2.0}});
+    let app = harness.state_mut();
+    app.run("bake.settings", settings).unwrap();
+    let expected = app.session.doc.project.texture_sets[0].bake.clone();
+
+    let parameters = texturecraft_ui_egui::bake_presets::apply_params(json!("all"), &expected);
+    app.run("bake.settings", parameters).expect("settings already in use can be copied");
+
+    assert_eq!(app.session.doc.project.texture_sets[1].bake, expected);
 }
 
 #[test]
@@ -147,6 +163,29 @@ fn a_finished_bake_toasts_maps_and_time_and_logs_them() {
 }
 
 #[test]
+fn a_partial_bake_does_not_count_preserved_unchecked_maps() {
+    use std::sync::Arc;
+    use texturecraft_engine::{Session, compose::BakedMaps, geom::primitives};
+
+    let mesh = primitives::udim_plane();
+    let mut session = Session::new_project("Tiles", mesh, "builtin:udim_plane", None, 128).unwrap();
+    session.doc.baked.insert(0, BakedMaps { resolution: 64, maps: [(BakedMap::Normal, Arc::new(vec![0.4; 64 * 32 * 3]))].into() });
+    let set = &mut session.doc.project.texture_sets[0];
+    set.bake.common.resolution = BakeResolution::R64;
+    set.bake.maps.select([BakedMap::Id]);
+    set.bake_excluded_tiles.insert(1002);
+    let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1000.0)).build_eframe(|context| TextureCraftApp::new(context, session));
+    harness.state_mut().ui.mode = Mode::Baking;
+    harness.state_mut().start_bake(vec![0]);
+
+    run_to_the_end(&mut harness);
+
+    let app = harness.state();
+    assert_eq!(app.session.baked(0).unwrap().maps.len(), 2, "the unchecked normal survives the bake");
+    assert!(app.toasts.last().unwrap().text.starts_with("Baked 1 maps in "));
+}
+
+#[test]
 fn a_failed_set_makes_an_error_toast_that_points_to_the_log() {
     let mut harness = harness();
     {
@@ -154,7 +193,7 @@ fn a_failed_set_makes_an_error_toast_that_points_to_the_log() {
         set.uv_tiles = vec![1001];
         set.bake_excluded_tiles.insert(1001);
     }
-    harness.state_mut().start_bake(vec![0, 1]);
+    harness.state_mut().start_bake(vec![1, 0]);
     run_to_the_end(&mut harness);
 
     let toast = harness.state().toasts.last().expect("a summary toast");
@@ -162,4 +201,13 @@ fn a_failed_set_makes_an_error_toast_that_points_to_the_log() {
     assert!(toast.text.contains("1 failed") && toast.text.contains("Log"), "{}", toast.text);
     let log = &harness.state().session.log;
     assert!(log.iter().any(|line| line.starts_with("Bake of texture set 1 failed")), "{log:?}");
+    assert!(harness.state().session.baked(0).unwrap().maps.contains_key(&BakedMap::Id), "a later set still bakes");
+
+    harness.state_mut().ui.dock.close(Panel::Log);
+    harness.state_mut().ui.log_channel = texturecraft_ui_egui::log_panel::LogChannel::Assets;
+    harness.run_steps(2);
+    click(&mut harness, "Open Log");
+
+    assert!(harness.state().ui.dock.is_visible(Panel::Log));
+    assert!(harness.query_by_label_contains("Bake of texture set 1 failed").is_some());
 }

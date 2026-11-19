@@ -213,7 +213,7 @@ fn main() {
         previous_hook(info);
     }));
 
-    // Scripted runs (agents, films, tests) set TEXTURECRAFT_NO_PREFS to keep the user's saved settings untouched: state goes to throwaway files
+    // Scripted runs use temporary files so they cannot overwrite saved settings
     let persistence_path =
         std::env::var_os("TEXTURECRAFT_NO_PREFS").map(|_| std::env::temp_dir().join(format!("texturecraft-noprefs-{}.ron", std::process::id())));
     let ui_file =

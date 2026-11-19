@@ -11,6 +11,7 @@ mod angle_dial;
 mod ask;
 mod bake_job;
 pub mod bake_mode;
+mod bake_preset;
 pub mod bake_presets;
 mod bake_report;
 mod bake_scene;
@@ -144,12 +145,27 @@ pub struct ResizeJob {
     pub rx: std::sync::mpsc::Receiver<texturecraft_engine::Result<texturecraft_engine::ResizeOutput>>,
 }
 
+mod link_bake_input;
+#[cfg(not(target_arch = "wasm32"))]
+mod link_import;
+
 /// A MaterialCraft material re-cooking on a worker thread (one per layer at a time).
 pub struct LinkCook {
     pub layer: texturecraft_engine::core::LayerId,
+    project: u64,
+    mesh: u64,
+    size: u32,
+    baked_inputs: Vec<link_bake_input::LinkBakeInput>,
+    canceled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The parameter values it cooks: a result whose values are no longer the layer's is redone.
     pub values: serde_json::Map<String, Value>,
-    pub rx: std::sync::mpsc::Receiver<texturecraft_engine::Result<Vec<u8>>>,
+    pub rx: std::sync::mpsc::Receiver<texturecraft_engine::Result<texturecraft_engine::link_cmds::CookedMaterial>>,
+}
+
+impl Drop for LinkCook {
+    fn drop(&mut self) {
+        self.canceled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The engine's refusal to paint while a bake shows (translated where it is toasted).
@@ -164,6 +180,7 @@ pub struct Toast {
     pub text: String,
     pub error: bool,
     pub until: f64,
+    pub show_log: bool,
 }
 
 pub struct TextureCraftApp {
@@ -187,6 +204,8 @@ pub struct TextureCraftApp {
     pub pbr_import: Option<pbr_import::PbrDialog>,
     pub resize: Option<ResizeJob>,
     pub link_cooks: Vec<LinkCook>,
+    #[cfg(not(target_arch = "wasm32"))]
+    link_imports: Vec<link_import::LinkImport>,
     pub thumbs: thumbs::Thumbs,
     /// The Layers panel's thumbnails and folded groups.
     pub layer_panel: layer_panel::LayerPanel,
@@ -299,6 +318,8 @@ impl TextureCraftApp {
             pbr_import: None,
             resize: None,
             link_cooks: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            link_imports: Vec::new(),
             thumbs: thumbs::Thumbs::default(),
             layer_panel: layer_panel::LayerPanel::default(),
             viewport_rect: egui::Rect::NOTHING,
@@ -332,6 +353,7 @@ impl TextureCraftApp {
             bindings: keymap::Bindings::default(),
             settings_bindings: keymap::Bindings::default(),
         };
+
         // The test harness has no window: its file dialogs answer Cancelled, never on the desktop
         #[cfg(not(target_arch = "wasm32"))]
         if cc.winit_window().is_none() {
@@ -354,7 +376,7 @@ impl TextureCraftApp {
             }
 
             let skipped = app.session.load_templates(user_dir("templates"));
-            app.session.log.extend(skipped.into_iter().map(|warning| format!("Project template skipped: {warning}")));
+            app.session.log.extend_warnings(skipped.into_iter().map(|warning| format!("Project template skipped: {warning}")));
 
             // Load presets before control commands can access the session
             for warning in app.session.load_brush_presets(user_dir("brushes")) {
@@ -368,6 +390,14 @@ impl TextureCraftApp {
     /// Run an engine command, reporting errors as toasts. Returns the result on success.
     pub fn run(&mut self, id: &str, params: Value) -> Option<Value> {
         self.ui.prefs.apply_resource_limits();
+        #[cfg(not(target_arch = "wasm32"))]
+        if id == "material.load"
+            && self.session.project_open
+            && let Some(path) = params.get("path").and_then(Value::as_str)
+            && texturecraft_engine::link_cmds::is_link_file(std::path::Path::new(path))
+        {
+            return self.start_link_import(path, &params);
+        }
 
         // Going to a saved camera or a fixed view glides there; the control channel and CLI jump straight away
         let glides = ["camera.select", "camera.bookmark", "camera.view", "camera.next", "camera.previous", "camera.snapRotate"]
@@ -375,6 +405,12 @@ impl TextureCraftApp {
             .any(|prefix| id.starts_with(prefix));
         let before = self.session.camera;
         let glide_from = glides.then_some(before);
+        let relative_camera_command = matches!(id, "camera.next" | "camera.previous") || id.starts_with("camera.snapRotate");
+        let pending_camera = self.camera_glide.as_ref().filter(|_| relative_camera_command).map(|glide| glide.to);
+        if let Some(destination) = pending_camera {
+            self.session.camera = destination;
+        }
+
         match texturecraft_engine::execute(&mut self.session, id, &params) {
             Ok(value) => {
                 if matches!(id, "brush.preset.store" | "brush.preset.rename" | "brush.preset.delete") {
@@ -385,6 +421,9 @@ impl TextureCraftApp {
                 if matches!(id, "file.open" | "file.new" | "file.close" | "project.new" | "project.sample") {
                     self.pbr_import = None;
                     self.resize = None;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.link_imports.clear();
+                    self.link_cooks.clear();
                     self.layer_panel = Default::default();
                 }
 
@@ -392,7 +431,6 @@ impl TextureCraftApp {
                 if id == "file.close" {
                     self.ui.mode = state::Mode::Painting;
                     self.ui.windows.export = false;
-                    self.ui.windows.mesh_export_options = false;
                 }
 
                 match glide_from {
@@ -409,6 +447,10 @@ impl TextureCraftApp {
                 Some(value)
             }
             Err(error) => {
+                if pending_camera.is_some() {
+                    self.session.camera = before;
+                }
+
                 self.toast(error.to_string(), true);
                 None
             }
@@ -432,19 +474,19 @@ impl TextureCraftApp {
 
     fn report_ui_storage_warning(&mut self) {
         if let Some(warning) = self.ui_store.take_warning() {
-            self.session.log.push(warning.clone());
+            self.session.log.warn(warning.clone());
             self.toast_sticky(warning);
         }
     }
 
     pub fn toast(&mut self, text: impl Into<String>, error: bool) {
-        self.toasts.push(Toast { text: text.into(), error, until: self.last_time + if error { 6.0 } else { 3.0 } });
+        self.toasts.push(Toast { text: text.into(), error, until: self.last_time + if error { 6.0 } else { 3.0 }, show_log: false });
     }
 
     /// An error toast that stays until the user dismisses it (for a problem that persists and
     /// is reported once, like a texture set the GPU could not hold).
     pub fn toast_sticky(&mut self, text: impl Into<String>) {
-        self.toasts.push(Toast { text: text.into(), error: true, until: f64::INFINITY });
+        self.toasts.push(Toast { text: text.into(), error: true, until: f64::INFINITY, show_log: false });
     }
 
     /// Start baking texture sets in the background, one after another. Invalid set indices
@@ -473,11 +515,37 @@ impl TextureCraftApp {
         if self.link_cooks.iter().any(|c| c.layer == layer) {
             return;
         }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if !self.link_imports.is_empty() || !self.link_cooks.is_empty() {
+            self.toast("Another MaterialCraft cook is still running", true);
+            return;
+        }
+
+        self.ui.prefs.apply_resource_limits();
         match self.session.link_job(layer, &serde_json::Map::new()) {
             Ok(job) => {
+                let baked = self.session.doc.project.locate(layer).and_then(|(set, _, _)| self.session.baked(set));
+                let baked_inputs = job
+                    .input_identifiers
+                    .iter()
+                    .filter_map(|identifier| texturecraft_engine::core::BakedMap::parse(identifier))
+                    .map(|map| link_bake_input::LinkBakeInput::capture(map, baked))
+                    .collect();
                 let values = job.values.clone();
+                let size = job.size;
+                let canceled = std::sync::Arc::clone(&job.canceled);
                 let rx = spawn_worker("texturecraft-link", move || job.run());
-                self.link_cooks.push(LinkCook { layer, values, rx });
+                self.link_cooks.push(LinkCook {
+                    layer,
+                    project: self.session.project_id,
+                    mesh: self.session.mesh_id,
+                    size,
+                    baked_inputs,
+                    canceled,
+                    values,
+                    rx,
+                });
             }
             Err(e) => self.toast(e.to_string(), true),
         }
@@ -487,27 +555,45 @@ impl TextureCraftApp {
         if self.link_cooks.is_empty() {
             return;
         }
+
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        if self.session.stroke_active() {
+            return;
+        }
+
+        self.link_cooks.retain(|cook| {
+            cook.project == self.session.project_id && cook.mesh == self.session.mesh_id && self.session.doc.project.locate(cook.layer).is_some()
+        });
         let mut done = Vec::new();
         self.link_cooks.retain(|c| match c.rx.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Empty) => true,
-            Ok(r) => {
-                done.push((c.layer, c.values.clone(), r));
+            Ok(result) => {
+                let Some((set, _, _)) = self.session.doc.project.locate(c.layer) else {
+                    return false;
+                };
+
+                let resized = self.session.doc.project.texture_set(set).is_ok_and(|set| set.resolution != c.size);
+                let baked = self.session.baked(set);
+                let stale = resized || c.baked_inputs.iter().any(|input| !input.is_current(baked));
+                done.push((c.layer, c.values.clone(), stale, result));
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                done.push((c.layer, c.values.clone(), Err(texturecraft_engine::EngineError::Other("the MaterialCraft cook stopped".into()))));
+                done.push((c.layer, c.values.clone(), false, Err(texturecraft_engine::EngineError::Other("the MaterialCraft cook stopped".into()))));
                 false
             }
         });
-        for (layer, values, result) in done {
+        for (layer, values, stale, result) in done {
             let current = self.session.link_values(layer);
             match (result, current) {
-                // The layer is gone (undone, deleted): nothing to show.
+                // The layer can disappear while a cook is pending
                 (_, Err(_)) => {}
-                (Ok(_), Ok(now)) if now != values => self.cook_link(layer),
-                (Ok(bytes), Ok(_)) => {
-                    if let Err(e) = self.session.apply_link_cook(layer, &bytes, true) {
+                (result, Ok(now)) if now != values || stale => {
+                    drop(result);
+                    self.cook_link(layer);
+                }
+                (Ok(material), Ok(_)) => {
+                    if let Err(e) = self.session.apply_link_cook(layer, &material, true) {
                         self.toast(e.to_string(), true);
                     }
                 }
@@ -531,7 +617,7 @@ impl TextureCraftApp {
         };
 
         if job.mesh_id != self.session.mesh_id {
-            // The mesh was swapped under the job: stop it and drop its result.
+            // Discard results for the replaced mesh
             if let Some(running) = &job.current {
                 running.progress.cancel.store(true, Ordering::Relaxed);
             }
@@ -543,8 +629,7 @@ impl TextureCraftApp {
         if let Some(running) = &job.current {
             let set_index = running.set_index;
 
-            // Show one map per poll so each reaches its own frame
-            // An empty channel can gain a map before the result arrives: wait for the sender to close
+            // Wait for the sender to close so the last map also gets a preview frame
             match running.maps.try_recv() {
                 Ok(map) => {
                     self.session.bake_preview_map(set_index, map);
@@ -556,10 +641,11 @@ impl TextureCraftApp {
 
             match running.receiver.try_recv() {
                 Ok(Ok(output)) => {
+                    let maps_baked = running.maps_done.load(Ordering::Relaxed);
                     job.current = None;
-                    let maps = output.maps.len();
+
                     match self.session.apply_streamed_bake(set_index, output) {
-                        Ok(()) => self.bake_report.maps += maps,
+                        Ok(()) => self.bake_report.map_count += maps_baked,
                         Err(error) => self.bake_failed(set_index, &error.to_string()),
                     }
                 }
@@ -616,15 +702,23 @@ impl TextureCraftApp {
 
     /// Note a texture set whose bake failed: one Log line, counted in the summary
     fn bake_failed(&mut self, set_index: usize, error: &str) {
-        self.session.log.push(format!("Bake of texture set {set_index} failed: {error}"));
-        self.bake_report.failed.push(set_index);
+        self.session.log.error(format!("Bake of texture set {set_index} failed: {error}"));
+        self.bake_report.failed_set_count += 1;
     }
 
     /// The toast that ends a bake (maps baked, time, failures) and its line in the Log
     fn finish_bake_report(&mut self) {
         let (text, line, failed) = self.bake_report.summary(self.last_time);
-        self.session.log.push(line);
+        if failed {
+            self.session.log.warn(line);
+        } else {
+            self.session.log.push(line);
+        }
+
         self.toast(text, failed);
+        if let Some(toast) = self.toasts.last_mut() {
+            toast.show_log = failed;
+        }
     }
 
     /// Cancel the active worker, discard queued sets and restore the view. The current set's
@@ -754,6 +848,10 @@ impl TextureCraftApp {
             return;
         }
 
+        let Some(mut reservation) = texturecraft_engine::formats::RamReservation::try_for_save() else {
+            return;
+        };
+
         self.next_autosave = now + period;
         let dir = user_dir("autosave");
         let path = dir.join(format!(
@@ -761,11 +859,13 @@ impl TextureCraftApp {
             texturecraft_engine::formats::export::sanitize_file_stem(&self.session.doc.project.name),
             texturecraft_engine::core::PROJECT_EXT
         ));
-        let pf = self.session.project_file();
+        let snapshot = self.session.project_snapshot();
         let spawned = std::thread::Builder::new().name("texturecraft-autosave".into()).spawn(move || {
-            let result = std::fs::create_dir_all(&dir)
-                .map_err(|e| e.to_string())
-                .and_then(|_| texturecraft_engine::formats::save_project(&path, &pf).map_err(|e| e.to_string()));
+            let result =
+                std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| reservation.save(&path, &snapshot).map_err(|error| error.to_string()));
+            drop(snapshot);
+            drop(reservation);
+
             match result {
                 Ok(()) => log::info!("autosaved {}", path.display()),
                 Err(e) => log::warn!("autosave to {} failed: {e}", path.display()),
@@ -872,6 +972,8 @@ impl eframe::App for TextureCraftApp {
         self.poll_bake(ctx);
         self.poll_resize(ctx);
         self.poll_link_cooks(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_link_imports(ctx);
         self.thumbs.sync_images(&self.session.images, self.session.revision);
 
         // The library shelf rescans when the window comes back (MaterialCraft may have sent a material)
@@ -1010,7 +1112,8 @@ fn banner(app: &mut TextureCraftApp, ui: &mut egui::Ui) {
         |ui| {
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(egui_phosphor::regular::INFO).color(tk.accent));
-                // The text wraps in the width the dismiss button leaves.
+
+                // Leave room for the banner's dismiss button
                 let width = (ui.available_width() - 28.0).max(80.0);
                 ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.add(egui::Label::new(egui::RichText::new(i18n::tr(text)).color(tk.text_strong)).wrap());
@@ -1027,14 +1130,16 @@ fn toasts(app: &mut TextureCraftApp, ctx: &egui::Context) {
     if app.toasts.is_empty() {
         return;
     }
-    // Expiring toasts need frames to disappear on time; sticky ones wait for a click.
+
+    // Repaint while a toast has a deadline
     if app.toasts.iter().any(|t| t.until.is_finite()) {
         ctx.request_repaint_after(std::time::Duration::from_millis(250));
     }
     let tk = theme::Tokens::get(ctx);
     let mut dismissed = None;
-    // Toasts fit the window: at most 360 points wide and, for their text, a part of its height
-    // (longer text scrolls), so a sticky toast's dismiss button always stays on screen.
+    let mut show_log = false;
+
+    // Limit toast dimensions so the dismiss button stays visible
     let screen = ctx.content_rect().size();
     let max_width = (screen.x - 52.0).clamp(120.0, 360.0);
     let max_text_height = (screen.y * 0.35).clamp(48.0, 220.0);
@@ -1050,13 +1155,17 @@ fn toasts(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     ui.set_max_width(max_width);
                     let sticky = t.until.is_infinite();
                     ui.horizontal_top(|ui| {
-                        // The text wraps in the width the dismiss button leaves.
+                        // The text wraps in the width the dismiss button leaves
                         let width = if sticky { max_width - 28.0 } else { max_width };
                         ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                             egui::ScrollArea::vertical().id_salt(("toast", i)).max_height(max_text_height).show(ui, |ui| {
                                 ui.set_max_width(width);
                                 ui.add(egui::Label::new(egui::RichText::new(&t.text).color(tk.text_strong)).wrap());
                             });
+                            if t.show_log && ui.link(i18n::tr("Open Log")).clicked() {
+                                show_log = true;
+                                dismissed = Some(i);
+                            }
                         });
                         if sticky && widgets::icon_button(ui, egui_phosphor::regular::X, i18n::tr("Dismiss"), false, 18.0).clicked() {
                             dismissed = Some(i);
@@ -1068,5 +1177,10 @@ fn toasts(app: &mut TextureCraftApp, ctx: &egui::Context) {
     });
     if let Some(i) = dismissed.filter(|i| *i < app.toasts.len()) {
         app.toasts.remove(i);
+    }
+
+    if show_log {
+        app.ui.log_channel = log_panel::LogChannel::General;
+        crate::rail_popup::open(app, crate::docking::Panel::Log);
     }
 }

@@ -133,17 +133,29 @@ fn apply(view: &mut OrbitCamera, c: &Camera) {
 
 /// The saved camera the view is at, if any.
 pub fn current(s: &Session) -> Option<usize> {
-    let mut view = s.camera;
-    s.doc.project.cameras.iter().position(|c| {
-        apply(&mut view, c);
-        let close = |a: f32, b: f32| (a - b).abs() <= 1e-4 * (1.0 + a.abs());
-        (view.target - s.camera.target).length() <= 1e-4 * (1.0 + view.distance)
-            && close(view.yaw, s.camera.yaw)
-            && close(view.pitch, s.camera.pitch)
-            && close(view.distance, s.camera.distance)
-            && close(view.fov, s.camera.fov)
-            && view.ortho == s.camera.ortho
-    })
+    let cameras = &s.doc.project.cameras;
+    if let Some(name) = &s.selected_camera_name
+        && let Some(index) = cameras.iter().position(|camera| &camera.name == name && matches_view(s.camera, camera))
+    {
+        return Some(index);
+    }
+
+    cameras.iter().position(|camera| matches_view(s.camera, camera))
+}
+
+fn matches_view(camera: OrbitCamera, saved_camera: &Camera) -> bool {
+    const POSE_TOLERANCE: f32 = 1e-4;
+    let mut saved_view = camera;
+    apply(&mut saved_view, saved_camera);
+
+    let close = |a: f32, b: f32| (a - b).abs() <= POSE_TOLERANCE * (1.0 + a.abs());
+    (saved_view.target - camera.target).length() <= POSE_TOLERANCE * (1.0 + saved_view.distance)
+        && close(saved_view.yaw, camera.yaw)
+        && close(saved_view.pitch, camera.pitch)
+        && close(saved_view.distance, camera.distance)
+        && close(saved_view.fov, camera.fov)
+        && saved_view.ortho == camera.ortho
+        && (!camera.free || saved_view.orient.dot(camera.orient).abs() >= 1.0 - POSE_TOLERANCE)
 }
 
 fn list(s: &Session) -> Value {
@@ -195,16 +207,18 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
 fn select(s: &mut Session, p: &Value) -> Result<Value> {
     if u64p(p, "index").is_none() && strp(p, "name").is_none_or(|n| n == DEFAULT_CAMERA) {
         // The default camera: fov and projection from the display settings, framing the mesh
+        s.selected_camera_name = None;
         s.camera.fov = s.doc.project.display.fov;
         s.camera.ortho = false;
         return crate::execute(s, "viewport.frame", &Value::Null);
     }
 
     let i = which(s, "camera.select", p)?;
-    if let Some(c) = s.doc.project.cameras.get(i).cloned() {
+    if let Some(camera) = s.doc.project.cameras.get(i) {
         // A saved view is clamped against the whole mesh, not against a part framed with F
         s.camera.scene_radius = s.mesh.radius();
-        apply(&mut s.camera, &c);
+        apply(&mut s.camera, camera);
+        s.selected_camera_name = Some(camera.name.clone());
     }
     s.revision = s.revision.wrapping_add(1);
     Ok(crate::view_cmds::camera_json(s))
@@ -240,28 +254,30 @@ fn rotation(s: &mut Session, free: bool) -> Result<Value> {
 /// the nearest one first, so repeated calls walk the steps.
 fn snap_rotate(s: &mut Session, yaw: f32, pitch: f32) -> Result<Value> {
     let step = std::f32::consts::FRAC_PI_2;
+    const STEPS_PER_TURN: f32 = 4.0;
     let limit = 89f32.to_radians();
     let c = &mut s.camera;
-    let next_yaw = ((c.yaw / step).round() + yaw.round()) * step;
+    let next_yaw = ((c.yaw / step).round() + yaw.round() % STEPS_PER_TURN) * step;
     let next_pitch = (((c.pitch / step).round() + pitch.round()) * step).clamp(-limit, limit);
     c.set_angles(next_yaw, next_pitch);
     s.revision = s.revision.wrapping_add(1);
     Ok(crate::view_cmds::camera_json(s))
 }
 
-/// The next (`d` = 1) or previous (`d` = -1) saved camera, wrapping round. From a view that is
+/// The next (`direction` = 1) or previous (`direction` = -1) saved camera, wrapping round. From a view that is
 /// no saved camera, next goes to the first and previous to the last.
-fn step_camera(s: &mut Session, d: i64) -> Result<Value> {
-    let saved = s.doc.project.cameras.len() as i64;
-    if saved == 0 {
+fn step_camera(session: &mut Session, direction: i64) -> Result<Value> {
+    let camera_count = session.doc.project.cameras.len() as i64;
+    if camera_count == 0 {
         return Err(bad("camera.next", "the project has no saved cameras"));
     }
-    let to = match current(s) {
-        Some(i) => (i as i64 + d).rem_euclid(saved),
-        None if d > 0 => 0,
-        None => saved - 1,
+
+    let destination = match current(session) {
+        Some(index) => (index as i64 + direction).rem_euclid(camera_count),
+        None if direction > 0 => 0,
+        None => camera_count - 1,
     };
-    select(s, &json!({ "index": to }))
+    select(session, &json!({ "index": destination }))
 }
 
 /// Switch to a perspective or orthographic projection; position and rotation stay.
@@ -283,6 +299,10 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
     let i = which(s, "camera.remove", p)?;
     s.edit("Remove camera", |s| {
         let c = s.doc.project.cameras.remove(i);
+        if s.selected_camera_name.as_deref() == Some(c.name.as_str()) {
+            s.selected_camera_name = None;
+        }
+
         Ok(json!({ "removed": c.name }))
     })
 }
@@ -293,9 +313,14 @@ fn rename(s: &mut Session, p: &Value) -> Result<Value> {
     if s.doc.project.cameras.get(i).is_some_and(|c| c.name == to) {
         return Ok(json!({ "index": i, "name": to }));
     }
+
     let name = unique_name(s, to);
     s.edit("Rename camera", |s| {
         if let Some(c) = s.doc.project.cameras.get_mut(i) {
+            if s.selected_camera_name.as_deref() == Some(c.name.as_str()) {
+                s.selected_camera_name = Some(name.clone());
+            }
+
             c.name = name.clone();
         }
         Ok(json!({ "index": i, "name": name }))
@@ -539,6 +564,21 @@ mod tests {
         execute(&mut s, "camera.orbit", &json!({"dx": 5})).unwrap();
         execute(&mut s, "camera.previous", &Value::Null).unwrap();
         assert_eq!(current(&mut s), 2, "from a view that is no saved camera, previous goes to the last");
+    }
+
+    #[test]
+    fn saved_camera_navigation_visits_distinct_cameras_with_identical_poses() {
+        let mut session = session();
+        for name in ["First", "Second"] {
+            execute(&mut session, "camera.add", &json!({"name": name})).unwrap();
+        }
+        execute(&mut session, "camera.set", &json!({"yaw": 90})).unwrap();
+
+        for index in [0, 1, 0] {
+            execute(&mut session, "camera.next", &Value::Null).unwrap();
+
+            assert_eq!(execute(&mut session, "camera.list", &Value::Null).unwrap()["current"], index);
+        }
     }
 
     #[test]

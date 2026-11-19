@@ -70,14 +70,15 @@ pub(crate) fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
     header(ui);
 
     let mut display = app.session.doc.project.display.clone();
-    let before = display.clone();
     section_page::show(ui, "shader_settings", &SECTIONS, |ui, index| match index {
         0 => shader_parameters(ui, &mut display),
         _ => displacement(ui, &mut display),
     });
 
-    if display != before {
+    if display != app.session.doc.project.display {
         app.session.doc.project.display = display;
+        app.session.modified = true;
+        app.session.revision = app.session.revision.wrapping_add(1);
     }
 }
 

@@ -155,6 +155,10 @@ pub fn enabled(app: &TextureCraftApp, id: &str) -> bool {
         return !app.ui.named_layouts.is_empty();
     }
 
+    if id == "ui.layout.swap" && app.session.stroke_active() {
+        return false;
+    }
+
     if is_ui(id) {
         return app.session.project_open || !ui_needs_project(id);
     }
@@ -197,7 +201,7 @@ pub fn invoke(app: &mut TextureCraftApp, ctx: &egui::Context, id: &str) {
         "ui.export" => app.ui.windows.export = true,
 
         // The mesh export options come first; their Export leads to the file choice
-        "file.exportMesh" => app.ui.windows.mesh_export_options = true,
+        "file.exportMesh" => app.ui.windows.mesh_export_options = Some(app.session.project_id),
         "ui.quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
         #[cfg(not(target_arch = "wasm32"))]
         "ui.projectConfig" => crate::project_config::open(app),

@@ -8,11 +8,20 @@ use crate::TextureCraftApp;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::file_dialogs::{Bound, FileDialog};
 use crate::i18n::{LANGUAGES, SYSTEM_LANGUAGE, n_, tr, trf};
-use crate::keymap::Keymap;
 use crate::state::{CAMERA_SPEED_RANGE, LibraryLocation, Prefs};
 use crate::theme::{Accent, Brightness, Tokens, caption};
 use crate::unavailable::NOT_AVAILABLE;
 use crate::widgets::icon_button;
+
+mod settings_draft;
+#[cfg(not(target_arch = "wasm32"))]
+mod settings_folder;
+mod settings_page;
+
+pub use settings_draft::SettingsDraft;
+#[cfg(not(target_arch = "wasm32"))]
+use settings_folder::SettingsFolder;
+pub use settings_page::SettingsPage;
 
 /// The Libraries page's note on when locations can change.
 pub const PROJECT_OPEN_NOTE: &str = n_("Library locations can't be added/removed when a project is opened.");
@@ -26,85 +35,11 @@ const PAGE_HEIGHT: f32 = 520.0;
 const PAGE_BUTTON: egui::Vec2 = vec2(84.0, 80.0);
 const PAGE_ICON_SIZE: f32 = 44.0;
 
-/// A page of the Settings window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum SettingsPage {
-    #[default]
-    General,
-    Shortcuts,
-    Libraries,
-}
-
-impl SettingsPage {
-    pub const ALL: [SettingsPage; 3] = [SettingsPage::General, SettingsPage::Shortcuts, SettingsPage::Libraries];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            SettingsPage::General => n_("General"),
-            SettingsPage::Shortcuts => n_("Shortcuts"),
-            SettingsPage::Libraries => n_("Libraries"),
-        }
-    }
-
-    fn icon(self) -> &'static str {
-        match self {
-            SettingsPage::General => ic::GEAR,
-            SettingsPage::Shortcuts => ic::KEYBOARD,
-            SettingsPage::Libraries => ic::GRID_FOUR,
-        }
-    }
-}
-
-/// What the Settings window shows and edits until OK or Cancel.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SettingsDraft {
-    pub page: SettingsPage,
-    pub prefs: Prefs,
-    pub keymap: Keymap,
-    /// The shortcuts when the window opened: OK applies only what the Shortcuts page changed,
-    /// so a shortcut rebound meanwhile in Help > Shortcuts stays.
-    pub keymap_at_open: Keymap,
-    /// The Libraries page's Name and Path fields.
-    pub library_name: String,
-    pub library_path: String,
-}
-
-impl SettingsDraft {
-    fn of(app: &TextureCraftApp) -> SettingsDraft {
-        SettingsDraft {
-            page: SettingsPage::General,
-            prefs: app.ui.prefs.clone(),
-            keymap: app.ui.keymap.clone(),
-            keymap_at_open: app.ui.keymap.clone(),
-            library_name: String::new(),
-            library_path: String::new(),
-        }
-    }
-
-    /// Whether the Name and Path fields make a new location: both filled, a name not taken yet.
-    pub fn can_add_library(&self) -> bool {
-        let name = self.library_name.trim();
-        !name.is_empty()
-            && !self.library_path.trim().is_empty()
-            && !built_in_locations().iter().any(|(built_in, _)| built_in == name)
-            && !self.prefs.libraries.iter().any(|location| location.name == name)
-    }
-}
-
-/// A folder picked for the working copy.
-#[cfg(not(target_arch = "wasm32"))]
-enum Pick {
-    DataFolder,
-    LibraryPath,
-}
-
 /// The Settings window, while `windows.settings` is set.
 pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     if !app.ui.windows.settings {
-        // Closed from elsewhere (Reset UI, a layout, the control channel): drop the edits and stop waiting for a key
-        if app.ui.windows.settings_draft.take().is_some() {
-            crate::keymap::stop_settings_capture(ctx);
-        }
+        app.ui.windows.settings_draft = None;
+        crate::keymap::stop_settings_capture(ctx);
         return;
     }
 
@@ -220,20 +155,22 @@ fn apply(app: &mut TextureCraftApp, draft: SettingsDraft) {
 
 /// The folder dialog of the data folder or of the Libraries page's Path, answered into the working copy.
 #[cfg(not(target_arch = "wasm32"))]
-fn ask_folder(app: &mut TextureCraftApp, pick: Pick) {
+fn ask_folder(app: &mut TextureCraftApp, pick: SettingsFolder) {
     let Some(draft) = &app.ui.windows.settings_draft else { return };
+
+    let bound = Bound::Settings(draft.id);
     match pick {
-        Pick::DataFolder => {
+        SettingsFolder::DataFolder => {
             let start = crate::data_folder(&draft.prefs.data_folder);
-            app.ask_file(FileDialog::folder().directory(start), Bound::App, |app, paths| {
+            app.ask_file(FileDialog::folder().directory(start), bound, |app, paths| {
                 if let (Some(dir), Some(draft)) = (paths.first(), app.ui.windows.settings_draft.as_mut()) {
                     draft.prefs.data_folder = dir.display().to_string();
                 }
             });
         }
-        Pick::LibraryPath => {
+        SettingsFolder::LibraryPath => {
             let start = Some(std::path::PathBuf::from(draft.library_path.trim())).filter(|path| path.is_dir()).unwrap_or_else(crate::data_dir);
-            app.ask_file(FileDialog::folder().directory(start), Bound::App, |app, paths| {
+            app.ask_file(FileDialog::folder().directory(start), bound, |app, paths| {
                 if let (Some(dir), Some(draft)) = (paths.first(), app.ui.windows.settings_draft.as_mut()) {
                     draft.library_path = dir.display().to_string();
                 }
@@ -326,7 +263,7 @@ fn general(
     drawable: &[bool],
     gpu: Option<&str>,
     #[cfg(not(target_arch = "wasm32"))] (available_cores, available_ram_bytes): (u32, u64),
-    #[cfg(not(target_arch = "wasm32"))] pick: &mut Option<Pick>,
+    #[cfg(not(target_arch = "wasm32"))] pick: &mut Option<SettingsFolder>,
 ) {
     let tk = Tokens::get(ui.ctx());
     section(ui, n_("INTERFACE OPTIONS"));
@@ -544,7 +481,7 @@ fn general(
             let default = crate::data_folder("").display().to_string();
             ui.add(egui::TextEdit::singleline(&mut p.data_folder).hint_text(default).desired_width(CONTROL_WIDTH - 30.0)).labelled_by(label);
             if ui.button("...").on_hover_text(tr("Choose the data folder")).clicked() {
-                *pick = Some(Pick::DataFolder);
+                *pick = Some(SettingsFolder::DataFolder);
             }
         });
         for (label, dir) in [(tr("Smart materials"), crate::library_dir()), (tr("UI layouts"), crate::user_dir("layouts"))] {
@@ -592,6 +529,7 @@ fn elide_start(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {
     if fits(text) {
         return text.to_owned();
     }
+
     let chars: Vec<char> = text.chars().collect();
     let shown = |from: usize| format!("…{}", chars.get(from..).unwrap_or_default().iter().collect::<String>());
 
@@ -609,8 +547,9 @@ fn elide_start(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {
 }
 
 /// The Libraries page.
-fn libraries(ui: &mut Ui, draft: &mut SettingsDraft, project_open: bool, #[cfg(not(target_arch = "wasm32"))] pick: &mut Option<Pick>) {
+fn libraries(ui: &mut Ui, draft: &mut SettingsDraft, project_open: bool, #[cfg(not(target_arch = "wasm32"))] pick: &mut Option<SettingsFolder>) {
     let tk = Tokens::get(ui.ctx());
+
     // The browser has no folders to add
     let can_change = !project_open && !cfg!(target_arch = "wasm32");
     section(ui, n_("LIBRARY LOCATIONS"));
@@ -624,7 +563,7 @@ fn libraries(ui: &mut Ui, draft: &mut SettingsDraft, project_open: bool, #[cfg(n
                 let browse = ui.add_enabled(can_change, egui::Button::new("...").frame(false)).on_hover_text(tr("Choose the folder"));
                 #[cfg(not(target_arch = "wasm32"))]
                 if browse.clicked() {
-                    *pick = Some(Pick::LibraryPath);
+                    *pick = Some(SettingsFolder::LibraryPath);
                 }
                 #[cfg(target_arch = "wasm32")]
                 not_available(browse);
@@ -702,4 +641,37 @@ fn settings_resources(ctx: &egui::Context) -> (u32, u64) {
     let cores = u32::try_from(cores).unwrap_or(u32::MAX);
     ctx.data_mut(|data| data.insert_temp(id, (now, cores, available_ram_bytes)));
     (cores, available_ram_bytes)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_answer_cannot_edit_a_reopened_settings_window() {
+        let session = texturecraft_engine::Session::closed().unwrap();
+        let context = egui::Context::default();
+        let mut app = TextureCraftApp::new(&eframe::CreationContext::_new_kittest(context), session);
+        let folder = std::path::PathBuf::from("chosen-folder");
+        app.file_dialogs.set_override(Some(Box::new(move |_| crate::file_dialogs::Answer::Paths(vec![folder.clone()]))));
+        app.ui.windows.settings = true;
+        app.ui.windows.settings_draft = Some(SettingsDraft::of(&app));
+        ask_folder(&mut app, SettingsFolder::LibraryPath);
+        assert_eq!(app.file_dialogs.pending(), 1);
+
+        app.ui.windows.settings_draft = Some(SettingsDraft::of(&app));
+        let frame = eframe::Frame::_new_kittest();
+        for _ in 0..100 {
+            app.file_dialogs.show_pending(&frame);
+            app.run_file_dialog_answers();
+            if app.file_dialogs.pending() == 0 {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert_eq!(app.file_dialogs.pending(), 0);
+        assert!(app.ui.windows.settings_draft.unwrap().library_path.is_empty());
+    }
 }

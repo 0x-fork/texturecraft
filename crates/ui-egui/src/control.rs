@@ -47,7 +47,7 @@ pub fn poll(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let reqs: Vec<ControlRequest> = rx.try_iter().collect();
     for r in reqs {
         if r.method == "ui.screenshot" {
-            // Replies when the next frame has been captured.
+            // Reply after the next frame is captured
             let reply = r.reply;
             let repaint = ctx.clone();
             let callback = egui::ScreenshotCallback::new(move |img| {
@@ -61,6 +61,7 @@ pub fn poll(app: &mut TextureCraftApp, ctx: &egui::Context) {
             ctx.request_repaint();
             continue;
         }
+
         let reply = handle(app, ctx, &r.method, &r.params);
         let _ = r.reply.send(reply);
         ctx.request_repaint();
@@ -120,7 +121,6 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                     // The Export dialog cannot operate after Close
                     if id == "file.close" {
                         app.ui.windows.export = false;
-                        app.ui.windows.mesh_export_options = false;
                     }
 
                     // A command that moved the camera takes over from a glide in progress; a projection switch joins it
@@ -220,8 +220,23 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                 }
             }
 
-            match serde_json::from_value(current_state) {
-                Ok(ui) => {
+            match serde_json::from_value::<crate::UiState>(current_state) {
+                Ok(mut ui) => {
+                    if ui.prefs.libraries != app.ui.prefs.libraries {
+                        app.library = None;
+                    }
+
+                    // Pending dialogs and editor text do not appear in the serialized state
+                    if params.get("windows").is_none() {
+                        ui.windows = std::mem::take(&mut app.ui.windows);
+                    } else {
+                        ui.windows.mesh_export_options = app.ui.windows.mesh_export_options;
+                        if ui.windows.settings {
+                            ui.windows.settings_draft = app.ui.windows.settings_draft.take();
+                        }
+                    }
+                    ui.bake_preset_name = std::mem::take(&mut app.ui.bake_preset_name);
+
                     app.ui = ui;
                     app.ui.prefs.apply_resource_limits();
                     ok(Value::Null)

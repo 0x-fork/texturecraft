@@ -129,6 +129,20 @@ fn the_export_panel_leads_to_export_textures_and_the_mesh_options() {
 }
 
 #[test]
+fn mesh_export_options_close_on_project_replacement() {
+    let mut harness = app();
+    let context = harness.ctx.clone();
+    texturecraft_ui_egui::menus::invoke(harness.state_mut(), &context, "file.exportMesh");
+    harness.run_steps(SETTLE_FRAMES);
+    assert!(harness.query_by_label("Mesh Export Options").is_some());
+
+    harness.state_mut().run("project.sample", serde_json::json!({})).unwrap();
+    harness.run_steps(SETTLE_FRAMES);
+
+    assert!(harness.query_by_label("Mesh Export Options").is_none());
+}
+
+#[test]
 fn export_mesh_asks_the_options_then_the_file() {
     let mut harness = app();
     let dir = std::env::temp_dir().join(format!("texturecraft-side-panels-{}", std::process::id()));
@@ -267,6 +281,22 @@ fn shader_settings_show_the_reference_rows_and_the_shader_choice() {
     let open_pbr = harness.get_by_label(&tiles[4]);
     assert!(!open_pbr.accesskit_node().is_disabled() && is_on(&open_pbr), "open-pbr is the current shader");
     assert!(harness.get_by_label(&tiles[1]).accesskit_node().is_disabled(), "the others are not available yet");
+}
+
+#[test]
+fn a_shader_edit_marks_the_project_modified() {
+    let mut harness = app();
+    harness.state_mut().session.modified = false;
+    click_rail(&mut harness, "Shader Settings");
+    harness.get_by_role_and_label(Role::Button, "Displacement & tessellation").click();
+    harness.run_steps(SETTLE_FRAMES);
+    assert!(!harness.state().session.doc.project.display.parallax);
+
+    harness.get_by_label("Parallax occlusion (height channel)").click();
+    harness.run_steps(SETTLE_FRAMES);
+
+    assert!(harness.state().session.doc.project.display.parallax);
+    assert!(harness.state().session.modified);
 }
 
 #[test]

@@ -56,6 +56,7 @@ impl OrbitCamera {
         if self.free {
             return self.target + self.orient * Vec3::Z * self.distance;
         }
+
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
         self.target + Vec3::new(cp * sy, sp, cp * cy) * self.distance
@@ -131,12 +132,12 @@ impl OrbitCamera {
 
     pub fn orbit(&mut self, dx: f32, dy: f32) {
         if self.free {
-            // Trackball: turn about the camera's own up and right axes, so the model can be
-            // turned over
+            // Camera-local axes let the trackball turn the model over
             self.orient = (self.orient * Quat::from_rotation_y(-dx) * Quat::from_rotation_x(-dy)).normalize();
             self.angles_from_orient();
             return;
         }
+
         self.yaw -= dx;
         self.pitch = (self.pitch + dy).clamp(-89f32.to_radians(), 89f32.to_radians());
     }
@@ -210,6 +211,7 @@ mod tests {
         let mut c = OrbitCamera::default();
         c.set_free(true);
         let before = c.eye();
+
         // Half a turn over the top: the model ends up upside down
         c.orbit(0.0, std::f32::consts::PI);
         assert!(c.up().y < -0.99, "the camera is upside down: {}", c.up());

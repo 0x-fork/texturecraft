@@ -13,13 +13,15 @@ pub use craft_dialogs::{Answer, FileDialog, Override, Request};
 use crate::TextureCraftApp;
 use crate::i18n::{tr, trf};
 
-/// Whether an answer still needs the project that was open when the dialog was asked for.
+/// The state the answer still needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Bound {
     /// The continuation reads or changes the open project, and does not run on another one.
     Project,
     /// The continuation does not depend on the open project.
     App,
+    /// The Settings draft that asked for a folder.
+    Settings(u64),
 }
 
 /// What runs with the answer. The list is empty when nothing was chosen.
@@ -31,6 +33,7 @@ type Then = Box<dyn FnOnce(&mut TextureCraftApp, Vec<PathBuf>)>;
 struct AskKey {
     request: Request,
     project: Option<u64>,
+    settings: Option<u64>,
     origin: &'static Location<'static>,
 }
 
@@ -44,8 +47,6 @@ pub struct Asked {
 pub struct FileDialogs {
     dialogs: craft_dialogs::Dialogs<Asked>,
     asked: Vec<AskKey>,
-    /// Requests are answered by an override instead of a native dialog.
-    overridden: bool,
     /// The app has no native window (the test harness): a native dialog must never open.
     headless: bool,
 }
@@ -53,12 +54,13 @@ pub struct FileDialogs {
 impl FileDialogs {
     /// The dialogs of the app whose context is `ctx`: an answer wakes its event loop.
     pub fn new(ctx: egui::Context) -> FileDialogs {
-        FileDialogs { dialogs: craft_dialogs::Dialogs::new(Arc::new(move || ctx.request_repaint())), asked: Vec::new(), overridden: false, headless: false }
+        FileDialogs { dialogs: craft_dialogs::Dialogs::new(Arc::new(move || ctx.request_repaint())), asked: Vec::new(), headless: false }
     }
 
     /// Answers every request with `answer_with` instead of a native dialog (tests).
     pub fn set_override(&mut self, answer_with: Option<Override>) {
-        self.overridden = answer_with.is_some();
+        let cancel_without_window = |_: &Request| Answer::Cancelled;
+        let answer_with = answer_with.or_else(|| self.headless.then(|| Box::new(cancel_without_window) as Override));
         self.dialogs.set_override(answer_with);
     }
 
@@ -66,7 +68,7 @@ impl FileDialogs {
     /// request is answered Cancelled until a test sets its own override.
     pub(crate) fn without_window(&mut self) {
         self.headless = true;
-        self.set_override(Some(Box::new(|_| Answer::Cancelled)));
+        self.set_override(None);
     }
 
     /// Requests that have not been answered yet.
@@ -75,12 +77,7 @@ impl FileDialogs {
     }
 
     /// Shows the next dialog asked for. Call at the end of every frame with the window.
-    #[expect(clippy::panic, reason = "only an app without a window whose test removed the override gets here")]
     pub fn show_pending(&mut self, frame: &eframe::Frame) {
-        // Guards the user's desktop: whatever was asked (open, save, folder), a window-less app never shows a system dialog
-        if self.headless && !self.overridden && !self.asked.is_empty() {
-            panic!("a file dialog would open in an app without a window and no file dialog override: set one with `file_dialogs.set_override`");
-        }
         self.dialogs.show_pending(Some(frame));
     }
 }
@@ -91,18 +88,18 @@ impl TextureCraftApp {
     /// another project has been opened since. Returns false, and drops `then`, when the same dialog
     /// is already showing or waiting.
     #[track_caller]
-    #[expect(clippy::panic, reason = "only an app without a window whose test removed the override gets here")]
     pub(crate) fn ask_file(&mut self, dialog: FileDialog, bound: Bound, then: impl FnOnce(&mut TextureCraftApp, Vec<PathBuf>) + 'static) -> bool {
-        // Guards the user's desktop: a test without an override would open a real system dialog
-        if self.file_dialogs.headless && !self.file_dialogs.overridden {
-            panic!("a file dialog was asked for in an app without a window and no file dialog override: set one with `file_dialogs.set_override`");
-        }
         let project = (bound == Bound::Project).then_some(self.session.project_id);
-        let key = AskKey { request: Request::File(dialog.clone()), project, origin: Location::caller() };
+        let settings = match bound {
+            Bound::Settings(id) => Some(id),
+            _ => None,
+        };
+        let key = AskKey { request: Request::File(dialog.clone()), project, settings, origin: Location::caller() };
         if self.file_dialogs.asked.contains(&key) {
             self.file_dialogs.dialogs.raise();
             return false;
         }
+
         self.file_dialogs.asked.push(key.clone());
         self.file_dialogs.dialogs.ask(dialog, Asked { key, then: Box::new(then) });
         true
@@ -115,6 +112,11 @@ impl TextureCraftApp {
             if let Some(i) = self.file_dialogs.asked.iter().position(|k| *k == key) {
                 self.file_dialogs.asked.remove(i);
             }
+
+            if key.settings.is_some_and(|id| !app_settings_is_current(self, id)) {
+                continue;
+            }
+
             let paths = match answer {
                 Answer::Paths(paths) => paths,
                 Answer::Unavailable(why) => {
@@ -130,6 +132,10 @@ impl TextureCraftApp {
             then(self, if moved_on { Vec::new() } else { paths });
         }
     }
+}
+
+fn app_settings_is_current(app: &TextureCraftApp, id: u64) -> bool {
+    app.ui.windows.settings && app.ui.windows.settings_draft.as_ref().is_some_and(|draft| draft.id == id)
 }
 
 #[cfg(test)]
@@ -154,25 +160,35 @@ mod tests {
             if answered.get().is_some() {
                 break;
             }
+
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(answered.get(), Some(0), "Cancelled: no paths");
     }
 
     #[test]
-    #[should_panic(expected = "no file dialog override")]
-    fn an_app_without_a_window_and_without_an_override_refuses_to_open_a_dialog() {
+    fn removing_an_override_keeps_headless_dialogs_cancelled() {
         let mut app = app();
-        app.file_dialogs.set_override(None);
-        app.ask_file(FileDialog::folder(), Bound::App, |_, _| {});
-    }
+        app.file_dialogs.set_override(Some(Box::new(|_| Answer::Paths(vec!["unused".into()]))));
+        let queued = std::rc::Rc::new(std::cell::Cell::new(None));
+        let queued_answer = queued.clone();
+        assert!(app.ask_file(FileDialog::folder(), Bound::App, move |_, paths| queued_answer.set(Some(paths.len()))));
 
-    #[test]
-    #[should_panic(expected = "no file dialog override")]
-    fn a_dialog_queued_before_the_override_was_removed_still_never_opens() {
-        let mut app = app();
-        app.ask_file(FileDialog::save().file_name("layout.json"), Bound::App, |_, _| {});
         app.file_dialogs.set_override(None);
-        app.file_dialogs.show_pending(&eframe::Frame::_new_kittest());
+        let later = std::rc::Rc::new(std::cell::Cell::new(None));
+        let later_answer = later.clone();
+        assert!(app.ask_file(FileDialog::save(), Bound::App, move |_, paths| later_answer.set(Some(paths.len()))));
+        let frame = eframe::Frame::_new_kittest();
+        for _ in 0..100 {
+            app.file_dialogs.show_pending(&frame);
+            app.run_file_dialog_answers();
+            if app.file_dialogs.pending() == 0 {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        assert_eq!((queued.get(), later.get(), app.file_dialogs.pending()), (Some(0), Some(0), 0));
     }
 }

@@ -203,6 +203,7 @@ fn view(s: &mut Session, p: &Value) -> Result<Value> {
             if s.doc.project.layer(id)?.mask.is_none() {
                 return Err(bad("viewport.view", "the layer has no mask"));
             }
+
             ViewMode::Mask(id)
         }
         _ => match m.strip_prefix("map:") {

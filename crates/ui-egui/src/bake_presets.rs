@@ -1,18 +1,12 @@
 //! Named bake presets: the settings of one texture set saved under a name, loaded into any
 //! set later, or copied to all of them. They persist with `UiState`.
 
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use texturecraft_engine::core::BakeSettings;
 
 use crate::state::UiState;
 
-/// Bake settings saved under a name. Loading one keeps each texture set's own Include in Bake flag.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct BakePreset {
-    pub name: String,
-    pub settings: BakeSettings,
-}
+pub use crate::bake_preset::BakePreset;
 
 impl UiState {
     pub fn bake_preset(&self, name: &str) -> Option<&BakePreset> {
@@ -41,7 +35,7 @@ impl UiState {
 
 /// The `bake.settings` parameters that put `settings` on texture sets `ts` (an index, a list or "all"), keeping their Include in Bake flags
 pub fn apply_params(ts: serde_json::Value, settings: &BakeSettings) -> serde_json::Value {
-    json!({ "ts": ts, "model": settings, "preserveEnabled": true })
+    json!({ "ts": ts, "model": settings, "preserveEnabled": true, "preset": true })
 }
 
 #[cfg(test)]

@@ -203,6 +203,7 @@ fn clamp_split_ratio(ratio: f32, width: f32) -> f32 {
 fn split_divider_x(app: &mut TextureCraftApp, ui: &Ui, full: Rect) -> f32 {
     // The 2D view's left edge, beside the line, sits on a whole pixel
     let pixels_per_point = ui.ctx().pixels_per_point();
+
     // The ratio is the 3D view's share, so a swap moves the divider to the other side of the width
     let swapped = app.ui.swap_views;
     let divider_x = |ratio: f32| {
@@ -298,6 +299,7 @@ fn divider_range_keeping_uv_size(ui_state: &crate::state::UiState, full: Rect, o
         let edge = full.left() + SPLIT_LINE_HALF_WIDTH;
         return (edge + narrowest_view, edge + widest_view);
     }
+
     let edge = full.right() - SPLIT_LINE_HALF_WIDTH;
     (edge - widest_view, edge - narrowest_view)
 }
@@ -549,7 +551,7 @@ pub(crate) fn view_mode_picker(app: &mut TextureCraftApp, child: &mut Ui, id_sal
                 app.run("viewport.view", json!({"mode": "material"}));
             }
             if ui.selectable_label(app.session.view == ViewMode::Material && !neutral, tr("Material")).clicked() && project_open {
-                // Only bake mode's pick turns the neutral material off; painting mode's Material leaves bake mode's choice alone
+                // Keep the bake material choice when switching to Material in Painting mode
                 app.ui.bake_visualization.neutral_shown &= !baking;
                 app.run("viewport.view", json!({"mode": "material"}));
             }

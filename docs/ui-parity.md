@@ -99,7 +99,7 @@ that closes it back onto the bar; the float is saved with the UI state.
 
 Bake workflow (issue [#651](https://github.com/storytold/texturecraft/issues/651)): Mesh Map Bakers
 has a Presets menu (save, load, delete named bake settings; Apply to All Texture Sets) and a finished
-bake shows a summary toast (maps baked, time, failed sets, pointing to the Log on failure).
+bake shows a summary toast (maps baked, time, failed sets, with a link to the Log on failure).
 
 File > Import resources ([#638](https://github.com/storytold/texturecraft/issues/638)) queues
 images and materials for the open project. Images support a name prefix and a usage. Texture

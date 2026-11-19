@@ -1,31 +1,13 @@
 //! The Log panel: the session's messages under a General and an Assets tab, one per channel
 
 use egui::{RichText, Ui};
-use serde::{Deserialize, Serialize};
 
 use crate::TextureCraftApp;
 use crate::i18n::tr;
 
-/// The Log panel's channels, one tab each
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LogChannel {
-    /// Everything that is not about assets: projects, exports, bakes, the UI
-    #[default]
-    General,
-    /// Loading and importing resources, templates, presets and materials
-    Assets,
-}
+mod log_channel;
 
-impl LogChannel {
-    pub const ALL: [LogChannel; 2] = [LogChannel::General, LogChannel::Assets];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            LogChannel::General => "General",
-            LogChannel::Assets => "Assets",
-        }
-    }
-}
+pub use log_channel::LogChannel;
 
 /// How messages about assets begin: a resource that does not decode, a skipped template or
 /// preset, and the warnings of a PBR folder or MaterialX import
