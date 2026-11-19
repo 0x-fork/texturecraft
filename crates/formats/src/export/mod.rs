@@ -75,11 +75,28 @@ pub enum FileFormat {
     Webp,
     Exr,
     Hdr,
+    /// JPEG Network Graphics: JPEG colour with a lossless alpha.
+    Jng,
+    /// Portable graymap (binary).
+    Pgm,
+    /// Photoshop document: the image as its merged data, no layers.
+    Psd,
 }
 
 impl FileFormat {
-    pub const ALL: [FileFormat; 8] =
-        [FileFormat::Png, FileFormat::Jpeg, FileFormat::Tga, FileFormat::Tiff, FileFormat::Bmp, FileFormat::Webp, FileFormat::Exr, FileFormat::Hdr];
+    pub const ALL: [FileFormat; 11] = [
+        FileFormat::Png,
+        FileFormat::Jpeg,
+        FileFormat::Tga,
+        FileFormat::Tiff,
+        FileFormat::Bmp,
+        FileFormat::Webp,
+        FileFormat::Exr,
+        FileFormat::Hdr,
+        FileFormat::Jng,
+        FileFormat::Pgm,
+        FileFormat::Psd,
+    ];
 
     pub fn extension(self) -> &'static str {
         match self {
@@ -91,6 +108,19 @@ impl FileFormat {
             FileFormat::Webp => "webp",
             FileFormat::Exr => "exr",
             FileFormat::Hdr => "hdr",
+            FileFormat::Jng => "jng",
+            FileFormat::Pgm => "pgm",
+            FileFormat::Psd => "psd",
+        }
+    }
+
+    /// The name the export window lists (`from_extension` reads it back).
+    pub fn name(self) -> &'static str {
+        match self {
+            FileFormat::Jpeg => "jpeg",
+            FileFormat::Tga => "targa",
+            FileFormat::Tiff => "tiff",
+            other => other.extension(),
         }
     }
 
@@ -99,23 +129,36 @@ impl FileFormat {
         match ext.as_str() {
             "jpeg" => Some(FileFormat::Jpeg),
             "tiff" => Some(FileFormat::Tiff),
+            "targa" => Some(FileFormat::Tga),
             _ => FileFormat::ALL.into_iter().find(|f| f.extension() == ext),
         }
     }
 
-    /// Bit depths this format is written with (16 and 32 are half and full float for EXR).
+    /// Bit depths this format is written with (16 and 32 are half and full float for EXR, 32 is
+    /// float for TIFF and HDR).
     pub fn bit_depths(self) -> &'static [u8] {
         match self {
-            FileFormat::Png | FileFormat::Tiff => &[8, 16],
+            FileFormat::Png | FileFormat::Pgm | FileFormat::Psd => &[8, 16],
+            FileFormat::Tiff => &[8, 16, 32],
             FileFormat::Exr => &[16, 32],
             FileFormat::Hdr => &[32],
             _ => &[8],
         }
     }
 
+    /// The bit depth a file of this format gets unless told otherwise.
+    pub fn default_depth(self) -> u8 {
+        if self.is_float() { 32 } else { 8 }
+    }
+
     /// Floating-point formats hold linear values.
     pub fn is_float(self) -> bool {
         matches!(self, FileFormat::Exr | FileFormat::Hdr)
+    }
+
+    /// Whether a file of this format at `depth` holds floats (32-bit TIFF does).
+    pub fn holds_float(self, depth: u8) -> bool {
+        self.is_float() || (self == FileFormat::Tiff && depth == 32)
     }
 
     /// The supported depth closest to `want` (ties go to the deeper one).
@@ -321,8 +364,31 @@ pub enum Padding {
     Dilation(u32),
     /// Islands are dilated this many texels; beyond, texels hold the channel default.
     DilationDefault(u32),
+    /// Islands are dilated this many texels; beyond, the texels are diffused (a smooth fill
+    /// from the nearby island colours).
+    DilationDiffusion(u32),
     /// Every texel takes its nearest island's value.
     Infinite,
+}
+
+/// One preset map's own export settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MapOverride {
+    /// False leaves the map out (its file name is still reserved, so the others keep theirs).
+    pub enabled: bool,
+    /// Instead of the preset's and the export's file type.
+    pub format: Option<FileFormat>,
+    /// Instead of the preset's and the export's bit depth.
+    pub bit_depth: Option<u8>,
+    /// Instead of the export's dithering of 8-bit files.
+    #[serde(default)]
+    pub dither: Option<bool>,
+}
+
+impl Default for MapOverride {
+    fn default() -> Self {
+        MapOverride { enabled: true, format: None, bit_depth: None, dither: None }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -343,12 +409,18 @@ pub struct ExportOptions {
     /// into 8/16-bit files and linear Rec.709 into float files (EXR, HDR).
     #[serde(skip)]
     pub color_space: Option<ColorSpace>,
+    /// Per map (by index into the preset's maps) settings.
+    #[serde(default)]
+    pub maps: std::collections::BTreeMap<usize, MapOverride>,
+    /// Dither 8-bit integer files (an ordered pattern, the same on every export).
+    #[serde(default)]
+    pub dither: bool,
 }
 
 impl ExportOptions {
-    /// The colour space colour maps are written in when `format` is used.
-    pub fn space_for(&self, format: FileFormat) -> ColorSpace {
-        self.color_space.unwrap_or(if format.is_float() { ColorSpace::LinearRec709 } else { ColorSpace::Srgb })
+    /// The colour space colour maps are written in when `format` is used at `depth`.
+    pub fn space_for(&self, format: FileFormat, depth: u8) -> ColorSpace {
+        self.color_space.unwrap_or(if format.holds_float(depth) { ColorSpace::LinearRec709 } else { ColorSpace::Srgb })
     }
 }
 
@@ -363,6 +435,8 @@ impl ExportOptions {
             normal_format: None,
             atlas: false,
             color_space: None,
+            maps: Default::default(),
+            dither: false,
         }
     }
 }
@@ -396,6 +470,8 @@ pub struct PlannedFile {
     pub map: usize,
     pub format: FileFormat,
     pub bit_depth: u8,
+    /// 8-bit integer file written with dithering.
+    pub dither: bool,
     /// UDIM number of the tile written (None: the whole set).
     pub tile: Option<u32>,
     /// For a tiled file, `name` with the tile number written as `<UDIM>` (what a material that
@@ -501,9 +577,12 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
             continue;
         }
 
-        let format = opts.format_override.unwrap_or(map.format);
-        let bit_depth = format.depth(opts.bit_depth_override.unwrap_or(map.bit_depth));
-        let space = opts.space_for(format);
+        let own = opts.maps.get(&i);
+        let format = own.and_then(|o| o.format).or(opts.format_override).unwrap_or(map.format);
+        let bit_depth = format.depth(own.and_then(|o| o.bit_depth).or(opts.bit_depth_override).unwrap_or(map.bit_depth));
+        let enabled = own.is_none_or(|o| o.enabled);
+        let dither = bit_depth == 8 && !format.holds_float(bit_depth) && own.and_then(|o| o.dither).unwrap_or(opts.dither);
+        let space = opts.space_for(format, bit_depth);
         let color_space = match (is_color(map), space) {
             (false, _) | (true, ColorSpace::LinearRec709) => "linear",
             (true, ColorSpace::Srgb) => "sRGB",
@@ -511,7 +590,7 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
         };
 
         // Integer files clamp wide-gamut linear color to 0–1
-        let clamps = is_color(map) && !format.is_float() && matches!(space, ColorSpace::AcesCg | ColorSpace::Aces2065);
+        let clamps = is_color(map) && !format.holds_float(bit_depth) && matches!(space, ColorSpace::AcesCg | ColorSpace::Aces2065);
 
         // Append `$udim` to names for separate UV tiles
         let template = if tiles.iter().any(Option::is_some) && !map.file.contains("$udim") { format!("{}.$udim", map.file) } else { map.file.clone() };
@@ -557,6 +636,9 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
                 warnings.push(format!("\"{stem}.{ext}\" is produced by more than one map; this one was renamed to \"{name}\""));
             }
             used.insert(name.to_ascii_lowercase());
+            if !enabled {
+                continue;
+            }
 
             // Use a UDIM name only when substituting its tile recovers the output name
             // Truncation or literal placeholder text can make that substitution ambiguous
@@ -564,7 +646,7 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
                 let renamed = if k > 2 { format!("_{}", k - 1) } else { String::new() };
                 format!("{t}{renamed}.{ext}").replace("UDIMTOKEN", "<UDIM>")
             });
-            out.push(PlannedFile { name, map: i, format, bit_depth, tile, udim_name, warnings });
+            out.push(PlannedFile { name, map: i, format, bit_depth, dither, tile, udim_name, warnings });
         }
     }
     Ok(out)
@@ -733,10 +815,13 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
     // Padding stays inside each UV tile
     let dmap = match opts.padding {
         Padding::None => None,
-        Padding::Dilation(d) | Padding::DilationDefault(d) => Some(DilationMap::in_blocks(input.coverage, res, height, Some(d), tile_res)),
+        Padding::Dilation(d) | Padding::DilationDefault(d) | Padding::DilationDiffusion(d) => {
+            Some(DilationMap::in_blocks(input.coverage, res, height, Some(d), tile_res))
+        }
         Padding::Infinite => Some(DilationMap::in_blocks(input.coverage, res, height, None, tile_res)),
     };
     let beyond_default = matches!(opts.padding, Padding::DilationDefault(_) | Padding::Infinite);
+    let diffuse = matches!(opts.padding, Padding::DilationDiffusion(_));
     let sampler = Sampler {
         set,
         comp: input.composite,
@@ -790,17 +875,44 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
                 }
             });
 
+            // Diffuse into the texels the dilation did not reach
+            if diffuse {
+                let known: Vec<bool> = (y0..y0 + h)
+                    .flat_map(|y| (x0..x0 + w).map(move |x| (x, y)))
+                    .map(|(x, y)| sampler.covered(x, y) || dmap.as_ref().is_some_and(|d| d.source(x, y).is_some()))
+                    .collect();
+
+                // Like the dilation, the fill stays inside each UV tile of an atlas
+                let block = if p.tile.is_none() && grid.is_some() { tile_res as usize } else { w.max(h) as usize };
+                let (w, h) = (w as usize, h as usize);
+                for by in (0..h).step_by(block.max(1)) {
+                    for bx in (0..w).step_by(block.max(1)) {
+                        let (bw, bh) = (block.min(w - bx), block.min(h - by));
+                        let rows = || (by..by + bh).map(|y| (y * w + bx)..(y * w + bx + bw));
+                        let mut part: Vec<f32> = rows().flat_map(|r| data.get(r.start * n..r.end * n).unwrap_or_default().iter().copied()).collect();
+                        let part_known: Vec<bool> = rows().flat_map(|r| known.get(r).unwrap_or_default().iter().copied()).collect();
+                        diffuse_fill(&mut part, (bw, bh), n, &part_known);
+                        for (r, chunk) in rows().zip(part.chunks(bw * n)) {
+                            if let Some(dst) = data.get_mut(r.start * n..r.end * n) {
+                                dst.copy_from_slice(chunk);
+                            }
+                        }
+                    }
+                }
+            }
+
             // `size` is per tile: an atlas scales with it
             let scale = |v: u32| (u64::from(v) * u64::from(opts.size.unwrap_or(tile_res)) / u64::from(tile_res)) as u32;
             let size = (scale(w), scale(h));
             let data = resize(data, (w, h), n, size);
 
             // Integer sRGB converts in `encode`; other color spaces convert here
-            let space = opts.space_for(p.format);
+            let space = opts.space_for(p.format, p.bit_depth);
+            let float = p.format.holds_float(p.bit_depth);
             let rgb = lay.len() >= 3 && lay.iter().take(3).map(|(d, _)| *d).eq([Dest::R, Dest::G, Dest::B]);
             let mut data = data;
             let mut warnings = p.warnings;
-            let convert = is_color(map) && (space != ColorSpace::Srgb || p.format.is_float()) && space != ColorSpace::LinearRec709;
+            let convert = is_color(map) && (space != ColorSpace::Srgb || float) && space != ColorSpace::LinearRec709;
             if convert && rgb {
                 data.par_chunks_mut(n).for_each(|px| {
                     if let [r, g, b, ..] = px {
@@ -810,14 +922,113 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
             } else if convert {
                 warnings.push(format!("\"{}\" packs colour into one channel (L), so it is written in linear Rec.709, not {}", p.name, space.name()));
             }
-            let srgb: Vec<bool> = lay.iter().map(|(d, _)| *d != Dest::A && is_color(map) && !p.format.is_float() && space == ColorSpace::Srgb).collect();
+            let srgb: Vec<bool> = lay.iter().map(|(d, _)| *d != Dest::A && is_color(map) && !float && space == ColorSpace::Srgb).collect();
 
             // A colour space the user chose is written into the colour maps (data maps have none)
             let embed = (opts.color_space.is_some() && is_color(map) && rgb).then_some(space);
-            let bytes = encode(p.format, p.bit_depth, size, n, &data, &srgb, embed, &mut warnings)?;
+            let bytes = encode(Encoding { format: p.format, depth: p.bit_depth, dither: p.dither }, size, n, &data, &srgb, embed, &mut warnings)?;
             Ok(ExportedFile { name: p.name, bytes, width: size.0, height: size.1, warnings })
         })
         .collect()
+}
+
+/// Fill the texels `known` leaves out of a `size` image of `n` components by pull-push
+/// diffusion: known texels are averaged down a pyramid, then every level fills its gaps from the
+/// smoothly upsampled level below, so a gap takes a soft blend of the nearby known colours.
+fn diffuse_fill(data: &mut [f32], (w, h): (usize, usize), n: usize, known: &[bool]) {
+    if known.iter().all(|k| *k) || !known.iter().any(|k| *k) {
+        return;
+    }
+
+    // Each level: its size, colours and coverage (0..1)
+    let mut levels: Vec<(usize, usize, Vec<f32>, Vec<f32>)> = vec![(w, h, data.to_vec(), known.iter().map(|k| if *k { 1.0 } else { 0.0 }).collect())];
+    while let Some((lw, lh, colour, weight)) = levels.last()
+        && (*lw > 1 || *lh > 1)
+    {
+        let (nw, nh) = (lw.div_ceil(2), lh.div_ceil(2));
+        let mut c = vec![0.0f32; nw * nh * n];
+        let mut a = vec![0.0f32; nw * nh];
+        for y in 0..nh {
+            for x in 0..nw {
+                let mut sum = 0.0;
+                let mut acc = vec![0.0f32; n];
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let (sx, sy) = (2 * x + dx, 2 * y + dy);
+                    if sx >= *lw || sy >= *lh {
+                        continue;
+                    }
+                    let i = sy * lw + sx;
+                    let wt = weight.get(i).copied().unwrap_or(0.0);
+                    sum += wt;
+                    for (k, v) in acc.iter_mut().enumerate() {
+                        *v += wt * colour.get(i * n + k).copied().unwrap_or(0.0);
+                    }
+                }
+                let o = y * nw + x;
+                if sum > 0.0 {
+                    for (k, v) in acc.iter().enumerate() {
+                        if let Some(t) = c.get_mut(o * n + k) {
+                            *t = v / sum;
+                        }
+                    }
+                }
+                if let Some(t) = a.get_mut(o) {
+                    *t = sum.min(1.0);
+                }
+            }
+        }
+        levels.push((nw, nh, c, a));
+    }
+
+    // Pull back up: each level's gaps take the bilinear value of the coarser level
+    for l in (0..levels.len().saturating_sub(1)).rev() {
+        let (coarse, fine) = {
+            let (head, tail) = levels.split_at_mut(l + 1);
+            match (tail.first(), head.last_mut()) {
+                (Some(c), Some(f)) => (c.clone(), f),
+                _ => continue,
+            }
+        };
+        let (cw, ch, cc, _) = coarse;
+        let (fw, fh, fc, fa) = (fine.0, fine.1, &mut fine.2, &mut fine.3);
+        let sample = |x: f32, y: f32, k: usize| {
+            let (x, y) = (x.clamp(0.0, (cw - 1) as f32), y.clamp(0.0, (ch - 1) as f32));
+            let (x0, y0) = (x as usize, y as usize);
+            let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
+            let (ax, ay) = (x - x0 as f32, y - y0 as f32);
+            let at = |px: usize, py: usize| cc.get((py * cw + px) * n + k).copied().unwrap_or(0.0);
+            (at(x0, y0) * (1.0 - ax) + at(x1, y0) * ax) * (1.0 - ay) + (at(x0, y1) * (1.0 - ax) + at(x1, y1) * ax) * ay
+        };
+        for y in 0..fh {
+            for x in 0..fw {
+                let i = y * fw + x;
+                let a = fa.get(i).copied().unwrap_or(0.0);
+                if a >= 1.0 {
+                    continue;
+                }
+                let (sx, sy) = ((x as f32 + 0.5) / 2.0 - 0.5, (y as f32 + 0.5) / 2.0 - 0.5);
+                for k in 0..n {
+                    if let Some(v) = fc.get_mut(i * n + k) {
+                        *v = a * *v + (1.0 - a) * sample(sx, sy, k);
+                    }
+                }
+                if let Some(t) = fa.get_mut(i) {
+                    *t = 1.0;
+                }
+            }
+        }
+    }
+    if let Some((_, _, filled, _)) = levels.first() {
+        for (i, k) in known.iter().enumerate() {
+            if !*k {
+                for c in 0..n {
+                    if let (Some(d), Some(v)) = (data.get_mut(i * n + c), filled.get(i * n + c)) {
+                        *d = *v;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Resample a `from` (width, height) image of `n` components to `to` (same aspect): box filter
@@ -856,24 +1067,30 @@ fn resize(data: Vec<f32>, from: (u32, u32), n: usize, to: (u32, u32)) -> Vec<f32
     out
 }
 
-/// Encode a `size` (width, height) image of `n` components (1 L, 2 LA, 3 RGB, 4 RGBA; linear
-/// values).
-#[allow(clippy::too_many_arguments)]
-fn encode(
+/// How a file is written.
+#[derive(Clone, Copy)]
+struct Encoding {
     format: FileFormat,
     depth: u8,
-    size: (u32, u32),
-    n: usize,
-    data: &[f32],
-    srgb: &[bool],
-    embed: Option<ColorSpace>,
-    warnings: &mut Vec<String>,
-) -> Result<Vec<u8>> {
+    /// Ordered dithering before 8-bit quantization.
+    dither: bool,
+}
+
+/// 8×8 ordered (Bayer) dither thresholds, 0..64.
+const BAYER8: [u8; 64] = [
+    0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51,
+    19, 59, 27, 49, 17, 57, 25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
+];
+
+/// Encode a `size` (width, height) image of `n` components (1 L, 2 LA, 3 RGB, 4 RGBA; linear
+/// values).
+fn encode(e: Encoding, size: (u32, u32), n: usize, data: &[f32], srgb: &[bool], embed: Option<ColorSpace>, warnings: &mut Vec<String>) -> Result<Vec<u8>> {
+    let Encoding { format, depth, dither } = e;
     let failed = |e: &dyn std::fmt::Display| FormatError::Invalid(format!("{} encoding failed: {e}", format.extension()));
 
     // Embed ICC or EXR chromaticities only where the format supports them
     if let Some(space) = embed
-        && matches!(format, FileFormat::Tga | FileFormat::Bmp | FileFormat::Hdr)
+        && matches!(format, FileFormat::Tga | FileFormat::Bmp | FileFormat::Hdr | FileFormat::Jng | FileFormat::Pgm | FileFormat::Psd)
     {
         warnings.push(format!("{} files can't record a colour space; the colours are in {}", format.extension().to_ascii_uppercase(), space.name()));
     }
@@ -887,8 +1104,44 @@ fn encode(
             let bytes: Vec<u8> = rgb.iter().flat_map(|v| v.to_ne_bytes()).collect();
             return write_image(format, &bytes, size, image::ExtendedColorType::Rgb32F, None).map_err(|e| failed(&e));
         }
+
+        // Float TIFF: linear values, gray widened to RGB
+        FileFormat::Tiff if depth == 32 => {
+            let (rgb, color) = match n {
+                1 => (remap(data, 1, &[0, 0, 0]), image::ExtendedColorType::Rgb32F),
+                2 => (remap(data, 2, &[0, 0, 0, 1]), image::ExtendedColorType::Rgba32F),
+                3 => (data.to_vec(), image::ExtendedColorType::Rgb32F),
+                _ => (data.to_vec(), image::ExtendedColorType::Rgba32F),
+            };
+            let bytes: Vec<u8> = rgb.iter().flat_map(|v| v.to_ne_bytes()).collect();
+            return write_image(format, &bytes, size, color, embed.and_then(crate::icc::profile)).map_err(|e| failed(&e));
+        }
         _ => {}
     }
+
+    // PGM holds one gray channel: colour becomes its luminance, from the linear values
+    let gray: Vec<f32>;
+    let gray_srgb: [bool; 1];
+    let (data, srgb, n): (&[f32], &[bool], usize) = if format == FileFormat::Pgm && n > 1 {
+        if n != 3 {
+            warnings.push("PGM has no alpha channel; alpha was dropped".into());
+        }
+        if n >= 3 {
+            warnings.push("PGM holds one gray channel; colour became its luminance".into());
+        }
+        gray = data
+            .chunks_exact(n)
+            .map(|px| match px {
+                [l, _] => *l,
+                [r, g, b, ..] => 0.2126 * r + 0.7152 * g + 0.0722 * b,
+                _ => 0.0,
+            })
+            .collect();
+        gray_srgb = [srgb.first().copied().unwrap_or(false)];
+        (&gray, &gray_srgb, 1)
+    } else {
+        (data, srgb, n)
+    };
 
     // Integer formats: transfer function and quantization first, then fit the channel layout
     let encoded: Vec<f32> =
@@ -906,11 +1159,115 @@ fn encode(
         let b: Vec<u8> = encoded.iter().flat_map(|v| ((v * 65535.0 + 0.5) as u16).to_ne_bytes()).collect();
         (b, [C::L16, C::La16, C::Rgb16, C::Rgba16].get(n.wrapping_sub(1)).copied().unwrap_or(C::Rgba16))
     } else {
-        let b: Vec<u8> = encoded.iter().map(|v| (v * 255.0 + 0.5) as u8).collect();
+        let width = size.0.max(1) as usize;
+        let threshold = |i: usize| {
+            let p = i / n.max(1);
+            let index = (p / width % 8) * 8 + p % width % 8;
+            (f32::from(BAYER8.get(index).copied().unwrap_or(32)) + 0.5) / 64.0
+        };
+        let b: Vec<u8> = if dither {
+            encoded.iter().enumerate().map(|(i, v)| (v * 255.0 + threshold(i)).floor().clamp(0.0, 255.0) as u8).collect()
+        } else {
+            encoded.iter().map(|v| (v * 255.0 + 0.5) as u8).collect()
+        };
         (b, [C::L8, C::La8, C::Rgb8, C::Rgba8].get(n.wrapping_sub(1)).copied().unwrap_or(C::Rgba8))
     };
+    match format {
+        FileFormat::Pgm => return Ok(pgm(&bytes, size, depth == 16)),
+        FileFormat::Psd => return Ok(psd(&bytes, size, n, depth == 16)),
+        FileFormat::Jng => return jng(&bytes, size, n).map_err(|e| failed(&e)),
+        _ => {}
+    }
     let icc = embed.and_then(crate::icc::profile);
     write_image(format, &bytes, size, color, icc).map_err(|e| failed(&e))
+}
+
+/// 16-bit samples of `bytes` (native order) as big-endian, as PGM and PSD store them.
+fn big_endian16(bytes: &[u8]) -> Vec<u8> {
+    bytes.as_chunks::<2>().0.iter().flat_map(|b| u16::from_ne_bytes(*b).to_be_bytes()).collect()
+}
+
+/// A binary graymap (P5) of one 8- or 16-bit channel.
+fn pgm(bytes: &[u8], (w, h): (u32, u32), wide: bool) -> Vec<u8> {
+    let mut out = format!("P5\n{w} {h}\n{}\n", if wide { 65535 } else { 255 }).into_bytes();
+    if wide {
+        out.extend(big_endian16(bytes));
+    } else {
+        out.extend_from_slice(bytes);
+    }
+    out
+}
+
+/// A layerless Photoshop document: gray (+ alpha) or RGB (+ alpha), 8 or 16 bits, the merged
+/// image uncompressed and planar.
+fn psd(bytes: &[u8], (w, h): (u32, u32), n: usize, wide: bool) -> Vec<u8> {
+    let bytes = if wide { big_endian16(bytes) } else { bytes.to_vec() };
+    let sample = if wide { 2 } else { 1 };
+    let mut out = Vec::with_capacity(26 + 14 + bytes.len());
+    out.extend_from_slice(b"8BPS");
+    out.extend_from_slice(&1u16.to_be_bytes());
+    out.extend_from_slice(&[0; 6]);
+    out.extend_from_slice(&(n as u16).to_be_bytes());
+    out.extend_from_slice(&h.to_be_bytes());
+    out.extend_from_slice(&w.to_be_bytes());
+    out.extend_from_slice(&(8 * sample as u16).to_be_bytes());
+
+    // Colour mode: 1 grayscale, 3 RGB
+    out.extend_from_slice(&(if n <= 2 { 1u16 } else { 3 }).to_be_bytes());
+
+    // No colour mode data, image resources or layers; raw image data
+    out.extend_from_slice(&[0; 12]);
+    out.extend_from_slice(&0u16.to_be_bytes());
+    for c in 0..n {
+        for px in bytes.chunks_exact(n * sample) {
+            out.extend_from_slice(px.get(c * sample..(c + 1) * sample).unwrap_or_default());
+        }
+    }
+    out
+}
+
+/// A JNG file: the colour as JPEG, alpha (when present) as lossless 8-bit deflate data.
+fn jng(bytes: &[u8], (w, h): (u32, u32), n: usize) -> std::result::Result<Vec<u8>, String> {
+    use std::io::Write;
+    let alpha = n == 2 || n == 4;
+    let colour = remap8(bytes, n, if n <= 2 { &[0] } else { &[0, 1, 2] });
+    let mut jpeg = Cursor::new(Vec::new());
+    let kind = if n <= 2 { image::ExtendedColorType::L8 } else { image::ExtendedColorType::Rgb8 };
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY).encode(&colour, w, h, kind).map_err(|e| e.to_string())?;
+
+    let mut out = vec![0x8B, b'J', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        out.extend_from_slice(kind);
+        out.extend_from_slice(data);
+        let mut crc = flate2::Crc::new();
+        crc.update(kind);
+        crc.update(data);
+        out.extend_from_slice(&crc.sum().to_be_bytes());
+    };
+
+    // JHDR: size, colour type (8 gray, 10 colour, +4 with alpha), 8-bit baseline JPEG, alpha as PNG data
+    let mut jhdr = Vec::with_capacity(16);
+    jhdr.extend_from_slice(&w.to_be_bytes());
+    jhdr.extend_from_slice(&h.to_be_bytes());
+    jhdr.extend_from_slice(&[if n <= 2 { 8 } else { 10 } + if alpha { 4 } else { 0 }, 8, 8, 0, if alpha { 8 } else { 0 }, 0, 0, 0]);
+    chunk(&mut out, b"JHDR", &jhdr);
+    if alpha {
+        let a = remap8(bytes, n, &[n - 1]);
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        for row in a.chunks_exact(w.max(1) as usize) {
+            z.write_all(&[0]).and_then(|()| z.write_all(row)).map_err(|e| e.to_string())?;
+        }
+        chunk(&mut out, b"IDAT", &z.finish().map_err(|e| e.to_string())?);
+    }
+    chunk(&mut out, b"JDAT", jpeg.get_ref());
+    chunk(&mut out, b"IEND", &[]);
+    Ok(out)
+}
+
+/// Pick components `pick` from every texel of an `n`-component 8-bit image.
+fn remap8(data: &[u8], n: usize, pick: &[usize]) -> Vec<u8> {
+    data.chunks_exact(n.max(1)).flat_map(|px| pick.iter().map(|k| px.get(*k).copied().unwrap_or(0))).collect()
 }
 
 /// Pick components `pick` from every texel of an `n`-component image.
@@ -964,6 +1321,9 @@ fn write_image(format: FileFormat, bytes: &[u8], (w, h): (u32, u32), color: imag
         FileFormat::Webp => image::ImageFormat::WebP,
         FileFormat::Hdr => image::ImageFormat::Hdr,
         FileFormat::Exr => image::ImageFormat::OpenExr,
+        FileFormat::Jng | FileFormat::Pgm | FileFormat::Psd => {
+            return Err(image::ImageError::Unsupported(image::error::ImageFormatHint::Name(format.extension().into()).into()));
+        }
     };
     image::write_buffer_with_format(&mut out, bytes, w, h, color, fmt)?;
     Ok(out.into_inner())

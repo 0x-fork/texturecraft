@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 #[cfg(not(target_arch = "wasm32"))]
 use texturecraft_core::{NormalFormat, PROJECT_EXT};
 use texturecraft_core::{Project, TextureSet};
-use texturecraft_formats::{ExportInput, ExportOptions, ExportedFile, FileFormat, Padding, ProjectFile};
+use texturecraft_formats::{ExportInput, ExportOptions, ExportedFile, FileFormat, MapOverride, Padding, ProjectFile};
 use texturecraft_geom::{Mesh, primitives};
 
 use crate::commands::{CommandSpec, always, bad, normal_format_param, strp, u64p};
@@ -55,7 +55,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Export textures",
             ["File"],
             None,
-            "{dir, preset?: built-in or user preset name, or a preset object {name, maps}, ts?: index|[indexes]|\"all\", format?: png|jpg|tga|tif|exr|..., bitDepth?, padding?: none|dilation|dilationDefault|infinite, dilation?: px, size?: px, normalFormat?: openGl|directX, colorSpace?: sRGB (default for 8/16-bit files)|Linear Rec.709 (default for exr, hdr)|ACEScg|ACES2065-1 (colour maps are converted, data maps never are; 8/16-bit files clamp to 0-1; a chosen space is also recorded in the colour maps: an ICC profile in PNG, JPEG, TIFF and WebP, the chromaticities in EXR; TGA, BMP and HDR can't hold one and warn), materialX?: bool (also write a .mtlx OpenPBR material per texture set; needs the \"OpenPBR (separate maps)\" preset)}",
+            "{dir, preset?: built-in or user preset name, or a preset object {name, maps}, ts?: index|[indexes]|\"all\", format?: bmp|jpeg|jng|pgm|png|targa|tiff|hdr|exr|webp|psd (or the extension), bitDepth?: 8|16|32 (32 is float for tiff, hdr and exr; 16 is half float for exr), dithering?: bool (8-bit files), padding?: none|dilation|dilationDefault|diffusion|infinite, dilation?: px, size?: px, normalFormat?: openGl|directX, maps?: [{map: index into the preset's maps, enabled?: bool (false leaves the map out), format?, bitDepth?, dithering?}] (per map file type and bit depth), colorSpace?: sRGB (default for 8/16-bit files)|Linear Rec.709 (default for exr, hdr)|ACEScg|ACES2065-1 (colour maps are converted, data maps never are; 8/16-bit files clamp to 0-1; a chosen space is also recorded in the colour maps: an ICC profile in PNG, JPEG, TIFF and WebP, the chromaticities in EXR; TGA, BMP, HDR, JNG, PGM and PSD can't hold one and warn), materialX?: bool (also write a .mtlx OpenPBR material per texture set; needs the \"OpenPBR (separate maps)\" preset)}",
             always,
             export_textures
         ),
@@ -73,7 +73,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "List export outputs",
             [],
             None,
-            "{preset?: name or preset object, ts?, format?, bitDepth?, size?, colorSpace?} → [{ts, map, file, format, bitDepth, warnings}]",
+            "{preset?: name or preset object, ts?, format?, bitDepth?, dithering?, size?, colorSpace?, maps?} → [{ts, map, file, format, bitDepth, dithering, warnings}]",
             always,
             plan
         ),
@@ -302,7 +302,7 @@ fn check_materials(p: &texturecraft_core::Project, mesh: &Mesh) -> Result<()> {
 /// preset object (validated).
 pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions> {
     let preset = match p.get("preset") {
-        None | Some(Value::Null) => s.export_preset("Document channels + Normal + AO"),
+        None | Some(Value::Null) => s.export_preset(texturecraft_formats::DEFAULT_PRESET),
         Some(Value::String(name)) => s.export_preset(name),
         Some(v @ Value::Object(_)) => Some(crate::preset_cmds::preset_param(v, cmd)?),
         Some(_) => return Err(bad(cmd, "`preset` must be a preset name or a preset object")),
@@ -316,12 +316,14 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
     if let Some(b) = u64p(p, "bitDepth") {
         o.bit_depth_override = Some(b.min(32) as u8);
     }
+    o.dither = p.get("dithering").and_then(Value::as_bool).unwrap_or(false);
     let px = u64p(p, "dilation").map(|v| v.min(256) as u32).unwrap_or(16);
     if let Some(pad) = strp(p, "padding") {
         o.padding = match pad {
             "none" => Padding::None,
             "dilation" => Padding::Dilation(px),
             "dilationDefault" => Padding::DilationDefault(px),
+            "diffusion" => Padding::DilationDiffusion(px),
             "infinite" => Padding::Infinite,
             other => return Err(bad(cmd, format!("unknown padding `{other}`"))),
         };
@@ -330,6 +332,7 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
         o.size = Some(crate::session::check_resolution(u32::try_from(sz).unwrap_or(0))?);
     }
     o.normal_format = normal_format_param(cmd, p)?;
+    o.maps = map_overrides(p, o.preset.maps.len(), cmd)?;
     match p.get("colorSpace") {
         None | Some(Value::Null) => {}
         Some(Value::String(name)) => {
@@ -343,6 +346,28 @@ pub fn export_options(s: &Session, p: &Value, cmd: &str) -> Result<ExportOptions
         Some(other) => return Err(bad(cmd, format!("`colorSpace` is a name (sRGB, Linear Rec.709, ACEScg or ACES2065-1), not {other}"))),
     }
     Ok(o)
+}
+
+/// `maps`: per map `{map: index into the preset's maps, enabled?, format?, bitDepth?, dithering?}`.
+fn map_overrides(p: &Value, count: usize, cmd: &str) -> Result<std::collections::BTreeMap<usize, MapOverride>> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(list) = p.get("maps").filter(|v| !v.is_null()) else { return Ok(out) };
+    let list = list.as_array().ok_or_else(|| bad(cmd, "`maps` must be a list of {map, enabled?, format?, bitDepth?}"))?;
+    for m in list {
+        let index = u64p(m, "map").and_then(|i| usize::try_from(i).ok()).filter(|i| *i < count);
+        let index = index.ok_or_else(|| bad(cmd, format!("`maps`: `map` must be the index of one of the preset's {count} maps")))?;
+        let mut o = MapOverride::default();
+        if let Some(enabled) = m.get("enabled") {
+            o.enabled = enabled.as_bool().ok_or_else(|| bad(cmd, "`maps`: `enabled` must be true or false"))?;
+        }
+        if let Some(f) = strp(m, "format") {
+            o.format = Some(FileFormat::from_extension(f).ok_or_else(|| bad(cmd, format!("unknown format `{f}`")))?);
+        }
+        o.bit_depth = u64p(m, "bitDepth").map(|b| b.min(32) as u8);
+        o.dither = m.get("dithering").and_then(Value::as_bool);
+        out.insert(index, o);
+    }
+    Ok(out)
 }
 
 fn sets_param(s: &Session, p: &Value, cmd: &str) -> Result<Vec<usize>> {
@@ -381,6 +406,7 @@ fn plan(session: &mut Session, params: &Value) -> Result<Value> {
                 "file": output.name,
                 "format": output.format.extension(),
                 "bitDepth": output.bit_depth,
+                "dithering": output.dither,
                 "warnings": output.warnings,
             }));
         }
@@ -617,7 +643,7 @@ fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std:
 
             // The first tile stands for all of them: its number is written as <UDIM>
             let file = f.udim_name.clone().unwrap_or_else(|| f.name.clone());
-            let colorspace = materialx::colorspace_name(opts.space_for(f.format));
+            let colorspace = materialx::colorspace_name(opts.space_for(f.format, f.bit_depth));
             if !textures.iter().any(|t| t.input == input) {
                 textures.push(Texture { input: input.to_owned(), file, colorspace });
             }

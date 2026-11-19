@@ -183,3 +183,74 @@ constrained / free (trackball) rotation, the "Camera snap rotate" commands next 
 Alt+Shift+left drag (which already existed), bindable next / previous saved camera (the
 Ctrl+1 ... Ctrl+9 slots stay), and the "Normal+height+mesh" entry of the view picker.
 Free rotation uses the same Alt+left drag (and right drag) as the constrained one.
+
+## Export textures window (batch 3, 2026-11-19)
+
+**UI + tests** (`crates/ui-egui/tests/it/export_settings.rs`, `export_overrides.rs`, `export_map_overrides.rs`, `export_file_types.rs`, `export_progress.rs`, `output_templates.rs`; code in
+[`export_window.rs`](../crates/ui-egui/src/export_window.rs)).
+
+- **SETTINGS** ([#671](https://github.com/storytold/texturecraft/issues/671)): the texture set
+  list has the reference's menu (*Check all*, *Uncheck all*, *Invert all*); *General Export
+  Parameters* has its reset button ("Resets all settings to default values"). *Output directory*
+  is a button showing the path (it opens the folder picker) with an *R* button ("Reset to
+  default"). The template list starts with the reference's first group (TextureCraft has
+  "Document channels + Normal + AO (No Alpha)", the new name of its default template, and "glTF
+  PBR Metal Roughness"; the others are greyed with "Not available yet"; one entry names another
+  vendor's product and is left out), then a separator ("This preset is not available for the
+  current project") and every other template sorted by name. File type lists "Based on output
+  template", then the types in the reference order and names ("targa", "jpeg", "tiff"). Size
+  adds "Maximum size for all Texture Sets" and 128. Padding uses the reference order; the
+  dilation width is a button with a "Dilation (pixels)" slider, greyed for paddings without a
+  width. Include all, Reset all, Cancel, Save settings, Export and the two greyed checkboxes carry
+  the reference tooltips (the padding tooltip names another vendor's product and is left out).
+  Cancel, and closing the window, go back to the settings the window opened with; the window
+  always opens on SETTINGS.
+- **Texture set pages** ([#669](https://github.com/storytold/texturecraft/issues/669)): a click
+  on a texture set row shows its *General Export Parameters*: Output template, File type, Size and
+  Padding with the inherited value as text (for example "1024x1024 (Texture Set size)"). The
+  pencil button ("Enable override") turns a row into its list; a set with an override gets "*"
+  ("Override(s) active"). The header menu has *Enable override for all items* and *Disable
+  override for all items*. The template list leaves out the entries the reference leaves out
+  there; sizes read "128x128" ... "8192x8192". Export, the footer count and LIST OF EXPORTS use
+  each set's own settings. Ticks and overrides belong to the project and follow each texture set
+  by name (another project starts without them); renaming a template on OUTPUT TEMPLATES takes
+  the overrides that use it along, removing it drops them.
+- **Output maps** ([#670](https://github.com/storytold/texturecraft/issues/670)): below the
+  parameters, one row per map the set exports: a tick, the file name pattern (cut at the front
+  with "…" when long, the whole pattern as tooltip), its own *Enable override* and the inherited
+  "png   8 bits". An override gives the map its own file type and bit depth (`maps` of
+  `file.exportTextures`). The header menu has *Check all*, *Uncheck all*, *Invert all*, *Enable
+  override for all items* and *Disable override for all items*; *Include all* ticks every map
+  again. The patterns are cut after 26 characters (the reference cuts by pixel width).
+- **File types** ([#672](https://github.com/storytold/texturecraft/issues/672)): File type
+  lists bmp, jpeg, jng, pgm, png, targa, tiff, hdr, exr, j2k, jp2, webp, psd and sbsar; j2k, jp2
+  and sbsar are greyed with "Not available yet" (TextureCraft has no writer for them). The bit
+  depth list follows the type: "8 bits" and "8 bits + dithering" everywhere, "16 bits" for pgm,
+  png, psd and tiff, "32f bits" for tiff and hdr (hdr only that, greyed), "16f bits" and "32f
+  bits" for exr; empty and greyed for "Based on output template". Padding adds "Dilation +
+  diffusion" with a dilation width. PGM writes colour maps as their luminance; PSD holds the
+  merged image without layers, its alpha as an extra alpha channel (readers do not show it as
+  transparency).
+- **Exporting** ([#673](https://github.com/storytold/texturecraft/issues/673)): Export switches
+  to LIST OF EXPORTS and writes one texture set per frame; the bottom bar becomes a progress bar
+  with the percent and *Cancel Export* (it stops before the next texture set). The CONSOLE pane
+  (its toggle "Hide Console") logs the reference's steps: "Preparing export...", "Exporting
+  texture set **<set>**..." before each step, "Computing textures results", "Preparing textures
+  writing", "Writing <file> texture on disk", "Finalizing textures writing", "Bitmaps write
+  finalization...", "Finalizing export...", then "Export successfully finished",
+  "Successfully exported:" and the files in green. The window stays open. LIST OF EXPORTS is a
+  tree per texture set (file, size such as "1024x1024 (Texture Set size)", file type, bit depth;
+  the full path as tooltip) with *Open output directory* at the top right. The files are
+  written when a texture set is done, so its "Writing ..." lines follow its work instead of
+  coming one by one.
+- **OUTPUT TEMPLATES** ([#674](https://github.com/storytold/texturecraft/issues/674)): the left
+  list is titled *Presets* and lists the templates sorted by name, without the template list's
+  first group. A right click on a preset offers *Rename*, *Duplicate* and *Remove* (Rename and
+  Remove are greyed for built-in templates, which are read-only); F2 renames the selected one.
+  "+" creates "new_export_preset", Duplicate "<name>_copy". *Naming pattern* (*OpenPBR*; the
+  reference's second pattern names another vendor's material and is left out) with its info
+  tooltip sits above the input maps. The middle reads "Current preset: <name>", *Output maps*
+  with *Create:* Gray, RGB, R+G+B, RGB+A, R+G+B+A, and the footer "Drag and drop maps on output's
+  channels to setup your export." and "N output maps will be exported.". TextureCraft keeps its
+  own list tools (rename, import, export) and asks before deleting; R+G+B and R+G+B+A create the
+  same maps as RGB and RGB+A (each channel takes its own source in either).
