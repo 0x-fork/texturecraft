@@ -7,26 +7,13 @@ use serde_json::json;
 use texturecraft_ui_egui::TextureCraftApp;
 use texturecraft_ui_egui::state::{MapExport, SetExport};
 
-/// A user template library folder removed with its owner
-struct Library(std::path::PathBuf);
+#[path = "output_template/template_library.rs"]
+mod template_library;
 
-impl Library {
-    fn new(test: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("texturecraft-output-templates-{test}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for Library {
-    fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).ok();
-    }
-}
+use template_library::TemplateLibrary;
 
 /// OUTPUT TEMPLATES with the user template "Mine" selected
-fn harness(library: &Library) -> Harness<'static, TextureCraftApp> {
+fn harness(library: &TemplateLibrary) -> Harness<'static, TextureCraftApp> {
     let session = texturecraft_engine::sample_session(256, 64).unwrap();
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
     h.state_mut().ui.prefs.language = "en".into();
@@ -55,10 +42,10 @@ fn right_click(h: &mut Harness<'_, TextureCraftApp>, label: &str) {
 }
 
 #[test]
-fn the_tab_has_the_reference_layout_and_texts() {
-    let library = Library::new("layout");
+fn the_tab_shows_the_preset_tools_and_map_editor() {
+    let library = TemplateLibrary::new("layout");
     let mut h = harness(&library);
-    for text in ["Presets", "Naming pattern", "Current preset:", "Output maps", "Create:", "Drag and drop maps on output's channels to setup your export."] {
+    for text in ["Presets", "Naming pattern", "Current preset:", "Output maps", "Create:", "Drop an input map onto a channel to assign it to that output."] {
         assert!(h.query_by_label(text).is_some(), "{text}");
     }
     assert!(h.get_all_by_role(egui::Role::ComboBox).any(|c| c.value().as_deref() == Some("OpenPBR")));
@@ -76,13 +63,13 @@ fn the_tab_has_the_reference_layout_and_texts() {
     let info = h.get_by_label(egui_phosphor::regular::INFO).rect().center();
     h.hover_at(info);
     h.run_steps(30);
-    assert!(h.query_by_label("Select the naming pattern used to display the input maps on this page.").is_some());
-    assert!(h.query_by_label("Some input maps (channels) may be named differently depending on the shader used as a Texture Set.").is_some());
+    assert!(h.query_by_label("Choose how the input maps are named in this editor.").is_some());
+    assert!(h.query_by_label("The active texture set’s shader can affect the available map names.").is_some());
 }
 
 #[test]
 fn the_presets_list_holds_the_sorted_templates_without_the_first_group() {
-    let library = Library::new("list");
+    let library = TemplateLibrary::new("list");
     let h = harness(&library);
     assert!(h.query_by_label("glTF PBR Metal Roughness").is_none());
     assert!(h.query_by_label("Document channels + Normal + AO (No Alpha)").is_none());
@@ -93,7 +80,7 @@ fn the_presets_list_holds_the_sorted_templates_without_the_first_group() {
 
 #[test]
 fn new_and_duplicate_use_the_reference_names() {
-    let library = Library::new("names");
+    let library = TemplateLibrary::new("names");
     let mut h = harness(&library);
     click(&mut h, "New template");
     assert_eq!(h.state().ui.export.preset, "new_export_preset");
@@ -105,7 +92,7 @@ fn new_and_duplicate_use_the_reference_names() {
 
 #[test]
 fn the_right_click_menu_renames_and_removes_user_templates_only() {
-    let library = Library::new("menu");
+    let library = TemplateLibrary::new("menu");
     let mut h = harness(&library);
     right_click(&mut h, "Mine");
     for item in ["Rename", "Duplicate", "Remove"] {
@@ -130,7 +117,7 @@ fn the_right_click_menu_renames_and_removes_user_templates_only() {
 
 #[test]
 fn f2_renames_the_selected_template_and_leaves_the_views_alone() {
-    let library = Library::new("f2");
+    let library = TemplateLibrary::new("f2");
     let mut h = harness(&library);
     let layout = h.state().ui.layout;
     h.key_press(egui::Key::F2);
@@ -141,7 +128,7 @@ fn f2_renames_the_selected_template_and_leaves_the_views_alone() {
 
 #[test]
 fn the_preview_ignores_a_texture_sets_output_map_settings() {
-    let library = Library::new("preview");
+    let library = TemplateLibrary::new("preview");
     let mut h = harness(&library);
 
     // A two-map template on show, while the current texture set unticks map 2 of its own three-map template
@@ -162,10 +149,11 @@ fn the_preview_ignores_a_texture_sets_output_map_settings() {
 
 #[test]
 fn texture_set_overrides_follow_a_renamed_template_and_drop_a_removed_one() {
-    let library = Library::new("follow");
+    let library = TemplateLibrary::new("follow");
     let mut h = harness(&library);
     let mut o = texturecraft_ui_egui::state::SetExport { preset: Some("Mine".into()), maps_template: "Mine".into(), ..Default::default() };
     o.maps.insert(1, texturecraft_ui_egui::state::MapExport { enabled: false, file_type: None });
+
     // The override is there when the window opens
     h.state_mut().ui.windows.export = false;
     h.run_steps(2);
@@ -200,7 +188,7 @@ fn texture_set_overrides_follow_a_renamed_template_and_drop_a_removed_one() {
 
 #[test]
 fn the_footer_counts_only_the_maps_the_texture_set_exports() {
-    let library = Library::new("count");
+    let library = TemplateLibrary::new("count");
     let mut h = harness(&library);
 
     // Two maps; the texture set has no sheen, so only roughness is written
@@ -221,7 +209,7 @@ fn the_footer_counts_only_the_maps_the_texture_set_exports() {
 
 #[test]
 fn per_map_settings_follow_their_map_when_the_template_reorders_it() {
-    let library = Library::new("reorder");
+    let library = TemplateLibrary::new("reorder");
     let mut h = harness(&library);
 
     // The first texture set leaves out the template's first map
@@ -237,8 +225,8 @@ fn per_map_settings_follow_their_map_when_the_template_reorders_it() {
 }
 
 #[test]
-fn moves_under_an_unfinished_edit_are_forgotten_when_the_template_is_saved_elsewhere() {
-    let library = Library::new("stale");
+fn a_draft_in_the_same_order_as_the_external_save_remaps_from_that_order() {
+    let library = TemplateLibrary::new("stale");
     let mut h = harness(&library);
     let off = MapExport { enabled: false, file_type: None };
     h.state_mut().ui.export.sets.insert(0, SetExport { maps_template: "Mine".into(), maps: [(0, off.clone())].into(), ..SetExport::default() });
@@ -258,8 +246,7 @@ fn moves_under_an_unfinished_edit_are_forgotten_when_the_template_is_saved_elsew
     h.state_mut().run("export.preset.save", json!({ "preset": agent })).unwrap();
     h.run_steps(2);
 
-    // The edit is finished (the "Not saved" line goes, so the buttons move first) and the first map
-    // moved down once more: the override at 0 moves to 1
+    // Stabilize the layout after fixing the draft so the next click hits the move button
     h.state_mut().ui.export.draft.as_mut().unwrap().maps[last].file = saved.maps[last].file.clone();
     h.run_steps(2);
     h.get_all_by_label("Move down").next().unwrap().click();
@@ -268,4 +255,32 @@ fn moves_under_an_unfinished_edit_are_forgotten_when_the_template_is_saved_elsew
     assert_eq!(now.maps[1].file, saved.maps[1].file, "{:?}", now.maps.iter().map(|m| &m.file).collect::<Vec<_>>());
     let maps = h.state().ui.export.sets.get(&0).map(|o| o.maps.clone()).unwrap_or_default();
     assert_eq!(maps, [(1, off)].into(), "counted from the agent's order, not the edit's old base");
+}
+
+#[test]
+fn a_retained_draft_keeps_overrides_with_maps_after_an_external_reorder() {
+    let library = TemplateLibrary::new("different-external-order");
+    let mut harness = harness(&library);
+    let saved = harness.state().session.export_preset("Mine").unwrap();
+    harness.state_mut().ui.export.draft.as_mut().unwrap().maps[0].file.clear();
+
+    let mut external = saved.clone();
+    external.maps.swap(0, 1);
+    harness.state_mut().run("export.preset.save", json!({"preset": external})).unwrap();
+    let disabled = MapExport { enabled: false, file_type: None };
+    harness.state_mut().ui.export.sets.insert(0, SetExport { maps_template: "Mine".into(), maps: [(0, disabled.clone())].into(), ..SetExport::default() });
+    harness.run_steps(3);
+
+    // Repair the invalid first filename through the editor so the draft commits on that frame
+    let first_row = harness.get_all_by_label("Move down").next().unwrap().rect().center().y;
+    harness
+        .get_all_by_role(egui::Role::TextInput)
+        .find(|field| (field.rect().center().y - first_row).abs() < 4.0)
+        .unwrap()
+        .set_text_value_accesskit(&saved.maps[0].file);
+    harness.run_steps(4);
+
+    let current = harness.state().session.export_preset("Mine").unwrap();
+    assert_eq!(current, saved, "the corrected draft was saved in its own order");
+    assert_eq!(harness.state().ui.export.sets[&0].maps, [(1, disabled)].into());
 }

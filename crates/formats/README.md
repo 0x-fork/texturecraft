@@ -85,7 +85,8 @@ pub fn preset_to_json(preset: &ExportPreset) -> Result<String>;
   normal format), `Virtual { map, component }` (`NormalOpenGl`, `NormalDirectX`, `Glossiness` =
   1 − roughness, `AoMixed` = baked AO × AO channel, `F0` = 0.08 × specular level),
   `Baked { map, component }`, `Constant(f32)`.
-- `ExportOptions { preset, format_override, bit_depth_override, padding, size, normal_format }`;
+- `ExportOptions::new(preset)` accepts format and bit-depth overrides, per-map settings in
+  `maps`, dithering, padding, size and normal format.
   `Padding::{None, Dilation(n), DilationDefault(n), DilationDiffusion(n), Infinite}`; `size` must be a power of two
   (box filter down, bilinear up).
 - File templates: `$project`, `$mesh`, `$textureSet`, `$channel`, `$colorSpace`; names are

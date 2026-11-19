@@ -46,6 +46,7 @@ fn the_rows_show_each_map_with_its_pattern_and_file_type() {
     let mut h = harness();
     let rows = plan(&mut h).len();
     assert!(h.query_by_label("Output maps").is_some());
+
     // Four rows of General Export Parameters, then one per map
     assert_eq!(h.get_all_by_label("Enable override").count(), 4 + rows);
     assert!(h.query_all_by_label("png   8 bits").next().is_some());
@@ -103,10 +104,10 @@ fn a_map_override_sets_its_own_file_type_and_marks_the_set() {
     assert!(h.query_by_label("*").is_some(), "the set is marked");
 
     click(&mut h, egui_phosphor::regular::LIST_CHECKS);
-    click(&mut h, "Enable override for all items");
+    click(&mut h, "Override every item");
     assert_eq!(maps(&h).values().filter(|m| m.file_type.is_some()).count(), rows);
     click(&mut h, egui_phosphor::regular::LIST_CHECKS);
-    click(&mut h, "Disable override for all items");
+    click(&mut h, "Clear all overrides");
     assert!(maps(&h).is_empty());
 }
 
@@ -131,6 +132,7 @@ fn export_writes_a_map_with_its_own_file_type() {
         if h.state().ui.export.job.is_none() {
             break;
         }
+
         h.run_steps(1);
     }
     h.run_steps(2);

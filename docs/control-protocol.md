@@ -40,18 +40,18 @@ result is `{files}`. A layer without an enabled mask is an error. The layer menu
 file runs it; Copy mask to clipboard puts the same mask on the system clipboard as an 8-bit
 grayscale image (the whole tile atlas for a UV-tiled set).
 
-`file.exportTextures` and `export.plan` take `maps: [{map, enabled?, format?, bitDepth?}]`: per
-map of the template (`map` is its index in the template's maps) its own file type and bit depth,
-which win over the export's `format` and `bitDepth`, or `enabled: false` to leave it out. A
-left-out map keeps its file name reserved, so the other maps keep theirs. A file named
-like one an earlier texture set of the same export writes (ignoring case) is left out with a
-warning instead of replacing it, in `file.exportTextures`, the automation `textures.export` and
-the browser download. The Export textures
-window's Output maps rows send it. `format` takes the export window's names (`bmp`, `jpeg`, `jng`,
-`pgm`, `png`, `targa`, `tiff`, `hdr`, `exr`, `webp`, `psd`) or the extensions; `bitDepth` 32 is
-float for TIFF, EXR and HDR. `dithering: true` (also per map) dithers 8-bit integer files with
-an ordered pattern; `export.plan` reports it per file. `padding: "diffusion"` dilates `dilation`
-texels, then fills the rest with a smooth blend of the island colours.
+`file.exportTextures`, `export.plan`, the automation `textures.export` method and the MCP
+`textures_export` tool accept `maps: [{map, enabled?, format?, bitDepth?, dithering?}]`.
+Each entry overrides that map's export settings. The `map` field is its index in the selected
+template. `enabled: false` suppresses that file while reserving its name. When several texture
+sets produce the same name (ignoring case), programmatic and browser exports keep the first file
+and warn about later duplicates. The desktop export window reports the collision before writing.
+
+`format` accepts the export window's names (`bmp`, `jpeg`, `jng`, `pgm`, `png`, `targa`, `tiff`,
+`hdr`, `exr`, `webp`, `psd`) and their extensions. `bitDepth: 32` selects floating point for
+TIFF, EXR and HDR. `dithering: true` dithers 8-bit integer output with an ordered pattern, and
+`export.plan` reports the effective setting and per-file dimensions (`size` and `sourceSize`, both in pixels). `padding: "diffusion"` dilates by
+`dilation` texels and fills the remaining space with a smooth blend of the island colours.
 
 `effect.set {effect, filter: "blur", radius: 5}` replaces a filter in place, preserving its
 stack position, blend, opacity and visibility. Replacement filters start from defaults plus

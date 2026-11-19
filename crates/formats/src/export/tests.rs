@@ -964,6 +964,21 @@ fn psd_holds_the_merged_image_planar() {
 }
 
 #[test]
+fn psd_plan_rejects_a_version_one_atlas_over_its_dimension_limit() {
+    let mut fx = Fx::new(&default_channels());
+    fx.project.texture_sets[0].uv_tiles = vec![1001, 1002];
+    let mut options = one_map(FileFormat::Psd, 8, roughness());
+    options.size = Some(16_384);
+    options.atlas = true;
+
+    let error = list_outputs(&fx.project, 0, "sphere", &options).unwrap_err();
+
+    assert!(error.to_string().contains("PSD") && error.to_string().contains("32768"));
+    options.atlas = false;
+    assert_eq!(list_outputs(&fx.project, 0, "sphere", &options).unwrap().len(), 2);
+}
+
+#[test]
 fn jng_has_jpeg_colour_and_lossless_alpha() {
     use std::io::Read;
     let fx = Fx::new(&default_channels());
@@ -1038,7 +1053,7 @@ fn dithering_is_ordered_and_keeps_the_average() {
 #[test]
 fn diffusion_padding_fills_beyond_the_dilation_smoothly() {
     let mut fx = Fx::new(&default_channels());
-    fx.set_all(Channel::Roughness, |x, y| [if y < 32 { 0.2 } else { 0.8 } + 0.0 * x as f32; 3]);
+    fx.set_all(Channel::Roughness, |_, y| [if y < RES / 2 { 0.2 } else { 0.8 }; 3]);
     fx.coverage = (0..RES * RES).map(|i| i % RES < 16).collect();
     let mut dil = one_map(FileFormat::Png, 16, roughness());
     dil.padding = Padding::Dilation(2);
@@ -1053,8 +1068,7 @@ fn diffusion_padding_fills_beyond_the_dilation_smoothly() {
         assert_eq!(a.get_pixel(40, y)[0], 0, "plain dilation leaves the rest empty");
     }
 
-    // Beyond the ring every texel takes a blend of the island colours: next to it its own
-    // row's colour, far away their mix
+    // Near the island the fill favours its row colour and blends farther away
     let v = |x, y| f32::from(b.get_pixel(x, y)[0]) / 65535.0;
     assert!(v(19, 2) < 0.35 && v(19, 61) > 0.65, "{} {}", v(19, 2), v(19, 61));
     for y in 0..64 {

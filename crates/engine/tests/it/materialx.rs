@@ -114,6 +114,25 @@ fn sets_with_the_same_file_name_warn_instead_of_overwriting() {
 }
 
 #[test]
+fn a_material_never_points_at_a_texture_kept_for_another_set() {
+    let mut session = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+
+    // The first set's name expands to the same base-colour filename as the second
+    execute(&mut session, "textureSet.rename", &json!({"ts": 0, "name": "$channel"})).unwrap();
+    execute(&mut session, "textureSet.rename", &json!({"ts": 1, "name": "baseColor"})).unwrap();
+    let directory = temp("shared-map");
+
+    let result = export(&mut session, &directory, OPENPBR, true);
+
+    let materials: Vec<_> = files(&result).into_iter().filter(|path| path.ends_with(".mtlx")).collect();
+    assert!(materials.len() >= 2, "{result}");
+    assert!(std::fs::read_to_string(&materials[0]).unwrap().contains("material_ball_baseColor_base_color.png"));
+    for material in materials.iter().skip(1) {
+        assert!(!std::fs::read_to_string(material).unwrap().contains("material_ball_baseColor_base_color.png"), "{material}");
+    }
+}
+
+#[test]
 fn udim_sets_use_the_udim_token() {
     let mut s = Session::new_project("t", primitives::udim_plane(), "builtin:udim_plane", None, 128).unwrap();
     let dir = temp("udim");

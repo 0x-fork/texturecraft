@@ -85,6 +85,7 @@ impl FileDialogs {
             self.shown_folders.push(dir.to_path_buf());
             return Ok(());
         }
+
         let opener = if cfg!(target_os = "windows") {
             "explorer"
         } else if cfg!(target_os = "macos") {
@@ -92,11 +93,20 @@ impl FileDialogs {
         } else {
             "xdg-open"
         };
-        let mut child = std::process::Command::new(opener).arg(dir).spawn()?;
+        let directory = dir.to_path_buf();
+        let (started, result) = std::sync::mpsc::sync_channel(1);
 
-        // Reap the opener when it exits
-        std::thread::spawn(move || child.wait());
-        Ok(())
+        // Start the reaper first so a thread creation failure leaves no child behind
+        std::thread::Builder::new().spawn(move || match std::process::Command::new(opener).arg(directory).spawn() {
+            Ok(mut child) => {
+                let _ = started.send(Ok(()));
+                let _ = child.wait();
+            }
+            Err(error) => {
+                let _ = started.send(Err(error));
+            }
+        })?;
+        result.recv().map_err(std::io::Error::other)?
     }
 
     /// The folders an app without a window was asked to show.

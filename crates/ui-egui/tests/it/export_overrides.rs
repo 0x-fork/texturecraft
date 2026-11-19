@@ -8,7 +8,10 @@ use texturecraft_ui_egui::state::{ConsoleLine, FileType, SetExport};
 
 /// The Export textures window open on the first texture set's page
 fn harness() -> Harness<'static, TextureCraftApp> {
-    let session = texturecraft_engine::sample_session(256, 64).unwrap();
+    harness_with_session(texturecraft_engine::sample_session(256, 64).unwrap())
+}
+
+fn harness_with_session(session: texturecraft_engine::Session) -> Harness<'static, TextureCraftApp> {
     let mut h = Harness::builder().with_size(egui::vec2(1600.0, 960.0)).build_eframe(|cc| TextureCraftApp::new(cc, session));
     h.state_mut().ui.prefs.language = "en".into();
     h.run_steps(4);
@@ -91,17 +94,37 @@ fn an_override_turns_the_row_into_a_list_and_marks_the_set() {
 }
 
 #[test]
+fn enabling_size_override_preserves_mixed_udim_tile_sizes() {
+    use texturecraft_engine::{Session, execute, geom::primitives};
+
+    let mut session = Session::new_project("Export", primitives::udim_plane(), "builtin:udim_plane", None, 256).unwrap();
+    execute(&mut session, "textureSet.tile.resolution", &serde_json::json!({"tile": 1002, "resolution": 512})).unwrap();
+    let mut h = harness_with_session(session);
+    let expected = execute(&mut h.state_mut().session, "export.plan", &serde_json::json!({"ts": 0})).unwrap();
+
+    toggle(&mut h, 2);
+    let size = overrides(&h).size.unwrap();
+    let actual = execute(&mut h.state_mut().session, "export.plan", &serde_json::json!({"ts": 0, "size": size})).unwrap();
+
+    assert_eq!(size, 512);
+    assert_eq!(actual, expected);
+    assert!(h.get_all_by_role(egui::Role::ComboBox).any(|node| node.value().as_deref() == Some("512x512 (Texture Set size)")));
+}
+
+#[test]
 fn the_header_menu_switches_every_override() {
     let mut h = harness();
+
     // The set list has the same menu button; the page header's is the second
     page_menu(&mut h);
-    click(&mut h, "Enable override for all items");
+    click(&mut h, "Override every item");
     let o = overrides(&h);
     assert!(o.preset.is_some() && o.file_type.is_some() && o.size.is_some() && o.padding.is_some(), "{o:?}");
+
     // The default template writes 8- and 16-bit files: the override keeps them until a type is picked
     assert_eq!(o.file_type.unwrap().format, "");
     page_menu(&mut h);
-    click(&mut h, "Disable override for all items");
+    click(&mut h, "Clear all overrides");
     assert!(h.state().ui.export.sets.is_empty());
 }
 
@@ -130,10 +153,11 @@ fn export_writes_each_set_with_its_overrides_and_cancel_drops_them() {
         if h.state().ui.export.job.is_none() {
             break;
         }
+
         h.run_steps(1);
     }
     h.run_steps(2);
-    let finished = h.state().ui.export.console.iter().any(|l| matches!(l, ConsoleLine::Done(t) if t == "Export successfully finished"));
+    let finished = h.state().ui.export.console.iter().any(|l| matches!(l, ConsoleLine::Done(t) if t == "Texture export complete"));
     assert!(h.state().ui.export.job.is_none() && finished, "the export finished");
     let sets: Vec<String> = h.state().session.doc.project.texture_sets.iter().map(|t| format!("_{}_", t.name)).collect();
     let files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "png")).collect();

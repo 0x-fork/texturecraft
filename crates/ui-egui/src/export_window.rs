@@ -11,10 +11,15 @@ use crate::TextureCraftApp;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::file_dialogs::{Bound, FileDialog};
 use crate::i18n::{n_, tr, trf};
-use crate::state::{ConsoleLine, ExportUi, FileType, MapExport, SIZE_OF_LARGEST_SET, SetExport};
+use crate::state::{ConsoleLine, ExportSetPlan, ExportUi, FileType, MapExport, SIZE_OF_LARGEST_SET, SetExport};
 use crate::theme::{Tokens, caption};
 use crate::unavailable::NOT_AVAILABLE;
 use crate::widgets::{icon_button, primary_button};
+
+mod inherited_settings;
+mod map_row;
+use inherited_settings::InheritedSettings;
+use map_row::MapRow;
 
 /// Height of the window's tab body, above its buttons
 const BODY_HEIGHT: f32 = 440.0;
@@ -89,6 +94,7 @@ fn file_type_lists(ui: &mut Ui, id: (&str, usize, usize), from_template: bool, f
         (*bit_depth, *dithering) = (f.default_depth(), false);
     }
     let shown = if format.is_empty() { tr("Based on output template").to_string() } else { file_type_name(format) };
+
     // Tall enough for the whole list
     let list = egui::ComboBox::from_id_salt(("type", id)).width(if from_template { 166.0 } else { 90.0 }).height(f32::INFINITY);
     list.selected_text(shown).show_ui(ui, |ui| {
@@ -171,7 +177,7 @@ fn template_combo(ui: &mut Ui, id: &str, current: &mut String, first: &[(&str, b
                 ui.add_enabled(false, egui::Button::selectable(false, *name)).on_disabled_hover_text(tr(NOT_AVAILABLE));
             }
         }
-        ui.separator().on_hover_text(tr("This preset is not available for the current project"));
+        ui.separator().on_hover_text(tr("Some templates in this list are unavailable"));
         for name in rest {
             changed |= ui.selectable_value(current, name.clone(), name).on_hover_text(name).changed();
         }
@@ -212,6 +218,7 @@ fn start_export(app: &mut TextureCraftApp) {
     if selection.is_empty() {
         return;
     }
+
     let dir = app.ui.export.dir.clone();
     let pending: Vec<(usize, serde_json::Value)> = selection
         .into_iter()
@@ -219,7 +226,7 @@ fn start_export(app: &mut TextureCraftApp) {
             let mut p = set_params(app, ts);
             p["dir"] = json!(dir);
 
-            // The template itself, so editing it on OUTPUT TEMPLATES meanwhile changes nothing
+            // Capture the template so edits during export cannot change the files
             let preset = p.get("preset").and_then(serde_json::Value::as_str).and_then(|name| app.session.export_preset(name));
             if let Some(v) = preset.and_then(|t| serde_json::to_value(t).ok()) {
                 p["preset"] = v;
@@ -227,38 +234,47 @@ fn start_export(app: &mut TextureCraftApp) {
             (ts, p)
         })
         .collect();
-    let clash = name_clash(app, &pending);
+    let preview: Vec<_> = pending.iter().filter_map(|(index, params)| plan_set(app, *index, params)).collect();
+    let error = preview.iter().find_map(|plan| plan.files.as_ref().err().cloned()).or_else(|| name_clash(&preview));
     let e = &mut app.ui.export;
     e.tab = 2;
-    e.console = vec![ConsoleLine::Step(tr("Preparing export...").into())];
-    if let Some(error) = clash {
+    e.console = vec![ConsoleLine::Step(tr("Preparing texture export").into())];
+    if let Some(error) = error {
         e.console.push(ConsoleLine::Step(error.clone()));
         app.toast(error, true);
         return;
     }
-    e.job = Some(crate::state::ExportJob { total: pending.len(), pending, written: Vec::new(), frame: 0 });
+
+    e.job = Some(crate::state::ExportJob { total: pending.len(), pending, preview, directory: dir, written: Vec::new(), frame: 0 });
 }
 
 /// Two texture sets that would write a file of the same name (ignoring case, as Windows and macOS
 /// do): the later one would replace the earlier one's file, so the export does not start.
 #[cfg(not(target_arch = "wasm32"))]
-fn name_clash(app: &mut TextureCraftApp, pending: &[(usize, serde_json::Value)]) -> Option<String> {
-    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for (ts, params) in pending {
-        // A plan that fails stops the export at that set with its own error
-        let Ok(plan) = texturecraft_engine::execute(&mut app.session, "export.plan", params) else { continue };
-        for file in plan.as_array().into_iter().flatten().filter_map(|f| f.get("file").and_then(serde_json::Value::as_str)) {
-            let first = *seen.entry(file.to_ascii_lowercase()).or_insert(*ts);
-            if first != *ts {
-                let name = |i: usize| app.session.doc.project.texture_sets.get(i).map(|t| t.name.clone()).unwrap_or_default();
+fn name_clash(preview: &[ExportSetPlan]) -> Option<String> {
+    let mut seen = std::collections::HashMap::new();
+    for (index, set) in preview.iter().enumerate() {
+        let Ok(files) = &set.files else { continue };
+        for file in planned_names(files) {
+            let (first_index, first_name) = *seen.entry(file.to_ascii_lowercase()).or_insert((index, &set.name));
+            if first_index != index {
                 return Some(trf(
                     "Texture sets {first} and {second} both export {file}: add $textureSet to the template's file names or rename a texture set",
-                    &[("first", &name(first)), ("second", &name(*ts)), ("file", &file)],
+                    &[("first", first_name), ("second", &set.name), ("file", &file)],
                 ));
             }
         }
     }
     None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn planned_names(plan: &serde_json::Value) -> impl Iterator<Item = &str> {
+    plan.as_array().into_iter().flatten().filter_map(|file| file.get("file").and_then(serde_json::Value::as_str))
+}
+
+fn planned_file_shapes(plan: &serde_json::Value) -> impl Iterator<Item = (&serde_json::Value, &serde_json::Value)> {
+    plan.as_array().into_iter().flatten().map(|file| (&file["file"], &file["size"]))
 }
 
 /// In the browser the textures download (one zip for several files).
@@ -275,46 +291,61 @@ fn export_step(app: &mut TextureCraftApp, frame: u64) {
     if job.frame == frame {
         return;
     }
+
     job.frame = frame;
     if job.pending.is_empty() {
         let written = std::mem::take(&mut job.written);
         let mut lines = vec![
-            ConsoleLine::Step(tr("Bitmaps write finalization...").into()),
-            ConsoleLine::Step(tr("Finalizing export...").into()),
-            ConsoleLine::Done(tr("Export successfully finished").into()),
-            ConsoleLine::Done(tr("Successfully exported:").into()),
+            ConsoleLine::Step(tr("All selected texture sets processed").into()),
+            ConsoleLine::Step(tr("Collecting the exported files").into()),
+            ConsoleLine::Done(tr("Texture export complete").into()),
+            ConsoleLine::Done(tr("Files saved").into()),
         ];
         lines.extend(written.into_iter().map(ConsoleLine::Done));
         app.ui.export.console.extend(lines);
         app.ui.export.job = None;
         return;
     }
-    let (ts, mut p) = job.pending.remove(0);
-    let name = app.session.doc.project.texture_sets.get(ts).map(|t| t.name.clone()).unwrap_or_default();
-    let set = || ConsoleLine::Set(name.clone());
-    app.ui.export.console.extend([set(), set(), ConsoleLine::Step(tr("Computing textures results").into())]);
 
-    // The settings taken at Export; the set's index may have moved since
-    p["ts"] = json!(ts);
-    let Some(r) = app.run("file.exportTextures", p) else {
+    let (set_index, mut params) = job.pending.remove(0);
+    let name = app.session.doc.project.texture_sets.get(set_index).map(|t| t.name.clone()).unwrap_or_default();
+
+    // Project edits can invalidate the frozen filenames or output sizes
+    params["ts"] = json!(set_index);
+    if let Some(Ok(initial)) = job.preview.iter().find(|plan| plan.index == Some(set_index)).map(|plan| &plan.files) {
+        let current = texturecraft_engine::execute(&mut app.session, "export.plan", &params);
+        if !current.is_ok_and(|current| planned_file_shapes(&current).eq(planned_file_shapes(initial))) {
+            let error = trf("Export stopped: the planned files for {set} changed", &[("set", &name)]);
+            app.ui.export.job = None;
+            app.ui.export.console.push(ConsoleLine::Step(error.clone()));
+            app.toast(error, true);
+            return;
+        }
+    }
+
+    let set = || ConsoleLine::Set(name.clone());
+    app.ui.export.console.extend([set(), set(), ConsoleLine::Step(tr("Rendering the selected maps").into())]);
+
+    let Some(response) = app.run("file.exportTextures", params) else {
         app.ui.export.job = None;
         return;
     };
-    let files: Vec<String> = r
+
+    let files: Vec<String> = response
         .get("files")
-        .and_then(|f| f.as_array())
+        .and_then(|file| file.as_array())
         .into_iter()
         .flatten()
-        .filter_map(|f| f.as_str())
-        .map(|f| std::path::Path::new(f).file_name().map_or_else(|| f.to_string(), |n| n.to_string_lossy().into_owned()))
+        .filter_map(|file| file.as_str())
+        .map(|file| std::path::Path::new(file).file_name().map_or_else(|| file.to_string(), |n| n.to_string_lossy().into_owned()))
         .collect();
-    let mut lines = vec![set(), ConsoleLine::Step(tr("Preparing textures writing").into())];
-    for f in &files {
-        let stem = f.rsplit_once('.').map_or(f.as_str(), |(stem, _)| stem);
+    let mut lines = vec![set(), ConsoleLine::Step(tr("Saving texture files").into())];
+    for file in &files {
+        let stem = file.rsplit_once('.').map_or(file.as_str(), |(stem, _)| stem);
         lines.push(set());
-        lines.push(ConsoleLine::Step(trf("Writing {file} texture on disk", &[("file", &stem)])));
+        lines.push(ConsoleLine::Step(trf("Saved texture {file}", &[("file", &stem)])));
     }
-    lines.extend([set(), ConsoleLine::Step(tr("Finalizing textures writing").into())]);
+    lines.extend([set(), ConsoleLine::Step(tr("Finished writing this texture set").into())]);
     app.ui.export.console.extend(lines);
     if let Some(job) = app.ui.export.job.as_mut() {
         job.written.extend(files);
@@ -347,55 +378,58 @@ pub(crate) fn export_params(app: &TextureCraftApp) -> serde_json::Value {
 }
 
 /// The parameters exporting texture set `ts`: the global settings with the set's overrides
-pub(crate) fn set_params(app: &TextureCraftApp, ts: usize) -> serde_json::Value {
-    let mut p = export_params(app);
-    p["ts"] = json!(ts);
-    let Some(o) = app.ui.export.sets.get(&ts) else { return p };
-    if let Some(preset) = &o.preset {
-        p["preset"] = json!(preset);
+pub(crate) fn set_params(app: &TextureCraftApp, set_index: usize) -> serde_json::Value {
+    let mut params = export_params(app);
+    params["ts"] = json!(set_index);
+    let Some(overrides) = app.ui.export.sets.get(&set_index) else { return params };
+
+    if let Some(preset) = &overrides.preset {
+        params["preset"] = json!(preset);
     }
-    // An empty file type keeps the template's, whatever the global one
-    match &o.file_type {
-        Some(t) if t.format.is_empty() => {
-            if let Some(p) = p.as_object_mut() {
+
+    // An empty override inherits the template's file type
+    match &overrides.file_type {
+        Some(file_type) if file_type.format.is_empty() => {
+            if let Some(params) = params.as_object_mut() {
                 for key in ["format", "bitDepth", "dithering"] {
-                    p.remove(key);
+                    params.remove(key);
                 }
             }
         }
-        Some(t) => {
-            p["format"] = json!(t.format);
-            p["bitDepth"] = json!(t.bit_depth);
-            p["dithering"] = json!(t.dithering);
+        Some(file_type) => {
+            params["format"] = json!(file_type.format);
+            params["bitDepth"] = json!(file_type.bit_depth);
+            params["dithering"] = json!(file_type.dithering);
         }
         None => {}
     }
-    if let Some(size) = o.size {
-        p["size"] = json!(size);
+    if let Some(size) = overrides.size {
+        params["size"] = json!(size);
     }
-    if let Some((padding, dilation)) = &o.padding {
-        p["padding"] = json!(padding);
-        p["dilation"] = json!(dilation);
+    if let Some((padding, dilation)) = &overrides.padding {
+        params["padding"] = json!(padding);
+        params["dilation"] = json!(dilation);
     }
-    // Entries past the template's maps (it lost some since) are left out
-    let count = app.session.export_preset(&o.maps_template).map_or(0, |t| t.maps.len());
-    if !o.maps.is_empty() && p.get("preset").and_then(serde_json::Value::as_str) == Some(o.maps_template.as_str()) {
-        p["maps"] = o
+
+    // Ignore stale indices when a template loses maps
+    if !overrides.maps.is_empty() && params.get("preset").and_then(serde_json::Value::as_str) == Some(overrides.maps_template.as_str()) {
+        let map_count = app.session.export_preset(&overrides.maps_template).map_or(0, |preset| preset.maps.len());
+        params["maps"] = overrides
             .maps
             .iter()
-            .filter(|(i, _)| **i < count)
-            .map(|(i, m)| {
-                let mut v = json!({"map": i, "enabled": m.enabled});
-                if let Some(t) = &m.file_type {
-                    v["format"] = json!(t.format);
-                    v["bitDepth"] = json!(t.bit_depth);
-                    v["dithering"] = json!(t.dithering);
+            .filter(|(map_index, _)| **map_index < map_count)
+            .map(|(map_index, map)| {
+                let mut settings = json!({"map": map_index, "enabled": map.enabled});
+                if let Some(file_type) = &map.file_type {
+                    settings["format"] = json!(file_type.format);
+                    settings["bitDepth"] = json!(file_type.bit_depth);
+                    settings["dithering"] = json!(file_type.dithering);
                 }
-                v
+                settings
             })
             .collect();
     }
-    p
+    params
 }
 
 /// The template texture set `ts` exports with
@@ -415,14 +449,6 @@ fn file_type_text(t: &FileType) -> String {
     format!("{}   {}", file_type_name(&t.format), depth_label(FileFormat::from_extension(&t.format), t.bit_depth, t.dithering))
 }
 
-/// One Output maps row: the map, its file name pattern and what it is written as without its
-/// own override
-struct MapRow {
-    map: usize,
-    pattern: String,
-    inherited: FileType,
-}
-
 /// The rows of texture set `ts`'s Output maps: the template's maps the set has sources for
 fn map_rows(app: &mut TextureCraftApp, ts: usize) -> Vec<MapRow> {
     let mut p = set_params(app, ts);
@@ -437,6 +463,7 @@ fn map_rows(app: &mut TextureCraftApp, ts: usize) -> Vec<MapRow> {
         if rows.iter().any(|r| r.map == map) {
             continue;
         }
+
         let format = f.get("format").and_then(serde_json::Value::as_str).unwrap_or("png").to_string();
         let bit_depth = f.get("bitDepth").and_then(serde_json::Value::as_u64).unwrap_or(8) as u8;
         let dithering = f.get("dithering").and_then(serde_json::Value::as_bool).unwrap_or(false);
@@ -464,7 +491,7 @@ fn output_maps(app: &mut TextureCraftApp, ui: &mut Ui, ts: usize) {
                 }
             }
             ui.separator();
-            for (i, label) in [tr("Enable override for all items"), tr("Disable override for all items")].into_iter().enumerate() {
+            for (i, label) in [tr("Override every item"), tr("Clear all overrides")].into_iter().enumerate() {
                 if ui.button(label).clicked() {
                     menu = Some(3 + i);
                 }
@@ -505,15 +532,15 @@ fn output_maps(app: &mut TextureCraftApp, ui: &mut Ui, ts: usize) {
     o.maps.retain(|_, m| *m != MapExport::default());
 }
 
-/// The files the export writes for the ticked texture sets, set by set (an error stops the list)
-fn planned_files(app: &mut TextureCraftApp) -> Result<Vec<serde_json::Value>, String> {
-    let mut files = Vec::new();
+/// Count the files planned across all selected texture sets.
+fn selected_texture_count(app: &mut TextureCraftApp) -> usize {
+    let mut count = 0;
     for ts in export_selection(app) {
         let params = set_params(app, ts);
-        let plan = texturecraft_engine::execute(&mut app.session, "export.plan", &params).map_err(|e| e.to_string())?;
-        files.extend(plan.as_array().into_iter().flatten().cloned());
+        let Ok(plan) = texturecraft_engine::execute(&mut app.session, "export.plan", &params) else { return 0 };
+        count += plan.as_array().map_or(0, Vec::len);
     }
-    Ok(files)
+    count
 }
 
 /// A header with a menu or tool at its right end
@@ -570,6 +597,7 @@ fn output_directory(app: &mut TextureCraftApp, ui: &mut Ui) {
 /// have a width)
 fn dilation_button(ui: &mut Ui, padding: &str, dilation: &mut u32) {
     let enabled = has_width(padding);
+
     // The menu stays open while the slider is used
     let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
     let r = ui.add_enabled_ui(enabled, |ui| {
@@ -581,7 +609,7 @@ fn dilation_button(ui: &mut Ui, padding: &str, dilation: &mut u32) {
     if enabled {
         r.response.on_hover_text(tr("Dilation in pixels"));
     } else {
-        r.response.on_disabled_hover_text(tr("Dilation cannot be applied to selected padding type"));
+        r.response.on_disabled_hover_text(tr("This padding mode does not use a dilation width"));
     }
 }
 
@@ -598,7 +626,7 @@ fn unavailable_checkbox(ui: &mut Ui, label: &str, tooltip: &str) {
 fn global_page(app: &mut TextureCraftApp, ui: &mut Ui, builtins: &[ExportPreset]) {
     let mut reset = false;
     header(ui, tr("General Export Parameters"), |ui| {
-        reset = icon_button(ui, ic::ARROW_COUNTER_CLOCKWISE, tr("Resets all settings to default values"), false, ICON).clicked();
+        reset = icon_button(ui, ic::ARROW_COUNTER_CLOCKWISE, tr("Restore the default export parameters"), false, ICON).clicked();
     });
     if reset {
         let d = ExportUi::default();
@@ -647,13 +675,9 @@ fn global_page(app: &mut TextureCraftApp, ui: &mut Ui, builtins: &[ExportPreset]
         ui.end_row();
     });
 
-    // The reference's two switches; TextureCraft's own normal map and colour space overrides follow them
-    unavailable_checkbox(
-        ui,
-        tr("Export USD asset"),
-        tr("Export USD files hierarchy with material and textures. References the original mesh if possible, exports the mesh otherwise"),
-    );
-    unavailable_checkbox(ui, tr("Export shaders parameters"), tr("Exports a JSON file with the settings for all shader instances"));
+    // Unavailable export controls stay disabled
+    unavailable_checkbox(ui, tr("Export USD asset"), tr("Package the mesh, materials and textures together as USD"));
+    unavailable_checkbox(ui, tr("Export shader settings"), tr("Save the settings of each shader instance in a JSON file"));
     ui.add_space(8.0);
     egui::Grid::new("exp_grid_more").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
         let e = &mut app.ui.export;
@@ -739,31 +763,6 @@ fn override_row(ui: &mut Ui, label: &str, on: bool, inherited: &str, edit: impl 
     toggled
 }
 
-/// What texture set `ts` inherits from the global settings, as override starting points
-struct Inherited {
-    preset: String,
-    file_type: FileType,
-    size: u32,
-    padding: (String, u32),
-}
-
-fn inherited(app: &TextureCraftApp, ts: usize) -> Inherited {
-    let e = &app.ui.export;
-    let own = app.session.doc.project.texture_sets.get(ts).map_or(1024, |t| t.resolution);
-    let format = if e.format.is_empty() { FileFormat::Png.name().to_string() } else { file_type_name(&e.format) };
-    let (bit_depth, dithering) = match FileFormat::from_extension(&format) {
-        Some(f) if e.bit_depth > 0 => (f.depth(e.bit_depth), e.dithering),
-        Some(f) => (f.default_depth(), false),
-        None => (8, false),
-    };
-    let size = match e.size {
-        0 => own,
-        SIZE_OF_LARGEST_SET => largest_set(app),
-        n => n,
-    };
-    Inherited { preset: e.preset.clone(), file_type: FileType { format, bit_depth, dithering }, size, padding: (e.padding.clone(), e.dilation) }
-}
-
 /// The file type texture set `ts` gets from its output template: the one its maps share, or an
 /// empty one when they differ (the override keeps the template's file types until one is picked)
 fn template_file_type(app: &mut TextureCraftApp, ts: usize) -> FileType {
@@ -775,7 +774,7 @@ fn template_file_type(app: &mut TextureCraftApp, ts: usize) -> FileType {
 }
 
 /// Switch one override of `o` on (from what the set inherits) or off
-fn toggle(o: &mut SetExport, row: usize, from: &Inherited) {
+fn toggle(o: &mut SetExport, row: usize, from: &InheritedSettings) {
     match row {
         0 => o.preset = if o.preset.is_some() { None } else { Some(from.preset.clone()) },
         1 => o.file_type = if o.file_type.is_some() { None } else { Some(from.file_type.clone()) },
@@ -791,13 +790,14 @@ fn file_type_combo(ui: &mut Ui, id: (&str, usize, usize), t: &mut FileType) {
 
 /// A texture set's page: its overrides of the global settings
 fn set_page(app: &mut TextureCraftApp, ui: &mut Ui, ts: usize, builtins: &[ExportPreset]) {
-    let mut from = inherited(app, ts);
+    let Some(set) = app.session.doc.project.texture_sets.get(ts) else { return };
+    let own = set.block_resolution();
+    let mut from = InheritedSettings::for_texture_set(app, own);
 
     // "Based on output template": the override starts from what the template writes
     if app.ui.export.format.is_empty() && app.ui.export.sets.get(&ts).is_none_or(|o| o.file_type.is_none()) {
         from.file_type = template_file_type(app, ts);
     }
-    let own = app.session.doc.project.texture_sets.get(ts).map_or(1024, |t| t.resolution);
     let (first, rest) = template_groups(app, builtins);
     let first: Vec<(&str, bool)> = first.into_iter().filter(|(n, _)| !NOT_PER_SET.contains(n)).collect();
     let global = &app.ui.export;
@@ -812,10 +812,10 @@ fn set_page(app: &mut TextureCraftApp, ui: &mut Ui, ts: usize, builtins: &[Expor
     let mut all = None;
     header(ui, tr("General Export Parameters"), |ui| {
         list_menu(ui, |ui| {
-            if ui.button(tr("Enable override for all items")).clicked() {
+            if ui.button(tr("Override every item")).clicked() {
                 all = Some(true);
             }
-            if ui.button(tr("Disable override for all items")).clicked() {
+            if ui.button(tr("Clear all overrides")).clicked() {
                 all = Some(false);
             }
             ui.separator();
@@ -943,9 +943,9 @@ fn list_tab(app: &mut TextureCraftApp, ui: &mut Ui) {
     }
 }
 
-/// "Exporting texture set <name>..." with the name in bold
+/// "Texture set <name>" with the name in bold
 fn set_line(ui: &Ui, name: &str, tk: &Tokens) -> egui::text::LayoutJob {
-    let text = tr("Exporting texture set {set}...");
+    let text = tr("Texture set {set}");
     let (before, after) = text.split_once("{set}").unwrap_or((text, ""));
     let font = egui::TextStyle::Body.resolve(ui.style());
     let plain = egui::TextFormat::simple(font.clone(), tk.text);
@@ -958,48 +958,66 @@ fn set_line(ui: &Ui, name: &str, tk: &Tokens) -> egui::text::LayoutJob {
 
 /// One expandable node per ticked texture set, a row per file
 fn export_tree(app: &mut TextureCraftApp, ui: &mut Ui, tk: &Tokens) {
+    if let Some(job) = &app.ui.export.job
+        && !job.preview.is_empty()
+    {
+        for (index, set) in job.preview.iter().enumerate() {
+            export_tree_set(ui, index, set, &job.directory, tk);
+        }
+        return;
+    }
+
     for ts in export_selection(app) {
         let params = set_params(app, ts);
-        let Some(set) = app.session.doc.project.texture_sets.get(ts) else { continue };
-        let (name, own) = (set.name.clone(), set.resolution);
-        let size = params.get("size").and_then(serde_json::Value::as_u64).map_or(own, |s| s as u32);
-        let plan = texturecraft_engine::execute(&mut app.session, "export.plan", &params);
-        egui::CollapsingHeader::new(&name).id_salt(("exp_tree", ts)).default_open(true).show(ui, |ui| match plan {
-            Ok(files) => {
-                egui::Grid::new(("exp_tree_grid", ts)).num_columns(4).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
-                    for f in files.as_array().into_iter().flatten() {
-                        let file = f.get("file").and_then(serde_json::Value::as_str).unwrap_or_default();
-                        let format = FileFormat::from_extension(f.get("format").and_then(serde_json::Value::as_str).unwrap_or_default());
-                        let depth = f.get("bitDepth").and_then(serde_json::Value::as_u64).unwrap_or(8) as u8;
-                        let dithering = f.get("dithering").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                        let path = std::path::Path::new(&app.ui.export.dir).join(file).display().to_string();
-                        ui.label(file).on_hover_text(&path);
-                        ui.label(set_size_label(size, own)).on_hover_text(&path);
-                        ui.label(format.map_or("", FileFormat::name)).on_hover_text(&path);
-                        ui.label(depth_label(format, depth, dithering)).on_hover_text(&path);
-                        ui.end_row();
-                    }
-                });
-            }
-            Err(e) => {
-                ui.label(RichText::new(e.to_string()).color(tk.danger));
-            }
-        });
+        if let Some(set) = plan_set(app, ts, &params) {
+            export_tree_set(ui, ts, &set, &app.ui.export.dir, tk);
+        }
     }
+}
+
+fn plan_set(app: &mut TextureCraftApp, index: usize, params: &serde_json::Value) -> Option<ExportSetPlan> {
+    let set = app.session.doc.project.texture_sets.get(index)?;
+    let name = set.name.clone();
+    let files = texturecraft_engine::execute(&mut app.session, "export.plan", params).map_err(|error| error.to_string());
+
+    Some(ExportSetPlan { index: Some(index), name, files })
+}
+
+fn export_tree_set(ui: &mut Ui, index: usize, set: &ExportSetPlan, directory: &str, tokens: &Tokens) {
+    egui::CollapsingHeader::new(&set.name).id_salt(("exp_tree", index)).default_open(true).show(ui, |ui| match &set.files {
+        Ok(files) => {
+            egui::Grid::new(("exp_tree_grid", index)).num_columns(4).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
+                for output in files.as_array().into_iter().flatten() {
+                    let file = output.get("file").and_then(serde_json::Value::as_str).unwrap_or_default();
+                    let format = FileFormat::from_extension(output.get("format").and_then(serde_json::Value::as_str).unwrap_or_default());
+                    let depth = output.get("bitDepth").and_then(serde_json::Value::as_u64).unwrap_or(8) as u8;
+                    let dithering = output.get("dithering").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                    let size = output["size"].as_u64().unwrap_or_default() as u32;
+                    let source_size = output["sourceSize"].as_u64().unwrap_or_default() as u32;
+                    let path = std::path::Path::new(directory).join(file).display().to_string();
+                    ui.label(file).on_hover_text(&path);
+                    ui.label(set_size_label(size, source_size)).on_hover_text(&path);
+                    ui.label(format.map_or("", FileFormat::name)).on_hover_text(&path);
+                    ui.label(depth_label(format, depth, dithering)).on_hover_text(&path);
+                    ui.end_row();
+                }
+            });
+        }
+        Err(error) => {
+            ui.label(RichText::new(error).color(tokens.danger));
+        }
+    });
 }
 
 /// Show the output folder in the system's file manager (created first when missing)
 #[cfg(not(target_arch = "wasm32"))]
 fn open_output_directory(app: &mut TextureCraftApp) {
-    let dir = std::path::PathBuf::from(&app.ui.export.dir);
+    let settings = &app.ui.export;
+    let directory = settings.job.as_ref().filter(|job| !job.preview.is_empty()).map_or(&settings.dir, |job| &job.directory);
+    let dir = std::path::PathBuf::from(directory);
     if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| app.file_dialogs.show_folder(&dir)) {
         app.toast(trf("Could not open {folder}: {error}", &[("folder", &dir.display()), ("error", &e)]), true);
     }
-}
-
-/// How many files the export writes for the ticked texture sets
-fn selected_texture_count(app: &mut TextureCraftApp) -> usize {
-    planned_files(app).map_or(0, |files| files.len())
 }
 
 /// Keep the texture set ticks and overrides with their texture sets: dropped for another project,
@@ -1007,28 +1025,47 @@ fn selected_texture_count(app: &mut TextureCraftApp) -> usize {
 /// texture sets the same way; another project stops it.
 fn follow_texture_sets(app: &mut TextureCraftApp) {
     let project = &app.session.doc.project;
-    let mut owner = vec![project.name.clone()];
-    owner.extend(project.texture_sets.iter().map(|t| t.name.clone()));
+    let owner_names = || std::iter::once(project.name.as_str()).chain(project.texture_sets.iter().map(|set| set.name.as_str()));
     let id = app.session.project_id;
     let e = &mut app.ui.export;
-    if e.owner == owner && e.owner_id == Some(id) {
+    if e.owner_id == Some(id) && e.owner.iter().map(String::as_str).eq(owner_names()) {
         return;
     }
 
-    // Settings saved before they named their project keep their ticks and overrides (when the
-    // window opens; Reset all keeps the owner)
+    let owner: Vec<String> = owner_names().map(str::to_owned).collect();
+
+    // Legacy settings adopt the first project without discarding saved exclusions
     if e.owner.is_empty() && e.opened_with.is_none() {
         e.owner = owner;
         e.owner_id = Some(id);
         return;
     }
+
     let same_project = match e.owner_id {
         Some(was) => was == id,
         None => e.owner.first() == owner.first(),
     };
     let names = owner.get(1..).unwrap_or_default();
-    let old = e.owner.get(1..).unwrap_or_default().to_vec();
-    let moved = |i: usize| -> Option<usize> { if same_project { old.get(i).and_then(|n| names.iter().position(|x| x == n)) } else { None } };
+    let old = e.owner.get(1..).unwrap_or_default();
+    let new_indices: Vec<Option<usize>> = old
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            if !same_project {
+                return None;
+            }
+
+            // When names repeat, a name alone cannot identify a moved set
+            if old.iter().filter(|other| *other == name).nth(1).is_some() {
+                return (names.get(index) == Some(name)).then_some(index);
+            }
+
+            let mut matches = names.iter().enumerate().filter(|(_, other)| *other == name);
+            let (new_index, _) = matches.next()?;
+            if matches.next().is_none() { Some(new_index) } else { (names.get(index) == Some(name)).then_some(index) }
+        })
+        .collect();
+    let moved = |index: usize| new_indices.get(index).copied().flatten();
     let follow = |e: &mut ExportUi| {
         e.sets = std::mem::take(&mut e.sets).into_iter().filter_map(|(i, o)| moved(i).map(|j| (j, o))).collect();
         e.skip = e.skip.iter().filter_map(|i| moved(*i)).collect();
@@ -1043,6 +1080,9 @@ fn follow_texture_sets(app: &mut TextureCraftApp) {
         if same_project {
             let queued = job.pending.len();
             job.pending = std::mem::take(&mut job.pending).into_iter().filter_map(|(i, p)| moved(i).map(|j| (j, p))).collect();
+            for set in &mut job.preview {
+                set.index = set.index.and_then(moved);
+            }
 
             // Removed sets leave the count too, so the bar keeps its pace
             job.total -= queued - job.pending.len();
@@ -1178,7 +1218,7 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 }
             }
 
-            // LIST OF EXPORTS opens the output folder instead; the other tabs tick every texture set again
+            // The file list opens the destination folder
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if app.ui.export.tab == 2 {
                     // The browser downloads the files instead
@@ -1188,7 +1228,7 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                     if ui.button(tr("Open output directory")).clicked() {
                         open_output_directory(app);
                     }
-                } else if ui.button(tr("Include all")).on_hover_text(tr("Includes all Texture Sets, UV Tiles and output maps.")).clicked() {
+                } else if ui.button(tr("Include all")).on_hover_text(tr("Select every texture set, UV tile and output map")).clicked() {
                     app.ui.export.skip.clear();
                     for o in app.ui.export.sets.values_mut() {
                         o.maps.values_mut().for_each(|m| m.enabled = true);
@@ -1224,6 +1264,7 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         });
         ui.add_space(8.0);
         ui.separator();
+
         // While exporting: the progress and Cancel Export
         if let Some(job) = &app.ui.export.job {
             let done = job.total - job.pending.len();
@@ -1239,13 +1280,12 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             });
             return;
         }
+
         let selected = selected_texture_count(app);
         ui.horizontal(|ui| {
             // Not on LIST OF EXPORTS
-            if app.ui.export.tab != 2
-                && ui.button(tr("Reset all")).on_hover_text(tr("Resets all settings to their default values, including all textures.")).clicked()
-            {
-                // The settings stay the project's: its ticks and overrides in `opened_with` stay too
+            if app.ui.export.tab != 2 && ui.button(tr("Reset all")).on_hover_text(tr("Restore the export defaults and select every texture")).clicked() {
+                // Keep ownership so Cancel can restore the opening settings
                 let e = &mut app.ui.export;
                 let (opened_with, owner, owner_id) = (e.opened_with.take(), std::mem::take(&mut e.owner), e.owner_id);
                 app.ui.export = ExportUi { opened_with, owner, owner_id, ..ExportUi::default() };
@@ -1253,15 +1293,15 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Nothing to write without a ticked texture set
                 let any = !export_selection(app).is_empty();
-                if ui.add_enabled(any, primary_button(ui, tr("Export"))).on_hover_text(tr("Exports all selected textures and additional files")).clicked() {
+                if ui.add_enabled(any, primary_button(ui, tr("Export"))).on_hover_text(tr("Write the selected textures using the settings above")).clicked() {
                     do_export = true;
                 }
 
-                // The settings are kept with the interface, so saving them closes the window without exporting
-                if ui.button(tr("Save settings")).on_hover_text(tr("Closes the export window and saves changes")).clicked() {
+                // Saving closes the window without starting an export
+                if ui.button(tr("Save settings")).on_hover_text(tr("Keep these settings for the next export")).clicked() {
                     app.ui.windows.export = false;
                 }
-                if ui.button(tr("Cancel")).on_hover_text(tr("Closes the export window and undoes all recent changes")).clicked() {
+                if ui.button(tr("Cancel")).on_hover_text(tr("Restore the settings from when you opened this window")).clicked() {
                     canceled = true;
                 }
                 ui.label(trf("{n} textures selected for export", &[("n", &selected)]));
@@ -1270,14 +1310,14 @@ pub fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     });
     crate::export_templates::ask(app, ctx);
 
-    // Closing the window is Cancel; it stops an export before it writes another texture set
+    // Dismissal must run before the next write
     if canceled || !open {
         app.ui.export.job = None;
         cancel(app);
         return;
     }
 
-    // One texture set per frame, after the window showed the state before it
+    // Write the next set after the window handles cancellation
     if app.ui.export.job.is_some() && !do_export {
         export_step(app, ctx.cumulative_frame_nr());
         ctx.request_repaint();

@@ -181,16 +181,31 @@ fn selected(app: &TextureCraftApp) -> Option<ExportPreset> {
 fn sync_draft(app: &mut TextureCraftApp) {
     let e = &mut app.ui.export;
     match app.session.export_presets.list.iter().find(|p| p.name == e.preset) {
-        None => e.draft = None,
+        None => {
+            e.draft = None;
+            e.draft_maps.clear();
+            e.draft_base = None;
+        }
         Some(saved) => {
             if e.draft.as_ref().is_none_or(|d| d.name != saved.name || (d != saved && d.validate().is_ok())) {
                 e.draft = Some(saved.clone());
                 e.draft_maps = (0..saved.maps.len()).map(Some).collect();
                 e.draft_base = Some(saved.clone());
             } else if e.draft_base.as_ref() != Some(saved) {
-                // Saved anew elsewhere under an unfinished edit: the draft's moves no longer
-                // count from the saved order, so they are forgotten
-                e.draft_maps.clear();
+                // Match only unambiguous maps from the previous saved order
+                for origin in &mut e.draft_maps {
+                    *origin = origin
+                        .and_then(|index| {
+                            let previous_maps = &e.draft_base.as_ref()?.maps;
+                            let previous = previous_maps.get(index)?;
+                            previous_maps.iter().filter(|map| *map == previous).nth(1).is_none().then_some(previous)
+                        })
+                        .and_then(|previous| {
+                            let mut matches = saved.maps.iter().enumerate().filter(|(_, map)| *map == previous);
+                            let (index, _) = matches.next()?;
+                            matches.next().is_none().then_some(index)
+                        });
+                }
                 e.draft_base = Some(saved.clone());
             }
         }
@@ -258,8 +273,8 @@ fn naming_pattern(ui: &mut Ui) {
             }
         });
         ui.label(RichText::new(ic::INFO).color(tk.text_dim)).on_hover_ui(|ui| {
-            ui.label(tr("Select the naming pattern used to display the input maps on this page."));
-            ui.label(tr("Some input maps (channels) may be named differently depending on the shader used as a Texture Set."));
+            ui.label(tr("Choose how the input maps are named in this editor."));
+            ui.label(tr("The active texture set’s shader can affect the available map names."));
         });
     });
 }
@@ -462,6 +477,7 @@ fn rename(app: &mut TextureCraftApp, name: &str) {
     if name.is_empty() || name == p.name {
         return;
     }
+
     let old = std::mem::replace(&mut p.name, name.to_string());
     let Ok(v) = serde_json::to_value(&p) else { return };
     if let Some(r) = app.run("export.preset.save", json!({ "preset": v, "rename": old }))
@@ -575,57 +591,59 @@ pub fn save_library(app: &TextureCraftApp, storage: &mut dyn eframe::Storage) {
 
 /// The selected template's output maps (editable for user templates).
 fn outputs(app: &mut TextureCraftApp, ui: &mut Ui) {
-    let tk = Tokens::get(ui.ctx());
+    let tokens = Tokens::get(ui.ctx());
     let (mut preset, editable) = match (&app.ui.export.draft, selected(app)) {
         (Some(d), _) => (d.clone(), true),
         (None, Some(b)) => (b, false),
         (None, None) => {
-            ui.label(RichText::new(tr("Select an output template")).color(tk.text_dim));
+            ui.label(RichText::new(tr("Select an output template")).color(tokens.text_dim));
             return;
         }
     };
     let preview = preview_names(app, &preset);
     let mut action = None;
     ui.horizontal(|ui| {
-        ui.label(RichText::new(tr("Current preset:")).color(tk.text_dim));
-        ui.label(RichText::new(&preset.name).strong().color(tk.text_strong));
+        ui.label(RichText::new(tr("Current preset:")).color(tokens.text_dim));
+        ui.label(RichText::new(&preset.name).strong().color(tokens.text_strong));
         if !editable {
-            ui.label(RichText::new(ic::LOCK_SIMPLE).color(tk.text_dim)).on_hover_text(tr("Built-in templates are read-only: duplicate one to edit it"));
+            ui.label(RichText::new(ic::LOCK_SIMPLE).color(tokens.text_dim)).on_hover_text(tr("Built-in templates are read-only: duplicate one to edit it"));
         }
     });
     ui.label(caption(tr("Output maps")));
     ui.add_enabled_ui(editable, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("Create:")).color(tk.text_dim));
-            for (label, l) in CREATE {
+            ui.label(RichText::new(tr("Create:")).color(tokens.text_dim));
+            for (label, layout) in CREATE {
                 if ui.small_button(tr(label)).clicked() {
-                    action = Some(MapAction::Add(l));
+                    action = Some(MapAction::Add(layout));
                 }
             }
         });
     });
     if let Err(e) = &preview {
-        ui.label(RichText::new(trf("Not saved: {error}", &[("error", e)])).color(tk.danger).size(11.0));
+        ui.label(RichText::new(trf("Not saved: {error}", &[("error", e)])).color(tokens.danger).size(11.0));
     }
     let mut changed = false;
-    let n = preset.maps.len();
-    // Room for the footer below
+    let map_count = preset.maps.len();
+
+    // Leave room for the footer below
     let footer = 2.0 * ui.text_style_height(&egui::TextStyle::Body) + 3.0 * ui.spacing().item_spacing.y;
     egui::ScrollArea::vertical().id_salt("exp_outputs").auto_shrink([false; 2]).max_height((ui.available_height() - footer).max(60.0)).show(ui, |ui| {
-        if n == 0 {
+        if map_count == 0 {
             ui.add_space(8.0);
-            ui.label(RichText::new(tr("No outputs yet: add one above, then drag input maps onto its channels.")).color(tk.text_dim));
+            ui.label(RichText::new(tr("No outputs yet: add one above, then drag input maps onto its channels.")).color(tokens.text_dim));
         }
         ui.add_enabled_ui(editable, |ui| {
-            for (mi, map) in preset.maps.iter_mut().enumerate() {
-                let file = preview.as_ref().ok().and_then(|v| v.get(mi).cloned().flatten());
-                changed |= output_card(ui, mi, n, map, file.as_deref(), &mut action);
+            for (map_index, map) in preset.maps.iter_mut().enumerate() {
+                let file = preview.as_ref().ok().and_then(|names| names.get(map_index).cloned().flatten());
+                changed |= output_card(ui, map_index, map_count, map, file.as_deref(), &mut action);
                 ui.add_space(4.0);
             }
         });
     });
-    ui.label(RichText::new(tr("Drag and drop maps on output's channels to setup your export.")).color(tk.text_dim));
-    // The maps the current texture set has sources for (no count when the plan fails)
+    ui.label(RichText::new(tr("Drop an input map onto a channel to assign it to that output.")).color(tokens.text_dim));
+
+    // Count only maps that have sources in the current set
     if let Ok(names) = &preview {
         let exported = names.iter().flatten().count();
         ui.label(trf("{n} output maps will be exported.", &[("n", &exported)]));
@@ -636,25 +654,25 @@ fn outputs(app: &mut TextureCraftApp, ui: &mut Ui) {
 
     // Where each map came from in the saved template, moved along with the maps
     let mut origin = app.ui.export.draft_maps.clone();
-    if origin.len() != n {
-        origin = (0..n).map(Some).collect();
+    if origin.len() != map_count {
+        origin = (0..map_count).map(Some).collect();
     }
     match action {
-        Some(MapAction::Add(l)) => {
-            preset.maps.push(new_map(l));
+        Some(MapAction::Add(layout)) => {
+            preset.maps.push(new_map(layout));
             origin.push(None);
         }
-        Some(MapAction::Up(i)) if i > 0 && i < n => {
-            preset.maps.swap(i, i - 1);
-            origin.swap(i, i - 1);
+        Some(MapAction::Up(index)) if index > 0 && index < map_count => {
+            preset.maps.swap(index, index - 1);
+            origin.swap(index, index - 1);
         }
-        Some(MapAction::Down(i)) if i + 1 < n => {
-            preset.maps.swap(i, i + 1);
-            origin.swap(i, i + 1);
+        Some(MapAction::Down(index)) if index + 1 < map_count => {
+            preset.maps.swap(index, index + 1);
+            origin.swap(index, index + 1);
         }
-        Some(MapAction::Remove(i)) if i < n => {
-            preset.maps.remove(i);
-            origin.remove(i);
+        Some(MapAction::Remove(index)) if index < map_count => {
+            preset.maps.remove(index);
+            origin.remove(index);
         }
         _ if !changed => return,
         _ => {}
@@ -683,7 +701,7 @@ fn preview_names(app: &mut TextureCraftApp, preset: &ExportPreset) -> Result<Vec
     let mut p = crate::export_window::set_params(app, app.session.ts());
     p["preset"] = serde_json::to_value(preset).map_err(|e| e.to_string())?;
 
-    // The set's own output map settings belong to its template, not to the one shown here
+    // The set's map overrides apply only to its own template
     if let Some(p) = p.as_object_mut() {
         p.remove("maps");
     }

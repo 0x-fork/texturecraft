@@ -107,7 +107,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                     vec![
                         (Dest::R, ch(Channel::Metallic, 0)),
                         (Dest::G, virt(VirtualMap::AoMixed, 0)),
-                        // Detail mask: none.
+                        // The preset has no detail mask
                         (Dest::B, SourceRef::Constant(0.0)),
                         (Dest::A, virt(VirtualMap::Glossiness, 0)),
                     ],
@@ -154,7 +154,7 @@ pub fn builtin_presets() -> Vec<ExportPreset> {
                 map("emission", 8, rgb(|k| ch(Channel::Emissive, k))),
             ],
         ),
-        // OpenPBR Surface inputs, one map each (maps of channels a set lacks are skipped).
+        // One map per OpenPBR input present in the texture set
         preset("OpenPBR (separate maps)", {
             let gray8 = |name: &str, c: Channel| map(name, 8, gray(ch(c, 0)));
             let rgb8 = |name: &str, c: Channel| map(name, 8, rgb(|k| ch(c, k)));

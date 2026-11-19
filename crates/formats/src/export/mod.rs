@@ -24,10 +24,16 @@ use texturecraft_texel::{ColorSpace, DilationMap, linear_to_srgb};
 
 use crate::{FormatError, MAX_IMAGE_SIZE, Result};
 
+mod encoding;
+mod map_override;
+use encoding::Encoding;
+pub use map_override::MapOverride;
+
 /// Height-to-normal slope: with strength 1, a height change of 1 across 1/16 of the texture
 /// width tilts the normal 45°, at any resolution.
 const HEIGHT_SPAN: f32 = 16.0;
 const JPEG_QUALITY: u8 = 95;
+const PSD_MAX_SIDE_PIXELS: u32 = 30_000;
 /// Preset limits (user presets are untrusted JSON).
 const MAX_MAPS: usize = 64;
 const MAX_TEMPLATE: usize = 256;
@@ -79,7 +85,7 @@ pub enum FileFormat {
     Jng,
     /// Portable graymap (binary).
     Pgm,
-    /// Photoshop document: the image as its merged data, no layers.
+    /// A PSD containing only its merged image.
     Psd,
 }
 
@@ -371,26 +377,6 @@ pub enum Padding {
     Infinite,
 }
 
-/// One preset map's own export settings.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct MapOverride {
-    /// False leaves the map out (its file name is still reserved, so the others keep theirs).
-    pub enabled: bool,
-    /// Instead of the preset's and the export's file type.
-    pub format: Option<FileFormat>,
-    /// Instead of the preset's and the export's bit depth.
-    pub bit_depth: Option<u8>,
-    /// Instead of the export's dithering of 8-bit files.
-    #[serde(default)]
-    pub dither: Option<bool>,
-}
-
-impl Default for MapOverride {
-    fn default() -> Self {
-        MapOverride { enabled: true, format: None, bit_depth: None, dither: None }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExportOptions {
     pub preset: ExportPreset,
@@ -418,8 +404,13 @@ pub struct ExportOptions {
 }
 
 impl ExportOptions {
+    /// The colour space colour maps use at this format's default depth.
+    pub fn space_for(&self, format: FileFormat) -> ColorSpace {
+        self.space_for_depth(format, format.default_depth())
+    }
+
     /// The colour space colour maps are written in when `format` is used at `depth`.
-    pub fn space_for(&self, format: FileFormat, depth: u8) -> ColorSpace {
+    pub fn space_for_depth(&self, format: FileFormat, depth: u8) -> ColorSpace {
         self.color_space.unwrap_or(if format.holds_float(depth) { ColorSpace::LinearRec709 } else { ColorSpace::Srgb })
     }
 }
@@ -572,6 +563,10 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
     let mut used = BTreeSet::new();
     let mut out = Vec::new();
     let tiles: Vec<Option<u32>> = if set.uv_tiles.is_empty() || opts.atlas { vec![None] } else { set.uv_tiles.iter().copied().map(Some).collect() };
+    let atlas_size = set.tile_grid().filter(|_| opts.atlas).map(|grid| {
+        let side = opts.size.unwrap_or_else(|| set.block_resolution());
+        (side.saturating_mul(grid.cols), side.saturating_mul(grid.rows))
+    });
     for (i, map) in opts.preset.maps.iter().enumerate() {
         if !map.channels.iter().any(|(_, s)| source_present(set, s)) {
             continue;
@@ -581,8 +576,15 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
         let format = own.and_then(|o| o.format).or(opts.format_override).unwrap_or(map.format);
         let bit_depth = format.depth(own.and_then(|o| o.bit_depth).or(opts.bit_depth_override).unwrap_or(map.bit_depth));
         let enabled = own.is_none_or(|o| o.enabled);
+        if enabled
+            && format == FileFormat::Psd
+            && let Some(size) = atlas_size
+        {
+            check_psd_size(size)?;
+        }
+
         let dither = bit_depth == 8 && !format.holds_float(bit_depth) && own.and_then(|o| o.dither).unwrap_or(opts.dither);
-        let space = opts.space_for(format, bit_depth);
+        let space = opts.space_for_depth(format, bit_depth);
         let color_space = match (is_color(map), space) {
             (false, _) | (true, ColorSpace::LinearRec709) => "linear",
             (true, ColorSpace::Srgb) => "sRGB",
@@ -795,54 +797,58 @@ impl Sampler<'_> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Rendering.
+// Rendering
 
 /// Render every file of `opts` for `input`'s texture set.
-pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<ExportedFile>> {
-    let planned = list_outputs(input.project, input.ts, input.mesh_name, opts)?;
+pub fn render_maps(input: &ExportInput, options: &ExportOptions) -> Result<Vec<ExportedFile>> {
+    let planned = list_outputs(input.project, input.ts, input.mesh_name, options)?;
     let set = input.project.texture_set(input.ts)?;
-    let (res, height) = (input.composite.resolution, input.composite.height);
+    let (width, height) = (input.composite.resolution, input.composite.height);
     let grid = set.tile_grid();
-    let tile_res = res / grid.map_or(1, |g| g.cols.max(1));
+    let tile_res = width / grid.map_or(1, |g| g.cols.max(1));
     if tile_res == 0 || tile_res > MAX_IMAGE_SIZE || height != tile_res * grid.map_or(1, |g| g.rows) {
-        return Err(FormatError::Invalid(format!("composite size {res}×{height} does not fit texture set \"{}\"", set.name)));
+        return Err(FormatError::Invalid(format!("composite size {width}×{height} does not fit texture set \"{}\"", set.name)));
     }
 
-    if input.coverage.len() != res as usize * height as usize {
-        return Err(FormatError::Invalid(format!("coverage has {} texels, expected {res}×{height}", input.coverage.len())));
+    if input.coverage.len() != width as usize * height as usize {
+        return Err(FormatError::Invalid(format!("coverage has {} texels, expected {width}×{height}", input.coverage.len())));
+    }
+
+    if planned.is_empty() {
+        return Ok(Vec::new());
     }
 
     // Padding stays inside each UV tile
-    let dmap = match opts.padding {
+    let dilation_map = match options.padding {
         Padding::None => None,
         Padding::Dilation(d) | Padding::DilationDefault(d) | Padding::DilationDiffusion(d) => {
-            Some(DilationMap::in_blocks(input.coverage, res, height, Some(d), tile_res))
+            Some(DilationMap::in_blocks(input.coverage, width, height, Some(d), tile_res))
         }
-        Padding::Infinite => Some(DilationMap::in_blocks(input.coverage, res, height, None, tile_res)),
+        Padding::Infinite => Some(DilationMap::in_blocks(input.coverage, width, height, None, tile_res)),
     };
-    let beyond_default = matches!(opts.padding, Padding::DilationDefault(_) | Padding::Infinite);
-    let diffuse = matches!(opts.padding, Padding::DilationDiffusion(_));
+    let beyond_default = matches!(options.padding, Padding::DilationDefault(_) | Padding::Infinite);
+    let diffuse = matches!(options.padding, Padding::DilationDiffusion(_));
     let sampler = Sampler {
         set,
         comp: input.composite,
         baked: input.baked,
         coverage: input.coverage,
-        res,
+        res: width,
         tile_res,
         scales: set.block_scales(),
-        normal_override: opts.normal_format,
+        normal_override: options.normal_format,
         project_normal: input.project.normal_format,
     };
     planned
         .into_iter()
-        .map(|p| {
-            let map = opts.preset.maps.get(p.map).ok_or_else(|| FormatError::Invalid("planned map out of range".into()))?;
-            let lay = layout(set, map);
-            let n = lay.len();
-            let inverted: Vec<bool> = lay.iter().map(|(d, _)| map.inverted.contains(d)).collect();
+        .map(|planned_file| {
+            let map = options.preset.maps.get(planned_file.map).ok_or_else(|| FormatError::Invalid("planned map out of range".into()))?;
+            let channel_layout = layout(set, map);
+            let component_count = channel_layout.len();
+            let inverted: Vec<bool> = channel_layout.iter().map(|(d, _)| map.inverted.contains(d)).collect();
 
             // The texels written: one tile, or the whole set
-            let (x0, y0, w, h) = match (p.tile, grid) {
+            let (x0, y0, w, h) = match (planned_file.tile, grid) {
                 (Some(t), Some(g)) => {
                     let (bx, by) = g.block(t).ok_or_else(|| FormatError::Invalid(format!("UV tile {t} is not in the set's grid")))?;
 
@@ -850,26 +856,34 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
                     let side = ((tile_res as f32 * set.tile_scale(t)).round() as u32).clamp(1, tile_res);
                     (bx * tile_res, by * tile_res, side, side)
                 }
-                _ => (0, 0, res, height),
+                _ => (0, 0, width, height),
             };
-            let mut data = vec![0.0f32; w as usize * h as usize * n];
-            data.par_chunks_mut(w as usize * n).enumerate().for_each(|(row_y, row)| {
+
+            // An atlas scales by the requested size per tile
+            let scale = |value: u32| (u64::from(value) * u64::from(options.size.unwrap_or(tile_res)) / u64::from(tile_res)) as u32;
+            let size = (scale(w), scale(h));
+            if planned_file.format == FileFormat::Psd {
+                check_psd_size(size)?;
+            }
+
+            let mut data = vec![0.0f32; w as usize * h as usize * component_count];
+            data.par_chunks_mut(w as usize * component_count).enumerate().for_each(|(row_y, row)| {
                 let y = y0 + row_y as u32;
-                for (col, x) in (x0..x0 + w).enumerate() {
+                for (column, x) in (x0..x0 + w).enumerate() {
                     let at = if sampler.covered(x, y) {
                         Some(At::Texel(x, y))
                     } else {
-                        match dmap.as_ref().and_then(|d| d.source(x, y)) {
+                        match dilation_map.as_ref().and_then(|d| d.source(x, y)) {
                             Some((sx, sy)) => Some(At::Texel(sx, sy)),
                             None => beyond_default.then_some(At::Default),
                         }
                     };
                     let Some(at) = at else { continue };
                     let mut cache = None;
-                    for (k, (_, src)) in lay.iter().enumerate() {
-                        if let Some(v) = row.get_mut(col * n + k) {
-                            let s = sampler.sample(src, at, &mut cache);
-                            *v = if inverted.get(k).copied().unwrap_or(false) { 1.0 - s } else { s };
+                    for (component, (_, source)) in channel_layout.iter().enumerate() {
+                        if let Some(value) = row.get_mut(column * component_count + component) {
+                            let sample = sampler.sample(source, at, &mut cache);
+                            *value = if inverted.get(component).copied().unwrap_or(false) { 1.0 - sample } else { sample };
                         }
                     }
                 }
@@ -879,156 +893,165 @@ pub fn render_maps(input: &ExportInput, opts: &ExportOptions) -> Result<Vec<Expo
             if diffuse {
                 let known: Vec<bool> = (y0..y0 + h)
                     .flat_map(|y| (x0..x0 + w).map(move |x| (x, y)))
-                    .map(|(x, y)| sampler.covered(x, y) || dmap.as_ref().is_some_and(|d| d.source(x, y).is_some()))
+                    .map(|(x, y)| sampler.covered(x, y) || dilation_map.as_ref().is_some_and(|d| d.source(x, y).is_some()))
                     .collect();
 
-                // Like the dilation, the fill stays inside each UV tile of an atlas
-                let block = if p.tile.is_none() && grid.is_some() { tile_res as usize } else { w.max(h) as usize };
-                let (w, h) = (w as usize, h as usize);
-                for by in (0..h).step_by(block.max(1)) {
-                    for bx in (0..w).step_by(block.max(1)) {
-                        let (bw, bh) = (block.min(w - bx), block.min(h - by));
-                        let rows = || (by..by + bh).map(|y| (y * w + bx)..(y * w + bx + bw));
-                        let mut part: Vec<f32> = rows().flat_map(|r| data.get(r.start * n..r.end * n).unwrap_or_default().iter().copied()).collect();
-                        let part_known: Vec<bool> = rows().flat_map(|r| known.get(r).unwrap_or_default().iter().copied()).collect();
-                        diffuse_fill(&mut part, (bw, bh), n, &part_known);
-                        for (r, chunk) in rows().zip(part.chunks(bw * n)) {
-                            if let Some(dst) = data.get_mut(r.start * n..r.end * n) {
-                                dst.copy_from_slice(chunk);
-                            }
-                        }
-                    }
-                }
+                // Keep diffusion within each UV tile when rendering an atlas
+                let block = if planned_file.tile.is_none() && grid.is_some() { tile_res } else { w.max(h) };
+                diffuse_blocks(&mut data, (w as usize, h as usize), component_count, &known, block as usize);
             }
 
-            // `size` is per tile: an atlas scales with it
-            let scale = |v: u32| (u64::from(v) * u64::from(opts.size.unwrap_or(tile_res)) / u64::from(tile_res)) as u32;
-            let size = (scale(w), scale(h));
-            let data = resize(data, (w, h), n, size);
+            let mut data = resize(data, (w, h), component_count, size);
 
             // Integer sRGB converts in `encode`; other color spaces convert here
-            let space = opts.space_for(p.format, p.bit_depth);
-            let float = p.format.holds_float(p.bit_depth);
-            let rgb = lay.len() >= 3 && lay.iter().take(3).map(|(d, _)| *d).eq([Dest::R, Dest::G, Dest::B]);
-            let mut data = data;
-            let mut warnings = p.warnings;
-            let convert = is_color(map) && (space != ColorSpace::Srgb || float) && space != ColorSpace::LinearRec709;
-            // PGM writes colour as its luminance, weighted on the Rec.709 values before conversion
-            if convert && rgb && p.format != FileFormat::Pgm {
-                data.par_chunks_mut(n).for_each(|px| {
+            let space = options.space_for_depth(planned_file.format, planned_file.bit_depth);
+            let float = planned_file.format.holds_float(planned_file.bit_depth);
+            let rgb = channel_layout.len() >= 3 && channel_layout.iter().take(3).map(|(d, _)| *d).eq([Dest::R, Dest::G, Dest::B]);
+            let mut warnings = planned_file.warnings;
+            let color_map = is_color(map);
+            let convert = color_map && (space != ColorSpace::Srgb || float) && space != ColorSpace::LinearRec709;
+
+            // PGM computes luminance in Rec.709 before any primary conversion
+            if convert && rgb && planned_file.format != FileFormat::Pgm {
+                data.par_chunks_mut(component_count).for_each(|px| {
                     if let [r, g, b, ..] = px {
                         [*r, *g, *b] = space.from_linear_rec709([*r, *g, *b]);
                     }
                 });
             } else if convert && !rgb {
-                warnings.push(format!("\"{}\" packs colour into one channel (L), so it is written in linear Rec.709, not {}", p.name, space.name()));
+                warnings.push(format!("\"{}\" packs colour into one channel (L), so it is written in linear Rec.709, not {}", planned_file.name, space.name()));
             }
-            let srgb: Vec<bool> = lay.iter().map(|(d, _)| *d != Dest::A && is_color(map) && !float && space == ColorSpace::Srgb).collect();
+            let srgb: Vec<bool> = channel_layout.iter().map(|(d, _)| *d != Dest::A && color_map && !float && space == ColorSpace::Srgb).collect();
 
             // A colour space the user chose is written into the colour maps (data maps have none)
-            let embed = (opts.color_space.is_some() && is_color(map) && rgb).then_some(space);
-            let bytes = encode(Encoding { format: p.format, depth: p.bit_depth, dither: p.dither }, size, n, &data, &srgb, embed, &mut warnings)?;
-            Ok(ExportedFile { name: p.name, bytes, width: size.0, height: size.1, warnings })
+            let embed = (options.color_space.is_some() && color_map && rgb).then_some(space);
+            let bytes = encode(
+                Encoding { format: planned_file.format, depth: planned_file.bit_depth, dither: planned_file.dither },
+                size,
+                component_count,
+                &data,
+                &srgb,
+                embed,
+                &mut warnings,
+            )?;
+            Ok(ExportedFile { name: planned_file.name, bytes, width: size.0, height: size.1, warnings })
         })
         .collect()
+}
+
+fn diffuse_blocks(data: &mut Vec<f32>, (width, height): (usize, usize), channels: usize, known: &[bool], block: usize) {
+    // A whole image or a separately exported tile already occupies a contiguous buffer
+    if block >= width.max(height) {
+        diffuse_fill(data, (width, height), channels, known);
+        return;
+    }
+
+    for block_y in (0..height).step_by(block.max(1)) {
+        for block_x in (0..width).step_by(block.max(1)) {
+            let (block_width, block_height) = (block.min(width - block_x), block.min(height - block_y));
+            let rows = || (block_y..block_y + block_height).map(|y| (y * width + block_x)..(y * width + block_x + block_width));
+            let mut block_data: Vec<f32> =
+                rows().flat_map(|row| data.get(row.start * channels..row.end * channels).unwrap_or_default().iter().copied()).collect();
+            let block_known: Vec<bool> = rows().flat_map(|row| known.get(row).unwrap_or_default().iter().copied()).collect();
+            diffuse_fill(&mut block_data, (block_width, block_height), channels, &block_known);
+            for (row, chunk) in rows().zip(block_data.chunks(block_width * channels)) {
+                if let Some(destination) = data.get_mut(row.start * channels..row.end * channels) {
+                    destination.copy_from_slice(chunk);
+                }
+            }
+        }
+    }
 }
 
 /// Fill the texels `known` leaves out of a `size` image of `n` components by pull-push
 /// diffusion: known texels are averaged down a pyramid, then every level fills its gaps from the
 /// smoothly upsampled level below, so a gap takes a soft blend of the nearby known colours.
-fn diffuse_fill(data: &mut [f32], (w, h): (usize, usize), n: usize, known: &[bool]) {
-    if known.iter().all(|k| *k) || !known.iter().any(|k| *k) {
+fn diffuse_fill(data: &mut Vec<f32>, (w, h): (usize, usize), channels: usize, known: &[bool]) {
+    if known.iter().all(|channel| *channel) || !known.iter().any(|channel| *channel) {
         return;
     }
 
-    // Each level: its size, colours and coverage (0..1)
-    let mut levels: Vec<(usize, usize, Vec<f32>, Vec<f32>)> = vec![(w, h, data.to_vec(), known.iter().map(|k| if *k { 1.0 } else { 0.0 }).collect())];
-    while let Some((lw, lh, colour, weight)) = levels.last()
-        && (*lw > 1 || *lh > 1)
+    // Keep coverage weights alongside the colour samples at each level
+    let mut levels: Vec<(usize, usize, Vec<f32>, Vec<f32>)> =
+        vec![(w, h, std::mem::take(data), known.iter().map(|channel| if *channel { 1.0 } else { 0.0 }).collect())];
+    let mut accumulator = vec![0.0f32; channels];
+    while let Some((width, height, colour, weight)) = levels.last()
+        && (*width > 1 || *height > 1)
     {
-        let (nw, nh) = (lw.div_ceil(2), lh.div_ceil(2));
-        let mut c = vec![0.0f32; nw * nh * n];
-        let mut a = vec![0.0f32; nw * nh];
-        for y in 0..nh {
-            for x in 0..nw {
-                let mut sum = 0.0;
-                let mut acc = vec![0.0f32; n];
+        let (next_width, next_height) = (width.div_ceil(2), height.div_ceil(2));
+        let mut coarse_colour = vec![0.0f32; next_width * next_height * channels];
+        let mut coarse_coverage = vec![0.0f32; next_width * next_height];
+        for y in 0..next_height {
+            for x in 0..next_width {
+                let mut total_weight = 0.0;
+                accumulator.fill(0.0);
                 for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
                     let (sx, sy) = (2 * x + dx, 2 * y + dy);
-                    if sx >= *lw || sy >= *lh {
+                    if sx >= *width || sy >= *height {
                         continue;
                     }
-                    let i = sy * lw + sx;
-                    let wt = weight.get(i).copied().unwrap_or(0.0);
-                    sum += wt;
-                    for (k, v) in acc.iter_mut().enumerate() {
-                        *v += wt * colour.get(i * n + k).copied().unwrap_or(0.0);
+
+                    let i = sy * width + sx;
+                    let sample_weight = weight.get(i).copied().unwrap_or(0.0);
+                    total_weight += sample_weight;
+                    for (channel, v) in accumulator.iter_mut().enumerate() {
+                        *v += sample_weight * colour.get(i * channels + channel).copied().unwrap_or(0.0);
                     }
                 }
-                let o = y * nw + x;
-                if sum > 0.0 {
-                    for (k, v) in acc.iter().enumerate() {
-                        if let Some(t) = c.get_mut(o * n + k) {
-                            *t = v / sum;
+
+                let output_index = y * next_width + x;
+                if total_weight > 0.0 {
+                    for (channel, v) in accumulator.iter().enumerate() {
+                        if let Some(t) = coarse_colour.get_mut(output_index * channels + channel) {
+                            *t = v / total_weight;
                         }
                     }
                 }
-                if let Some(t) = a.get_mut(o) {
-                    *t = sum.min(1.0);
+                if let Some(t) = coarse_coverage.get_mut(output_index) {
+                    *t = total_weight.min(1.0);
                 }
             }
         }
-        levels.push((nw, nh, c, a));
+        levels.push((next_width, next_height, coarse_colour, coarse_coverage));
     }
 
-    // Pull back up: each level's gaps take the bilinear value of the coarser level
-    for l in (0..levels.len().saturating_sub(1)).rev() {
-        let (coarse, fine) = {
-            let (head, tail) = levels.split_at_mut(l + 1);
-            match (tail.first(), head.last_mut()) {
-                (Some(c), Some(f)) => (c.clone(), f),
-                _ => continue,
-            }
-        };
-        let (cw, ch, cc, _) = coarse;
-        let (fw, fh, fc, fa) = (fine.0, fine.1, &mut fine.2, &mut fine.3);
-        let sample = |x: f32, y: f32, k: usize| {
-            let (x, y) = (x.clamp(0.0, (cw - 1) as f32), y.clamp(0.0, (ch - 1) as f32));
+    // Release each coarse level after using it to fill the finer level
+    while levels.len() > 1
+        && let Some((coarse_width, coarse_height, coarse_colour, _)) = levels.pop()
+        && let Some(fine) = levels.last_mut()
+    {
+        let (fine_width, fine_height, fine_colour, fine_coverage) = (fine.0, fine.1, &mut fine.2, &mut fine.3);
+        let sample = |x: f32, y: f32, channel: usize| {
+            let (x, y) = (x.clamp(0.0, (coarse_width - 1) as f32), y.clamp(0.0, (coarse_height - 1) as f32));
             let (x0, y0) = (x as usize, y as usize);
-            let (x1, y1) = ((x0 + 1).min(cw - 1), (y0 + 1).min(ch - 1));
+            let (x1, y1) = ((x0 + 1).min(coarse_width - 1), (y0 + 1).min(coarse_height - 1));
             let (ax, ay) = (x - x0 as f32, y - y0 as f32);
-            let at = |px: usize, py: usize| cc.get((py * cw + px) * n + k).copied().unwrap_or(0.0);
+            let at = |px: usize, py: usize| coarse_colour.get((py * coarse_width + px) * channels + channel).copied().unwrap_or(0.0);
             (at(x0, y0) * (1.0 - ax) + at(x1, y0) * ax) * (1.0 - ay) + (at(x0, y1) * (1.0 - ax) + at(x1, y1) * ax) * ay
         };
-        for y in 0..fh {
-            for x in 0..fw {
-                let i = y * fw + x;
-                let a = fa.get(i).copied().unwrap_or(0.0);
-                if a >= 1.0 {
+        for y in 0..fine_height {
+            for x in 0..fine_width {
+                let i = y * fine_width + x;
+                let coverage = fine_coverage.get(i).copied().unwrap_or(0.0);
+                if coverage >= 1.0 {
                     continue;
                 }
+
                 let (sx, sy) = ((x as f32 + 0.5) / 2.0 - 0.5, (y as f32 + 0.5) / 2.0 - 0.5);
-                for k in 0..n {
-                    if let Some(v) = fc.get_mut(i * n + k) {
-                        *v = a * *v + (1.0 - a) * sample(sx, sy, k);
+                for channel in 0..channels {
+                    if let Some(v) = fine_colour.get_mut(i * channels + channel) {
+                        *v = coverage * *v + (1.0 - coverage) * sample(sx, sy, channel);
                     }
                 }
-                if let Some(t) = fa.get_mut(i) {
+                if let Some(t) = fine_coverage.get_mut(i) {
                     *t = 1.0;
                 }
             }
         }
     }
-    if let Some((_, _, filled, _)) = levels.first() {
-        for (i, k) in known.iter().enumerate() {
-            if !*k {
-                for c in 0..n {
-                    if let (Some(d), Some(v)) = (data.get_mut(i * n + c), filled.get(i * n + c)) {
-                        *d = *v;
-                    }
-                }
-            }
-        }
+
+    if let Some((_, _, filled, _)) = levels.pop() {
+        *data = filled;
     }
 }
 
@@ -1068,163 +1091,182 @@ fn resize(data: Vec<f32>, from: (u32, u32), n: usize, to: (u32, u32)) -> Vec<f32
     out
 }
 
-/// How a file is written.
-#[derive(Clone, Copy)]
-struct Encoding {
-    format: FileFormat,
-    depth: u8,
-    /// Ordered dithering before 8-bit quantization.
-    dither: bool,
-}
-
 /// 8×8 ordered (Bayer) dither thresholds, 0..64.
 const BAYER8: [u8; 64] = [
     0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22, 3, 35, 11, 43, 1, 33, 9, 41, 51,
     19, 59, 27, 49, 17, 57, 25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21,
 ];
 
-/// Encode a `size` (width, height) image of `n` components (1 L, 2 LA, 3 RGB, 4 RGBA; linear
-/// values).
-fn encode(e: Encoding, size: (u32, u32), n: usize, data: &[f32], srgb: &[bool], embed: Option<ColorSpace>, warnings: &mut Vec<String>) -> Result<Vec<u8>> {
-    let Encoding { format, depth, dither } = e;
-    let failed = |e: &dyn std::fmt::Display| FormatError::Invalid(format!("{} encoding failed: {e}", format.extension()));
+/// Encode a linear image as L, LA, RGB or RGBA at the requested width and height.
+fn encode(
+    encoding: Encoding,
+    size: (u32, u32),
+    component_count: usize,
+    data: &[f32],
+    srgb: &[bool],
+    embed: Option<ColorSpace>,
+    warnings: &mut Vec<String>,
+) -> Result<Vec<u8>> {
+    let Encoding { format, depth, dither } = encoding;
+    let encoding_error = |error: &dyn std::fmt::Display| FormatError::Invalid(format!("{} encoding failed: {error}", format.extension()));
 
     // Embed ICC or EXR chromaticities only where the format supports them
-    if let Some(space) = embed
-        && matches!(format, FileFormat::Tga | FileFormat::Bmp | FileFormat::Hdr | FileFormat::Jng | FileFormat::Pgm | FileFormat::Psd)
-    {
-        warnings.push(format!("{} files can't record a colour space; the colours are in {}", format.extension().to_ascii_uppercase(), space.name()));
+    if let Some(space) = embed {
+        if format == FileFormat::Pgm {
+            let luminance_space = if space == ColorSpace::Srgb { ColorSpace::Srgb } else { ColorSpace::LinearRec709 };
+            warnings.push(format!("PGM export writes luminance in {} without embedding a colour space", luminance_space.name()));
+        } else if matches!(format, FileFormat::Tga | FileFormat::Bmp | FileFormat::Hdr | FileFormat::Jng | FileFormat::Psd) {
+            warnings.push(format!("{} export does not embed a colour space; the colours are in {}", format.extension().to_ascii_uppercase(), space.name()));
+        }
     }
     match format {
-        FileFormat::Exr => return write_exr(size, n, data, depth == 16, embed).map_err(|e| failed(&e)),
+        FileFormat::Exr => return write_exr(size, component_count, data, depth == 16, embed).map_err(|error| encoding_error(&error)),
         FileFormat::Hdr => {
-            if n == 2 || n == 4 {
+            if component_count == 2 || component_count == 4 {
                 warnings.push("HDR has no alpha channel; alpha was dropped".into());
             }
-            let rgb = remap(data, n, if n <= 2 { &[0, 0, 0] } else { &[0, 1, 2] });
+            let rgb = remap(data, component_count, if component_count <= 2 { &[0, 0, 0] } else { &[0, 1, 2] });
             let bytes: Vec<u8> = rgb.iter().flat_map(|v| v.to_ne_bytes()).collect();
-            return write_image(format, &bytes, size, image::ExtendedColorType::Rgb32F, None).map_err(|e| failed(&e));
+            return write_image(format, &bytes, size, image::ExtendedColorType::Rgb32F, None).map_err(|error| encoding_error(&error));
         }
 
         // Float TIFF: linear values, gray widened to RGB
         FileFormat::Tiff if depth == 32 => {
-            let (rgb, color) = match n {
-                1 => (remap(data, 1, &[0, 0, 0]), image::ExtendedColorType::Rgb32F),
-                2 => (remap(data, 2, &[0, 0, 0, 1]), image::ExtendedColorType::Rgba32F),
-                3 => (data.to_vec(), image::ExtendedColorType::Rgb32F),
-                _ => (data.to_vec(), image::ExtendedColorType::Rgba32F),
+            let expanded;
+            let samples = match component_count {
+                1 | 2 => {
+                    let components: &[usize] = if component_count == 1 { &[0, 0, 0] } else { &[0, 0, 0, 1] };
+                    expanded = remap(data, component_count, components);
+                    &expanded
+                }
+                _ => data,
             };
-            let bytes: Vec<u8> = rgb.iter().flat_map(|v| v.to_ne_bytes()).collect();
-            return write_image(format, &bytes, size, color, embed.and_then(crate::icc::profile)).map_err(|e| failed(&e));
+            let color = if matches!(component_count, 1 | 3) { image::ExtendedColorType::Rgb32F } else { image::ExtendedColorType::Rgba32F };
+
+            return write_image(format, bytemuck::cast_slice(samples), size, color, embed.and_then(crate::icc::profile))
+                .map_err(|error| encoding_error(&error));
         }
         _ => {}
     }
 
-    // PGM holds one gray channel: colour becomes its luminance, from the linear values
+    // Rec.709 luminance weights convert linear RGB to PGM's single gray channel
+    const REC709_LUMINANCE_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
     let gray: Vec<f32>;
     let gray_srgb: [bool; 1];
-    let (data, srgb, n): (&[f32], &[bool], usize) = if format == FileFormat::Pgm && n > 1 {
-        if n != 3 {
+    let (data, srgb, component_count): (&[f32], &[bool], usize) = if format == FileFormat::Pgm && component_count > 1 {
+        if component_count != 3 {
             warnings.push("PGM has no alpha channel; alpha was dropped".into());
         }
-        if n >= 3 {
+        if component_count >= 3 {
             warnings.push("PGM holds one gray channel; colour became its luminance".into());
         }
         gray = data
-            .chunks_exact(n)
-            .map(|px| match px {
+            .chunks_exact(component_count)
+            .map(|pixel| match pixel {
                 [l, _] => *l,
-                [r, g, b, ..] => 0.2126 * r + 0.7152 * g + 0.0722 * b,
+                [red, green, blue, ..] => {
+                    let [red_weight, green_weight, blue_weight] = REC709_LUMINANCE_WEIGHTS;
+                    red_weight * red + green_weight * green + blue_weight * blue
+                }
                 _ => 0.0,
             })
             .collect();
         gray_srgb = [srgb.first().copied().unwrap_or(false)];
         (&gray, &gray_srgb, 1)
     } else {
-        (data, srgb, n)
+        (data, srgb, component_count)
     };
 
     // Integer formats: transfer function and quantization first, then fit the channel layout
-    let encoded: Vec<f32> =
-        data.iter().enumerate().map(|(i, v)| if srgb.get(i % n).copied().unwrap_or(false) { linear_to_srgb(*v) } else { v.clamp(0.0, 1.0) }).collect();
-    let (encoded, n) = match (format, n) {
+    let encoded: Vec<f32> = data
+        .iter()
+        .enumerate()
+        .map(|(i, v)| if srgb.get(i % component_count).copied().unwrap_or(false) { linear_to_srgb(*v) } else { v.clamp(0.0, 1.0) })
+        .collect();
+    let (encoded, component_count) = match (format, component_count) {
         (FileFormat::Jpeg, 2 | 4) => {
             warnings.push("JPEG has no alpha channel; alpha was dropped".into());
-            (remap(&encoded, n, if n == 2 { &[0] } else { &[0, 1, 2] }), n - 1)
+            (remap(&encoded, component_count, if component_count == 2 { &[0] } else { &[0, 1, 2] }), component_count - 1)
         }
         (FileFormat::Tiff, 2) => (remap(&encoded, 2, &[0, 0, 0, 1]), 4),
-        _ => (encoded, n),
+        _ => (encoded, component_count),
     };
-    use image::ExtendedColorType as C;
+    use image::ExtendedColorType as ColorType;
     let (bytes, color) = if depth == 16 {
-        let b: Vec<u8> = encoded.iter().flat_map(|v| ((v * 65535.0 + 0.5) as u16).to_ne_bytes()).collect();
-        (b, [C::L16, C::La16, C::Rgb16, C::Rgba16].get(n.wrapping_sub(1)).copied().unwrap_or(C::Rgba16))
+        let bytes: Vec<u8> = encoded.iter().flat_map(|v| ((v * 65535.0 + 0.5) as u16).to_ne_bytes()).collect();
+        (
+            bytes,
+            [ColorType::L16, ColorType::La16, ColorType::Rgb16, ColorType::Rgba16].get(component_count.wrapping_sub(1)).copied().unwrap_or(ColorType::Rgba16),
+        )
     } else {
         let width = size.0.max(1) as usize;
         let threshold = |i: usize| {
-            let p = i / n.max(1);
-            let index = (p / width % 8) * 8 + p % width % 8;
+            let pixel = i / component_count.max(1);
+            let index = (pixel / width % 8) * 8 + pixel % width % 8;
             (f32::from(BAYER8.get(index).copied().unwrap_or(32)) + 0.5) / 64.0
         };
-        let b: Vec<u8> = if dither {
+        let bytes: Vec<u8> = if dither {
             encoded.iter().enumerate().map(|(i, v)| (v * 255.0 + threshold(i)).floor().clamp(0.0, 255.0) as u8).collect()
         } else {
             encoded.iter().map(|v| (v * 255.0 + 0.5) as u8).collect()
         };
-        (b, [C::L8, C::La8, C::Rgb8, C::Rgba8].get(n.wrapping_sub(1)).copied().unwrap_or(C::Rgba8))
+        (bytes, [ColorType::L8, ColorType::La8, ColorType::Rgb8, ColorType::Rgba8].get(component_count.wrapping_sub(1)).copied().unwrap_or(ColorType::Rgba8))
     };
     match format {
-        FileFormat::Pgm => return Ok(pgm(&bytes, size, depth == 16)),
-        FileFormat::Psd => return Ok(psd(&bytes, size, n, depth == 16)),
-        FileFormat::Jng => return jng(&bytes, size, n).map_err(|e| failed(&e)),
+        FileFormat::Pgm => {
+            use craft_image_codecs::{ChannelLayout, Format, Image, SampleType};
+            let sample = if depth == 16 { SampleType::U16 } else { SampleType::U8 };
+            let gray = Image::from_raw(size.0, size.1, ChannelLayout::Gray, sample, bytes).map_err(|error| encoding_error(&error))?;
+            return craft_image_codecs::encode(&gray, Format::Pnm, &Default::default()).map_err(|error| encoding_error(&error));
+        }
+        FileFormat::Psd => return psd(bytes, size, component_count, depth).map_err(|error| encoding_error(&error)),
+        FileFormat::Jng => return jng(&bytes, size, component_count).map_err(|error| encoding_error(&error)),
         _ => {}
     }
     let icc = embed.and_then(crate::icc::profile);
-    write_image(format, &bytes, size, color, icc).map_err(|e| failed(&e))
+    write_image(format, &bytes, size, color, icc).map_err(|error| encoding_error(&error))
 }
 
-/// 16-bit samples of `bytes` (native order) as big-endian, as PGM and PSD store them.
-fn big_endian16(bytes: &[u8]) -> Vec<u8> {
-    bytes.as_chunks::<2>().0.iter().flat_map(|b| u16::from_ne_bytes(*b).to_be_bytes()).collect()
-}
-
-/// A binary graymap (P5) of one 8- or 16-bit channel.
-fn pgm(bytes: &[u8], (w, h): (u32, u32), wide: bool) -> Vec<u8> {
-    let mut out = format!("P5\n{w} {h}\n{}\n", if wide { 65535 } else { 255 }).into_bytes();
-    if wide {
-        out.extend(big_endian16(bytes));
-    } else {
-        out.extend_from_slice(bytes);
+fn check_psd_size((width, height): (u32, u32)) -> Result<()> {
+    if width == 0 || height == 0 || width > PSD_MAX_SIDE_PIXELS || height > PSD_MAX_SIDE_PIXELS {
+        return Err(FormatError::Invalid(format!("PSD size {width}×{height} must be between 1 and {PSD_MAX_SIDE_PIXELS} pixels per side")));
     }
-    out
+
+    Ok(())
 }
 
-/// A layerless Photoshop document: gray (+ alpha) or RGB (+ alpha), 8 or 16 bits, the merged
-/// image uncompressed and planar.
-fn psd(bytes: &[u8], (w, h): (u32, u32), n: usize, wide: bool) -> Vec<u8> {
-    let bytes = if wide { big_endian16(bytes) } else { bytes.to_vec() };
-    let sample = if wide { 2 } else { 1 };
-    let mut out = Vec::with_capacity(26 + 14 + bytes.len());
-    out.extend_from_slice(b"8BPS");
-    out.extend_from_slice(&1u16.to_be_bytes());
-    out.extend_from_slice(&[0; 6]);
-    out.extend_from_slice(&(n as u16).to_be_bytes());
-    out.extend_from_slice(&h.to_be_bytes());
-    out.extend_from_slice(&w.to_be_bytes());
-    out.extend_from_slice(&(8 * sample as u16).to_be_bytes());
+/// Write a merged PSD image with raw planes, including an extra alpha plane when present.
+fn psd(bytes: Vec<u8>, (width, height): (u32, u32), channels: usize, depth: u8) -> craft_psd::Result<Vec<u8>> {
+    use craft_psd::{ColorMode, Compression, Header, ImageData, PsdFile, Version};
 
-    // Colour mode: 1 grayscale, 3 RGB
-    out.extend_from_slice(&(if n <= 2 { 1u16 } else { 3 }).to_be_bytes());
-
-    // No colour mode data, image resources or layers; raw image data
-    out.extend_from_slice(&[0; 12]);
-    out.extend_from_slice(&0u16.to_be_bytes());
-    for c in 0..n {
-        for px in bytes.chunks_exact(n * sample) {
-            out.extend_from_slice(px.get(c * sample..(c + 1) * sample).unwrap_or_default());
+    let color_mode = if channels <= 2 { ColorMode::Grayscale } else { ColorMode::Rgb };
+    let header = Header::new(Version::Psd, width, height, channels as u16, u16::from(depth), color_mode);
+    let mut planes = Vec::with_capacity(bytes.len());
+    if depth == 16 {
+        let samples = bytes.as_chunks::<2>().0;
+        for channel in 0..channels {
+            planes.extend(samples.iter().skip(channel).step_by(channels).flat_map(|sample| u16::from_ne_bytes(*sample).to_be_bytes()));
+        }
+    } else {
+        for channel in 0..channels {
+            planes.extend(bytes.iter().skip(channel).step_by(channels).copied());
         }
     }
-    out
+    drop(bytes);
+
+    PsdFile {
+        header,
+        color_mode_data: Vec::new(),
+        resources: Vec::new(),
+        layer_info: None,
+        layer_info_placement: Default::default(),
+        global_layer_mask: None,
+        global_blocks: Vec::new(),
+        layer_mask_trailing: Vec::new(),
+        image_data: ImageData::new(Compression::Raw, planes),
+        write_as_psb: false,
+    }
+    .to_bytes()
 }
 
 /// A JNG file: the colour as JPEG, alpha (when present) as lossless 8-bit deflate data.

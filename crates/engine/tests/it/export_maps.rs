@@ -41,7 +41,33 @@ fn a_map_index_outside_the_preset_is_refused() {
     let mut s = session();
     let e = execute(&mut s, "export.plan", &json!({"maps": [{"map": 999}]})).unwrap_err();
     assert!(e.to_string().contains("`map` must be the index"), "{e}");
-    assert!(execute(&mut s, "export.plan", &json!({"maps": [{"map": 0, "format": "nope"}]})).is_err());
+    for (field, value) in [("format", json!("nope")), ("format", json!(8)), ("bitDepth", json!("16")), ("dithering", json!("true"))] {
+        let mut map = json!({"map": 0});
+        map[field] = value;
+        assert!(execute(&mut s, "export.plan", &json!({"maps": [map]})).is_err(), "{map}");
+    }
+}
+
+#[test]
+fn planned_uv_tile_sizes_match_the_written_files() {
+    let mut session =
+        texturecraft_engine::Session::new_project("Export", texturecraft_engine::geom::primitives::udim_plane(), "builtin:udim_plane", None, 256).unwrap();
+    execute(&mut session, "textureSet.tile.resolution", &json!({"tile": 1002, "resolution": 128})).unwrap();
+    let directory = std::env::temp_dir().join(format!("tc-export-tile-sizes-{}", std::process::id()));
+    let params = json!({"dir": directory, "format": "png", "size": 128, "ts": 0});
+
+    let plan = execute(&mut session, "export.plan", &params).unwrap();
+    let plan = plan.as_array().unwrap();
+    assert!(plan.iter().any(|file| file["size"] == 64));
+    assert!(plan.iter().any(|file| file["size"] == 128));
+    execute(&mut session, "file.exportTextures", &params).unwrap();
+
+    for file in plan {
+        let bytes = std::fs::read(directory.join(file["file"].as_str().unwrap())).unwrap();
+        let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+        assert_eq!(file["size"], width, "{file}");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

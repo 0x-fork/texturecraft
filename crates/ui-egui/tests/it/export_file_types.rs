@@ -50,6 +50,7 @@ fn the_file_type_list_is_the_reference_one_with_three_greyed() {
     let mut h = harness();
     open_combo(&mut h, "Based on output template");
     assert_eq!(entries(&h, &TYPES), TYPES.map(String::from).to_vec());
+
     // Bottom up, so no tooltip covers the next entry
     for name in ["sbsar", "jp2", "j2k"] {
         assert!(h.get_all_by_label(name).last().unwrap().accesskit_node().is_disabled(), "{name} is greyed");
@@ -121,6 +122,7 @@ fn export_writes_the_chosen_type_and_depth() {
         if h.state().ui.export.job.is_none() {
             break;
         }
+
         h.run_steps(1);
     }
     h.run_steps(2);

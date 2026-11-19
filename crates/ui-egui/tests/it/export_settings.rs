@@ -144,7 +144,7 @@ fn the_output_directory_resets_and_the_dilation_follows_the_padding() {
     assert_eq!(h.state().ui.export.dir, default);
 
     hover(&mut h, "16");
-    assert!(h.query_by_label("Dilation cannot be applied to selected padding type").is_some());
+    assert!(h.query_by_label("This padding mode does not use a dilation width").is_some());
     h.state_mut().ui.export.padding = "dilation".into();
     h.run_steps(3);
     hover(&mut h, "16");
@@ -160,14 +160,14 @@ fn the_output_directory_resets_and_the_dilation_follows_the_padding() {
 }
 
 #[test]
-fn the_buttons_carry_the_reference_tooltips() {
+fn export_actions_explain_what_they_change() {
     let mut h = harness();
     for (button, tip) in [
-        ("Include all", "Includes all Texture Sets, UV Tiles and output maps."),
-        ("Reset all", "Resets all settings to their default values, including all textures."),
-        ("Cancel", "Closes the export window and undoes all recent changes"),
-        ("Save settings", "Closes the export window and saves changes"),
-        ("Export", "Exports all selected textures and additional files"),
+        ("Include all", "Select every texture set, UV tile and output map"),
+        ("Reset all", "Restore the export defaults and select every texture"),
+        ("Cancel", "Restore the settings from when you opened this window"),
+        ("Save settings", "Keep these settings for the next export"),
+        ("Export", "Write the selected textures using the settings above"),
     ] {
         hover(&mut h, button);
         assert!(h.query_by_label(tip).is_some(), "{button}: {tip}");
@@ -182,7 +182,7 @@ fn the_page_reset_puts_the_parameters_back() {
     e.padding = "none".into();
     e.skip = vec![0];
     h.run_steps(3);
-    click(&mut h, "Resets all settings to default values");
+    click(&mut h, "Restore the default export parameters");
     let e = &h.state().ui.export;
     assert_eq!((e.size, e.padding.as_str()), (0, "infinite"));
     assert_eq!(e.skip, vec![0], "the texture set ticks are not parameters of the page");

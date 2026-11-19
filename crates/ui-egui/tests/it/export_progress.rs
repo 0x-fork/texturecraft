@@ -34,7 +34,7 @@ fn console(h: &Harness<'_, TextureCraftApp>) -> Vec<String> {
         .iter()
         .map(|l| match l {
             ConsoleLine::Step(t) | ConsoleLine::Done(t) => t.clone(),
-            ConsoleLine::Set(name) => format!("Exporting texture set {name}..."),
+            ConsoleLine::Set(name) => format!("Texture set {name}"),
         })
         .collect()
 }
@@ -48,26 +48,27 @@ fn export_shows_progress_logs_the_steps_and_keeps_the_window_open() {
     h.run_steps(1);
     assert!(h.query_by_label("Cancel Export").is_some());
     assert!(h.query_by_label("Cancel").is_none(), "the progress bar replaces the buttons");
-    assert_eq!(console(&h).first().map(String::as_str), Some("Preparing export..."));
+    assert_eq!(console(&h).first().map(String::as_str), Some("Preparing texture export"));
 
     for _ in 0..64 {
         if h.state().ui.export.job.is_none() {
             break;
         }
+
         h.run_steps(1);
     }
     h.run_steps(2);
     assert!(h.state().ui.windows.export, "the window stays open");
     assert!(h.query_by_label("Cancel").is_some() && h.query_by_label("Cancel Export").is_none());
     let lines = console(&h);
-    let set = format!("Exporting texture set {}...", sets[0]);
+    let set = format!("Texture set {}", sets[0]);
     let start = lines.iter().position(|l| *l == set).unwrap();
-    assert_eq!(&lines[start..start + 5], [set.clone(), set.clone(), "Computing textures results".into(), set.clone(), "Preparing textures writing".into()]);
-    assert!(lines[start + 6].starts_with("Writing ") && lines[start + 6].ends_with(" texture on disk"), "{lines:?}");
+    assert_eq!(&lines[start..start + 5], [set.clone(), set.clone(), "Rendering the selected maps".into(), set.clone(), "Saving texture files".into()]);
+    assert!(lines[start + 6].starts_with("Saved texture "), "{lines:?}");
     let written: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-    let finished = lines.iter().position(|l| l == "Export successfully finished").unwrap();
-    assert_eq!(&lines[finished - 3..finished], ["Finalizing textures writing", "Bitmaps write finalization...", "Finalizing export..."]);
-    assert_eq!(lines[finished + 1], "Successfully exported:");
+    let finished = lines.iter().position(|l| l == "Texture export complete").unwrap();
+    assert_eq!(&lines[finished - 3..finished], ["Finished writing this texture set", "All selected texture sets processed", "Collecting the exported files"]);
+    assert_eq!(lines[finished + 1], "Files saved");
     assert_eq!(lines.len() - finished - 2, written.len(), "every written file is listed");
     assert!(matches!(h.state().ui.export.console.last(), Some(ConsoleLine::Done(_))), "in green");
     let _ = std::fs::remove_dir_all(&dir);
@@ -94,6 +95,7 @@ fn finish(h: &mut Harness<'_, TextureCraftApp>) {
         if h.state().ui.export.job.is_none() {
             break;
         }
+
         h.run_steps(1);
     }
     h.run_steps(2);
@@ -111,7 +113,7 @@ fn cancel_export_stops_the_export() {
     assert!(h.state().ui.export.job.is_none());
     assert!(h.state().ui.windows.export);
     let lines = console(&h);
-    assert!(!lines.iter().any(|l| l == "Finalizing export..." || l == "Export successfully finished"), "the export did not finish: {lines:?}");
+    assert!(!lines.iter().any(|l| l == "Collecting the exported files" || l == "Texture export complete"), "the export did not finish: {lines:?}");
     assert!(h.query_by_label("Cancel").is_some(), "the buttons are back");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -173,6 +175,11 @@ fn the_settings_at_export_are_kept_while_it_runs() {
     // Another folder and size chosen while it runs reach none of the files
     h.state_mut().ui.export.dir = moved.display().to_string();
     h.state_mut().ui.export.size = 128;
+    h.run_steps(1);
+
+    assert!(h.query_all_by_label("256x256 (Texture Set size)").next().is_some());
+    assert!(h.query_by_label("128x128").is_none(), "the preview shows the size taken at Export");
+
     finish(&mut h);
     assert!(!moved.exists(), "nothing was written to the folder chosen later");
     let written: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
@@ -245,8 +252,7 @@ fn closing_the_window_writes_no_further_texture_set() {
     assert!(h.state().ui.export.job.is_some());
     let (writes, frame) = (exports(&h), h.ctx.cumulative_frame_nr());
 
-    // The click is a frame per pointer event; the last one (the release) closes the window. Every
-    // frame before it writes a texture set, that one writes none.
+    // Only the release frame closes the window and skips writing
     h.get_by_role_and_label(egui::Role::Button, "Close window").click();
     h.run_steps(1);
     assert!(!h.state().ui.windows.export && h.state().ui.export.job.is_none());
