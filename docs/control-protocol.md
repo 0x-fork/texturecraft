@@ -520,8 +520,10 @@ view, Alt+Shift+left drag orbits in 90° steps.
 Viewport menu and the rotation dropdown of the top bar) picks the orbit: constrained (the default) keeps
 the horizon level and stops at the poles; free is a trackball that turns the camera about its own axes,
 so the model can be turned over and rolled. `camera.get` shows it as `rotation`; `camera.set` takes
-`rotation` too. Switching keeps the direction of view; going back to constrained drops the roll. Saved
-cameras, fixed views and `camera.set` yaw/pitch put a free camera level. `camera.snapRotate {yaw?, pitch?}`
+`rotation` too. Switching keeps the direction of view; going back to constrained drops the roll.
+Views saved in free mode restore their roll while free rotation is active. Older cameras and cameras
+saved in constrained mode restore from yaw and pitch. Fixed views and `camera.set` yaw/pitch put a
+free camera level. `camera.snapRotate {yaw?, pitch?}`
 (whole 90° steps; the angles first go to the nearest step) is the command behind the Alt+Shift+left drag
 ("Camera snap rotate"); `camera.snapRotate.left|right|up|down` are its menu forms. `camera.next` and
 `camera.previous` go to the next or previous saved camera (wrapping; from a view that is no saved

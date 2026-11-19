@@ -464,7 +464,7 @@ fn apply_settings(settings: &mut BakeSettings, params: &Value, command: &str) ->
 
     if let Some(model) = params.get("model") {
         let replacement: BakeSettings = serde_json::from_value(model.clone()).map_err(|error| bad(command, error.to_string()))?;
-        validate_model_settings(&replacement, command, boolp(params, "preset") == Some(true))?;
+        validate_model_settings(&replacement, command, boolp(params, "preset") == Some(true), None)?;
         let is_enabled = settings.common.is_enabled;
         *settings = replacement;
         if boolp(params, "preserveEnabled") == Some(true) {
@@ -476,7 +476,7 @@ fn apply_settings(settings: &mut BakeSettings, params: &Value, command: &str) ->
         let mut model = json!(settings);
         model_patch::apply_patch(&mut model, patch, command)?;
         let updated: BakeSettings = serde_json::from_value(model).map_err(|error| bad(command, error.to_string()))?;
-        validate_model_settings(&updated, command, false)?;
+        validate_model_settings(&updated, command, false, Some(settings))?;
         *settings = updated;
     }
 
@@ -587,27 +587,40 @@ fn apply_settings(settings: &mut BakeSettings, params: &Value, command: &str) ->
 }
 
 const MAX_DILATION_PIXELS: u32 = 256;
+const MAX_MODEL_DILATION_PIXELS: u32 = 128;
+const MAX_MODEL_SECONDARY_RAYS: u32 = 256;
+const MAX_MODEL_CAGE_DISTANCE: f32 = 0.05;
+const MAX_MODEL_RELATIVE_RAY_DISTANCE: f32 = 1.0;
 const MAX_FLAT_CAGE_DISTANCE: f32 = 1.0;
 const MAX_FLAT_RAY_DISTANCE: f32 = 10.0;
 
-fn validate_model_settings(settings: &BakeSettings, command: &str, from_preset: bool) -> Result<()> {
+fn validate_model_settings(settings: &BakeSettings, command: &str, from_preset: bool, previous: Option<&BakeSettings>) -> Result<()> {
     let range = |name: &str, value: f32, minimum: f32, maximum: f32| {
         if value.is_finite() && (minimum..=maximum).contains(&value) { Ok(()) } else { Err(bad(command, format!("{name} must be in {minimum}..={maximum}"))) }
     };
 
     // Presets may contain values set through the legacy flat parameters
-    let max_dilation = if from_preset { MAX_DILATION_PIXELS } else { 128 };
+    // A patch may retain each of those values but must use ordinary limits for edits
+    let keeps_dilation = previous.is_some_and(|previous| previous.common.dilation == settings.common.dilation);
+    let max_dilation = if from_preset || keeps_dilation { MAX_DILATION_PIXELS } else { MAX_MODEL_DILATION_PIXELS };
     if settings.common.dilation > max_dilation {
         return Err(bad(command, format!("dilation must be at most {max_dilation}")));
     }
 
-    let max_rays = if from_preset { MAX_RAYS } else { 256 };
-    for rays in [&settings.maps.ao.parameters.rays, &settings.maps.thickness.parameters.rays, &settings.maps.bent_normal.parameters.rays] {
+    let ray_settings =
+        |settings: &BakeSettings| [settings.maps.ao.parameters.rays, settings.maps.thickness.parameters.rays, settings.maps.bent_normal.parameters.rays];
+    let previous_rays = previous.map(ray_settings).map_or([None; 3], |rays| rays.map(Some));
+    for (rays, previous_rays) in ray_settings(settings).into_iter().zip(previous_rays) {
+        let keeps_count = previous_rays.is_some_and(|previous| previous.rays == rays.rays);
+        let max_rays = if from_preset || keeps_count { MAX_RAYS } else { MAX_MODEL_SECONDARY_RAYS };
         if !(1..=max_rays).contains(&rays.rays) {
             return Err(bad(command, format!("secondary rays must be in 1..={max_rays}")));
         }
 
-        let max_distance = if !from_preset && rays.relative_to_bounding_box { 1.0 } else { MAX_FLAT_RAY_DISTANCE };
+        let keeps_distance = previous_rays
+            .is_some_and(|previous| previous.max_distance == rays.max_distance && previous.relative_to_bounding_box == rays.relative_to_bounding_box);
+        let max_distance =
+            if from_preset || keeps_distance || !rays.relative_to_bounding_box { MAX_FLAT_RAY_DISTANCE } else { MAX_MODEL_RELATIVE_RAY_DISTANCE };
         range("minimum occluder distance", rays.min_distance, 0.00001, 1.0)?;
         range("maximum occluder distance", rays.max_distance, 0.00001, max_distance)?;
         range("spread angle", rays.spread, 0.0, 180.0)?;
@@ -625,10 +638,12 @@ fn validate_model_settings(settings: &BakeSettings, command: &str, from_preset: 
     }
 
     range("sampling radius", curvature.mesh.sampling_radius, 0.00001, if curvature.mesh.relative_to_bounding_box { 10.0 } else { 1.0 })?;
-    let max_cage_distance = if from_preset { MAX_FLAT_CAGE_DISTANCE } else { 0.05 };
+    let cage_limit = |unchanged: bool| if from_preset || unchanged { MAX_FLAT_CAGE_DISTANCE } else { MAX_MODEL_CAGE_DISTANCE };
+    let keeps_frontal = previous.is_some_and(|previous| previous.cage.max_frontal == settings.cage.max_frontal);
+    let keeps_rear = previous.is_some_and(|previous| previous.cage.max_rear == settings.cage.max_rear);
     for (name, value, minimum, maximum) in [
-        ("frontal distance", settings.cage.max_frontal, 0.0, max_cage_distance),
-        ("rear distance", settings.cage.max_rear, 0.0, max_cage_distance),
+        ("frontal distance", settings.cage.max_frontal, 0.0, cage_limit(keeps_frontal)),
+        ("rear distance", settings.cage.max_rear, 0.0, cage_limit(keeps_rear)),
         ("edge distance", settings.skew.edge_distance, 0.0, 1.0),
         ("edge contrast", settings.skew.edge_contrast, 0.0, 1.0),
         ("ground plane offset", settings.maps.ao.parameters.ground_plane.offset, 0.0, 100.0),
@@ -757,6 +772,41 @@ fn bake_run(session: &mut Session, params: &Value) -> Result<Value> {
 
 #[cfg(test)]
 mod named_tracer;
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    #[test]
+    fn feedback_bake_patches_preserve_unchanged_preset_values() {
+        let mut session = crate::sample_session(128, 32).unwrap();
+        let mut model = session.doc.project.texture_sets[0].bake.clone();
+        model.common.dilation = 200;
+        model.cage.max_frontal = 0.5;
+        model.maps.ao.parameters.rays.rays = 300;
+        model.maps.ao.parameters.rays.relative_to_bounding_box = true;
+        model.maps.ao.parameters.rays.max_distance = 2.0;
+        crate::execute(&mut session, "bake.settings", &json!({"model": model, "preset": true})).unwrap();
+
+        crate::execute(&mut session, "bake.settings", &json!({"patch": {}})).unwrap();
+        crate::execute(&mut session, "bake.settings", &json!({"patch": {"common": {"is_enabled": false}}})).unwrap();
+        model.common.is_enabled = false;
+        assert_eq!(session.doc.project.texture_sets[0].bake, model);
+
+        for patch in [
+            json!({"common": {"dilation": 201}}),
+            json!({"cage": {"max_frontal": 0.6}}),
+            json!({"maps": {"ao": {"parameters": {"rays": {"rays": 301}}}}}),
+            json!({"maps": {"ao": {"parameters": {"rays": {"max_distance": 3.0}}}}}),
+        ] {
+            assert!(crate::execute(&mut session, "bake.settings", &json!({"patch": patch, "preset": true})).is_err(), "{patch}");
+            assert_eq!(session.doc.project.texture_sets[0].bake, model);
+        }
+
+        crate::execute(&mut session, "bake.settings", &json!({"patch": {"common": {"dilation": 128}}})).unwrap();
+        assert_eq!(session.doc.project.texture_sets[0].bake.common.dilation, 128);
+    }
+}
 
 #[cfg(test)]
 mod gpu_raytracing_tests {

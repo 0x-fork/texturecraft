@@ -1,10 +1,12 @@
 //! The camera list (the viewport camera menu: the default camera plus saved and imported
 //! cameras, saved with the project) and the depth of field focus pick.
 
+use std::f32::consts::TAU;
+
 use serde_json::{Value, json};
 use texturecraft_core::Camera;
 use texturecraft_geom::OrbitCamera;
-use texturecraft_geom::glam::{Vec2, Vec3};
+use texturecraft_geom::glam::{Quat, Vec2, Vec3};
 
 use crate::commands::{CommandSpec, always, bad, f32p, strp, u64p};
 use crate::tool_cmds::viewport_of;
@@ -110,7 +112,16 @@ fn has_cameras(s: &Session) -> std::result::Result<(), String> {
 
 /// The view as a saved camera.
 fn saved(c: &OrbitCamera, name: String) -> Camera {
-    Camera { name, target: c.target.to_array(), yaw: c.yaw, pitch: c.pitch, distance: c.distance, fov: c.fov, ortho: c.ortho }
+    Camera {
+        name,
+        target: c.target.to_array(),
+        yaw: c.yaw,
+        pitch: c.pitch,
+        distance: c.distance,
+        fov: c.fov,
+        ortho: c.ortho,
+        orientation: c.free.then(|| c.orient.to_array()),
+    }
 }
 
 /// Move the view to saved camera `c` (values from project files are checked and clamped).
@@ -119,6 +130,7 @@ fn apply(view: &mut OrbitCamera, c: &Camera) {
     if target.is_finite() {
         view.target = target;
     }
+
     let r = view.scene_radius.max(1e-3);
     let ok = |v: f32| v.is_finite().then_some(v);
     view.yaw = ok(c.yaw).unwrap_or(view.yaw);
@@ -127,8 +139,13 @@ fn apply(view: &mut OrbitCamera, c: &Camera) {
     view.fov = ok(c.fov).map_or(view.fov, |f| f.clamp(5.0, 150.0));
     view.ortho = c.ortho;
 
-    // A free camera looks level through the saved view
-    view.set_angles(view.yaw, view.pitch);
+    // Older saves and invalid quaternions use the level orbit angles
+    let orientation = c.orientation.filter(|_| view.free).map(Quat::from_array).filter(|orientation| orientation.is_normalized());
+    if let Some(orientation) = orientation {
+        view.orient = orientation.normalize();
+    } else {
+        view.set_angles(view.yaw, view.pitch);
+    }
 }
 
 /// The saved camera the view is at, if any.
@@ -148,14 +165,19 @@ fn matches_view(camera: OrbitCamera, saved_camera: &Camera) -> bool {
     let mut saved_view = camera;
     apply(&mut saved_view, saved_camera);
 
+    let same_orientation = if camera.free {
+        // Either sign of a unit quaternion represents the same orientation
+        saved_view.orient.abs_diff_eq(camera.orient, POSE_TOLERANCE) || saved_view.orient.abs_diff_eq(-camera.orient, POSE_TOLERANCE)
+    } else {
+        let yaw_difference = (saved_view.yaw - camera.yaw).abs() % TAU;
+        yaw_difference.min(TAU - yaw_difference) <= POSE_TOLERANCE && (saved_view.pitch - camera.pitch).abs() <= POSE_TOLERANCE
+    };
     let close = |a: f32, b: f32| (a - b).abs() <= POSE_TOLERANCE * (1.0 + a.abs());
     (saved_view.target - camera.target).length() <= POSE_TOLERANCE * (1.0 + saved_view.distance)
-        && close(saved_view.yaw, camera.yaw)
-        && close(saved_view.pitch, camera.pitch)
+        && same_orientation
         && close(saved_view.distance, camera.distance)
         && close(saved_view.fov, camera.fov)
         && saved_view.ortho == camera.ortho
-        && (!camera.free || saved_view.orient.dot(camera.orient).abs() >= 1.0 - POSE_TOLERANCE)
 }
 
 fn list(s: &Session) -> Value {
@@ -237,8 +259,7 @@ fn fixed_view(s: &mut Session, name: &str) -> Result<Value> {
     };
 
     let current = if s.camera.yaw.is_finite() { s.camera.yaw } else { 0.0 };
-    let turn = std::f32::consts::TAU;
-    let yaw = current + (yaw.to_radians() - current + turn * 0.5).rem_euclid(turn) - turn * 0.5;
+    let yaw = current + (yaw.to_radians() - current + TAU * 0.5).rem_euclid(TAU) - TAU * 0.5;
     s.camera.set_angles(yaw, pitch.to_radians());
     crate::execute(s, "viewport.frame", &Value::Null)
 }
@@ -345,6 +366,64 @@ mod tests {
 
     fn session() -> Session {
         Session::new_project("t", texturecraft_geom::primitives::sphere(1.0, 24, 12), "builtin:sphere", None, 128).unwrap()
+    }
+
+    #[test]
+    fn feedback_saved_free_camera_restores_its_roll_after_project_reload() {
+        let mut session = session();
+        execute(&mut session, "camera.set", &json!({"yaw": 0, "pitch": 0})).unwrap();
+        execute(&mut session, "camera.rotation.free", &Value::Null).unwrap();
+        execute(&mut session, "camera.orbit", &json!({"dy": 170})).unwrap();
+        let saved_view = session.camera;
+        assert!(saved_view.up().y < -0.9);
+        execute(&mut session, "camera.add", &json!({"name": "Upside down"})).unwrap();
+        let bytes = texturecraft_formats::save_project_bytes(&session.project_file()).unwrap();
+        let mut loaded = Session::from_project_bytes(&bytes).unwrap();
+
+        execute(&mut loaded, "camera.rotation.free", &Value::Null).unwrap();
+        execute(&mut loaded, "camera.select", &json!({"index": 0})).unwrap();
+
+        assert!((loaded.camera.up() - saved_view.up()).length() < 1e-5, "the saved roll is restored");
+        assert!((loaded.camera.eye() - saved_view.eye()).length() < 1e-5);
+        assert_eq!(current(&loaded), Some(0));
+        execute(&mut loaded, "camera.set", &json!({"yaw": saved_view.yaw.to_degrees(), "pitch": saved_view.pitch.to_degrees()})).unwrap();
+        assert_eq!(current(&loaded), None, "a level camera at the same eye is a different view");
+
+        execute(&mut loaded, "camera.rotation.constrained", &Value::Null).unwrap();
+        execute(&mut loaded, "camera.select", &json!({"index": 0})).unwrap();
+        assert_eq!(loaded.camera.up(), Vec3::Y);
+        assert!(!loaded.camera.free);
+
+        let mut legacy_camera = serde_json::to_value(&loaded.doc.project.cameras[0]).unwrap();
+        legacy_camera.as_object_mut().unwrap().remove("orientation");
+        loaded.doc.project.cameras.push(serde_json::from_value(legacy_camera).unwrap());
+        loaded.doc.project.cameras[0].orientation = Some([0.0; 4]);
+        execute(&mut loaded, "camera.rotation.free", &Value::Null).unwrap();
+        for index in [0, 1] {
+            execute(&mut loaded, "camera.select", &json!({"index": index})).unwrap();
+            assert!(loaded.camera.up().y > 0.9, "invalid and missing orientations use the level view");
+            assert!((loaded.camera.eye() - saved_view.eye()).length() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn feedback_camera_navigation_recognizes_a_full_turn() {
+        let mut session = session();
+        for (name, yaw) in [("A", 90), ("Duplicate of B", 0), ("B", 0), ("C", 180)] {
+            execute(&mut session, "camera.set", &json!({"yaw": yaw, "pitch": 0})).unwrap();
+            execute(&mut session, "camera.add", &json!({"name": name})).unwrap();
+        }
+
+        for direction in ["camera.snapRotate.right", "camera.snapRotate.left"] {
+            execute(&mut session, "camera.select", &json!({"name": "B"})).unwrap();
+            for _ in 0..4 {
+                execute(&mut session, direction, &Value::Null).unwrap();
+            }
+
+            assert_eq!(current(&session), Some(2), "a full turn still matches the selected B");
+            execute(&mut session, "camera.next", &Value::Null).unwrap();
+            assert_eq!(current(&session), Some(3));
+        }
     }
 
     #[test]

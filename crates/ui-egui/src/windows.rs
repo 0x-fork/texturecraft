@@ -781,17 +781,20 @@ pub fn export(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 ui.set_width(180.0);
 
                 // The settings apply to every texture set; there are no per-set settings yet
-                let _ = ui.selectable_label(true, RichText::new(tr("Global settings")).strong());
-                for (index, set) in app.session.doc.project.texture_sets.iter().enumerate() {
-                    let mut checked = !app.ui.export.skip.contains(&index);
-                    if ui.checkbox(&mut checked, &set.name).changed() {
-                        if checked {
-                            app.ui.export.skip.retain(|skipped| *skipped != index);
-                        } else {
-                            app.ui.export.skip.push(index);
+                let header = ui.selectable_label(true, RichText::new(tr("Global settings")).strong());
+                let list_height = EXPORT_BODY_HEIGHT - header.rect.height() - ui.spacing().item_spacing.y;
+                egui::ScrollArea::vertical().id_salt("export_texture_sets").max_height(list_height.max(0.0)).show(ui, |ui| {
+                    for (index, set) in app.session.doc.project.texture_sets.iter().enumerate() {
+                        let mut checked = !app.ui.export.skip.contains(&index);
+                        if ui.checkbox(&mut checked, &set.name).changed() {
+                            if checked {
+                                app.ui.export.skip.retain(|skipped| *skipped != index);
+                            } else {
+                                app.ui.export.skip.push(index);
+                            }
                         }
                     }
-                }
+                });
             });
             ui.separator();
             ui.vertical(|ui| match app.ui.export.tab {
@@ -860,6 +863,45 @@ mod tests {
         h.state_mut().ui.prefs.language = "en".into();
         h.run_steps(2);
         h
+    }
+
+    #[test]
+    fn feedback_export_scroll_reaches_the_last_set_with_the_footer_visible() {
+        let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut harness = harness();
+        let project = &mut harness.state_mut().session.doc.project;
+        for index in 1..40 {
+            project.texture_sets.push(texturecraft_engine::core::TextureSet::new(format!("Export set {index}"), index, 32));
+        }
+        let last_index = project.texture_sets.len() - 1;
+        harness.state_mut().ui.windows.export = true;
+        harness.run_steps(5);
+        let footer = harness.get_by_role_and_label(egui::Role::Button, "Reset all").rect();
+        let first = harness.get_by_role_and_label(egui::Role::CheckBox, "Export set 1");
+        first.hover();
+        harness.run_steps(2);
+
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: vec2(0.0, -2000.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+        });
+        harness.run_steps(15);
+        let last = harness.get_by_role_and_label(egui::Role::CheckBox, "Export set 39");
+        last.click();
+        harness.run_steps(4);
+
+        assert_eq!(harness.state().ui.export.skip, vec![last_index], "the last texture set is clickable after scrolling");
+        let footer_after = harness.get_by_role_and_label(egui::Role::Button, "Reset all").rect();
+        assert_eq!(footer_after, footer, "scrolling keeps the footer in place");
+        assert!(footer_after.bottom() < 960.0, "the footer is inside the window");
+
+        if let Some(directory) = std::env::var_os("TC_UI_SNAPSHOTS") {
+            let path = std::path::PathBuf::from(directory).join("export-texture-set-scroll.png");
+            harness.render().unwrap().save(path).unwrap();
+        }
     }
 
     #[test]

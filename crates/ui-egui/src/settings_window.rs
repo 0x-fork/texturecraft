@@ -137,7 +137,11 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
 /// OK: the working copy becomes the settings in use.
 fn apply(app: &mut TextureCraftApp, draft: SettingsDraft) {
     let libraries_changed = draft.prefs.libraries != app.ui.prefs.libraries;
+    let previous_autosave_minutes = app.ui.prefs.autosave_minutes;
+
     app.ui.prefs = draft.prefs;
+    app.reschedule_autosave_if_changed(previous_autosave_minutes);
+
     let ids: std::collections::BTreeSet<&String> = draft.keymap.keys().chain(draft.keymap_at_open.keys()).collect();
     for id in ids.into_iter().filter(|id| draft.keymap.get(*id) != draft.keymap_at_open.get(*id)) {
         match draft.keymap.get(id) {
@@ -646,6 +650,53 @@ fn settings_resources(ctx: &egui::Context) -> (u32, u64) {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feedback_control_preferences_survive_confirming_an_open_draft() {
+        let context = egui::Context::default();
+        let session = texturecraft_engine::Session::closed().unwrap();
+        let mut app = TextureCraftApp::new(&eframe::CreationContext::_new_kittest(context.clone()), session);
+        let mut draft = SettingsDraft::of(&app);
+        draft.keymap.insert("file.save".into(), "Ctrl+Alt+S".into());
+        draft.library_name = "Studio".into();
+        draft.prefs.autosave_minutes = 30;
+        app.ui.windows.settings = true;
+        app.ui.windows.settings_draft = Some(draft);
+
+        let layout = serde_json::json!({"layout": "Only3D"});
+        assert_eq!(crate::control::handle(&mut app, &context, "ui.set", &layout)["ok"], true);
+        assert_eq!(app.ui.windows.settings_draft.as_ref().unwrap().prefs.autosave_minutes, 30);
+
+        let prefs = serde_json::json!({"prefs": {"gpu_raytracing": false}});
+        assert_eq!(crate::control::handle(&mut app, &context, "ui.set", &prefs)["ok"], true);
+        let draft = app.ui.windows.settings_draft.take().unwrap();
+        assert_eq!(draft.library_name, "Studio");
+        apply(&mut app, draft);
+
+        assert!(!app.ui.prefs.gpu_raytracing, "confirming Settings keeps the control update");
+        assert_eq!(app.ui.keymap.get("file.save").map(String::as_str), Some("Ctrl+Alt+S"));
+    }
+
+    #[test]
+    fn feedback_changing_the_autosave_interval_reschedules_the_deadline() {
+        let context = egui::Context::default();
+        let session = texturecraft_engine::sample_session(128, 32).unwrap();
+        let mut app = TextureCraftApp::new(&eframe::CreationContext::_new_kittest(context), session);
+        app.session.modified = true;
+        app.ui.prefs.autosave_minutes = 120;
+        app.last_time = 10.0;
+        app.next_autosave = 120.0 * 60.0;
+        let mut draft = SettingsDraft::of(&app);
+        draft.prefs.autosave_minutes = 1;
+
+        apply(&mut app, draft);
+
+        assert_eq!(app.next_autosave, 70.0, "the new interval starts at the current frame time");
+        app.last_time = 20.0;
+        let draft = SettingsDraft::of(&app);
+        apply(&mut app, draft);
+        assert_eq!(app.next_autosave, 70.0, "an unchanged interval keeps the deadline");
+    }
 
     #[test]
     fn a_folder_answer_cannot_edit_a_reopened_settings_window() {

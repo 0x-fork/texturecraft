@@ -300,7 +300,7 @@ impl TextureCraftApp {
             ui.windows.export = false;
         }
 
-        let next_autosave = ui.prefs.autosave_minutes as f64 * 60.0;
+        let next_autosave = autosave_period_seconds(ui.prefs.autosave_minutes);
         ui.prefs.apply_resource_limits();
 
         let mut app = TextureCraftApp {
@@ -831,12 +831,23 @@ fn spawn_worker<T: Send + 'static>(_name: &str, f: impl FnOnce() -> T + Send + '
     rx
 }
 
+fn autosave_period_seconds(minutes: u32) -> f64 {
+    f64::from(minutes) * 60.0
+}
+
 impl TextureCraftApp {
+    fn reschedule_autosave_if_changed(&mut self, previous_minutes: u32) {
+        let minutes = self.ui.prefs.autosave_minutes;
+        if minutes != previous_minutes {
+            self.next_autosave = self.last_time + autosave_period_seconds(minutes);
+        }
+    }
+
     /// Every `prefs.autosave_minutes`, write a modified project to the autosave folder (encoded
     /// and written on a worker thread; the project data is shared copy-on-write).
     #[cfg(not(target_arch = "wasm32"))]
     fn autosave(&mut self, now: f64) {
-        let period = self.ui.prefs.autosave_minutes as f64 * 60.0;
+        let period = autosave_period_seconds(self.ui.prefs.autosave_minutes);
 
         // The clock starts at the first unsaved change
         if period <= 0.0 || !self.session.modified {

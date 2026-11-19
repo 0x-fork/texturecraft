@@ -48,6 +48,10 @@ pub(crate) fn body(app: &mut TextureCraftApp, ui: &mut Ui) {
     if display != app.session.doc.project.display {
         if display.fov != app.session.doc.project.display.fov {
             app.session.camera.fov = display.fov;
+            if let Some(glide) = &mut app.camera_glide {
+                glide.from.fov = display.fov;
+                glide.to.fov = display.fov;
+            }
         }
 
         app.session.doc.project.display = display;
@@ -188,31 +192,44 @@ fn camera(app: &mut TextureCraftApp, ui: &mut Ui, display: &mut DisplaySettings)
 /// current view.
 fn cameras(app: &mut TextureCraftApp, ui: &mut Ui) {
     let current = texturecraft_engine::camera_cmds::current(&app.session);
-    let names: Vec<String> = app.session.doc.project.cameras.iter().map(|c| c.name.clone()).collect();
-    for (i, name) in names.iter().enumerate() {
+    let names: Vec<String> = app.session.doc.project.cameras.iter().map(|camera| camera.name.clone()).collect();
+    let mut remove_index = None;
+    for (index, name) in names.iter().enumerate() {
         ui.horizontal(|ui| {
-            if icon_button(ui, ic::VIDEO_CAMERA, tr("View through this camera"), current == Some(i), 20.0).clicked() {
-                app.run("camera.select", json!({"index": i}));
+            if icon_button(ui, ic::VIDEO_CAMERA, tr("View through this camera"), current == Some(index), 20.0).clicked() {
+                app.run("camera.select", json!({"index": index}));
             }
 
             // Keep an in-progress name in egui memory until focus leaves the field
-            let id = ui.scope_id().with(("camera_name", i));
+            let id = ui.scope_id().with(("camera_name", index));
             let mut text = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_else(|| name.clone());
-            let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(ui.available_width() - 26.0));
-            if r.changed() {
-                ui.data_mut(|d| d.insert_temp(id, text.clone()));
+            let response = ui.add(egui::TextEdit::singleline(&mut text).desired_width(ui.available_width() - 26.0));
+            if icon_button(ui, ic::TRASH, tr("Delete this camera"), false, 20.0).clicked() && remove_index.is_none() {
+                remove_index = Some(index);
             }
-            if r.lost_focus() {
+
+            // Commit pending text before a deletion shifts this row's editor index
+            let row_will_move = remove_index.is_some();
+            if row_will_move {
+                response.surrender_focus();
+                ui.data_mut(|data| data.remove::<egui::text_edit::TextEditState>(response.id));
+            }
+
+            if row_will_move || response.lost_focus() {
                 ui.data_mut(|d| d.remove::<String>(id));
                 if text.trim() != name && !text.trim().is_empty() {
-                    app.run("camera.rename", json!({"index": i, "to": text.trim()}));
+                    app.run("camera.rename", json!({"index": index, "to": text.trim()}));
                 }
-            }
-            if icon_button(ui, ic::TRASH, tr("Delete this camera"), false, 20.0).clicked() {
-                app.run("camera.remove", json!({"index": i}));
+            } else if response.changed() {
+                ui.data_mut(|d| d.insert_temp(id, text));
             }
         });
     }
+
+    if let Some(index) = remove_index {
+        app.run("camera.remove", json!({"index": index}));
+    }
+
     if ui.button(format!("{}  {}", ic::PLUS, tr("Save view as camera"))).clicked() {
         app.run("camera.add", json!({}));
     }
@@ -241,4 +258,81 @@ fn viewer(app: &mut TextureCraftApp, ui: &mut Ui, display: &mut DisplaySettings)
     ui.checkbox(&mut app.ui.wireframe_3d, tr("Show wireframe in the 3D view"));
     ui.checkbox(&mut app.ui.uv_wireframe, tr("Show UV wireframe in the 2D view"));
     ui.checkbox(&mut display.taa, tr("Temporal anti-aliasing (refines the 3D view while it is still)"));
+}
+
+#[cfg(test)]
+mod tests {
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable as _;
+
+    use super::*;
+
+    fn display_harness() -> Harness<'static, TextureCraftApp> {
+        let session = texturecraft_engine::sample_session(128, 32).unwrap();
+        let mut harness = Harness::builder().with_size(egui::vec2(1600.0, 1200.0)).with_step_dt(0.01).build_eframe(|cc| TextureCraftApp::new(cc, session));
+        harness.state_mut().ui.prefs.language = "en".into();
+        harness.state_mut().ui.dock.focus(crate::docking::Panel::Display);
+        harness.run_steps(4);
+        harness.get_all_by_label("Camera settings").max_by(|a, b| a.rect().width().total_cmp(&b.rect().width())).unwrap().click();
+        harness.run_steps(25);
+        harness
+    }
+
+    #[test]
+    fn feedback_editing_fov_during_a_glide_keeps_the_new_value() {
+        let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut harness = display_harness();
+        let app = harness.state_mut();
+        app.run("camera.set", json!({"yaw": 70, "pitch": 30})).unwrap();
+        app.run("camera.view.front", json!({})).unwrap();
+        assert!(app.camera_glide.is_some());
+        let label = harness.get_by_label("Field of view (deg)").rect();
+        let track = egui::pos2(label.left() + 90.0, label.bottom() + 10.0);
+
+        harness.hover_at(track);
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton { pos: track, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        }
+        harness.run_steps(3);
+        let edited = harness.state().session.doc.project.display.fov;
+        assert_ne!(edited, DisplaySettings::default().fov, "the slider changed");
+        harness.run_steps(40);
+
+        let camera = harness.state().session.camera;
+        assert_eq!(camera.fov, edited, "the finished glide keeps the edited FOV");
+        assert!(camera.yaw.abs() < 1e-5, "the glide reaches the front view");
+
+        if let Some(directory) = std::env::var_os("TC_UI_SNAPSHOTS") {
+            let path = std::path::PathBuf::from(directory).join("display-camera-field-of-view.png");
+            harness.render().unwrap().save(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn feedback_deleting_an_earlier_camera_keeps_the_later_rename() {
+        let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut harness = display_harness();
+        for name in ["First", "Second", "Third"] {
+            harness.state_mut().run("camera.add", json!({"name": name})).unwrap();
+        }
+        harness.run_steps(4);
+
+        let second = harness.get_all_by_role(egui::Role::TextInput).find(|node| node.value().as_deref() == Some("Second")).unwrap();
+        second.click();
+        harness.run_steps(2);
+        harness.event(egui::Event::Text("Edited".into()));
+        harness.run_steps(2);
+        let edited = harness.get_all_by_role(egui::Role::TextInput).find_map(|node| node.value().filter(|text| text.contains("Edited"))).unwrap();
+        // Commit the rename in the same frame that the earlier row is deleted
+        harness
+            .get_all_by_role_and_label(egui::Role::Button, "Delete this camera")
+            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .unwrap()
+            .click_accesskit();
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(4);
+
+        let names: Vec<_> = harness.state().session.doc.project.cameras.iter().map(|camera| camera.name.as_str()).collect();
+        assert_eq!(names, [edited.as_str(), "Third"]);
+    }
 }

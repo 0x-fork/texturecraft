@@ -222,6 +222,7 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
 
             match serde_json::from_value::<crate::UiState>(current_state) {
                 Ok(mut ui) => {
+                    let previous_autosave_minutes = app.ui.prefs.autosave_minutes;
                     if ui.prefs.libraries != app.ui.prefs.libraries {
                         app.library = None;
                     }
@@ -237,7 +238,15 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                     }
                     ui.bake_preset_name = std::mem::take(&mut app.ui.bake_preset_name);
 
+                    // Refresh the preference snapshot while keeping the other editors in the draft
+                    if ui.prefs != app.ui.prefs
+                        && let Some(draft) = &mut ui.windows.settings_draft
+                    {
+                        draft.prefs = ui.prefs.clone();
+                    }
+
                     app.ui = ui;
+                    app.reschedule_autosave_if_changed(previous_autosave_minutes);
                     app.ui.prefs.apply_resource_limits();
                     ok(Value::Null)
                 }
