@@ -131,6 +131,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
                 });
         });
         ui.separator();
+
         // The page has brought the checker up to date, so OK follows this frame's edits
         let conflict = crate::keymap::has_conflict(&app.settings_bindings);
         ui.horizontal(|ui| {
@@ -336,6 +337,7 @@ fn general(
         for (index, side, name) in [(0, "top", "Top background"), (1, "bottom", "Bottom background")] {
             let id = format!("settings_background_{side}");
             crate::widgets::color_swatch(ui, &id, &mut p.background[index], 38.0);
+
             // The reference shows no tooltip here; the name is only for screen readers
             let label = trf("Pick the {overlay} Color from the Screen", &[("overlay", &name)]);
             crate::screen_color_pick::eyedropper_without_tooltip(ui, ui.make_persistent_id(&id), &mut p.background[index], &label, 18.0);
@@ -602,6 +604,7 @@ fn libraries(ui: &mut Ui, draft: &mut SettingsDraft, project_open: bool, #[cfg(n
     // The browser has no folders to add
     let can_change = !project_open && !cfg!(target_arch = "wasm32");
     section(ui, n_("LIBRARY LOCATIONS"));
+
     // With a project open the locations cannot change: the add row is gone and the note says why
     if project_open {
         ui.horizontal(|ui| {

@@ -195,30 +195,25 @@ fn basic_settings(app: &mut TextureCraftApp, ui: &mut Ui) {
         ask_mesh_file(app, ui.ctx());
     }
 
-    row(
-        ui,
-        tr("Project template"),
-        Some(tr("Select a template that will define the project's default settings for: Texture Sets, Display, Baking, Shader resources, Environment Map")),
-        |ui| {
-            let new_project = &mut app.ui.new_project;
-            let builtin = texturecraft_engine::template_cmds::builtin_templates();
-            let user_templates = app.session.templates.list.iter();
-            let listed: Vec<_> = builtin.iter().map(|template| (template, true)).chain(user_templates.map(|template| (template, false))).collect();
-            let shown = listed
-                .iter()
-                .find(|(template, _)| template.name == new_project.template)
-                .map_or_else(|| new_project.template.clone(), |(template, builtin)| template_label(&template.name, *builtin));
-            egui::ComboBox::from_id_salt("np_template").width(FIELD_WIDTH_POINTS).selected_text(shown).show_ui(ui, |ui| {
-                for (template, builtin) in listed {
-                    if ui.selectable_label(template.name == new_project.template, template_label(&template.name, builtin)).clicked() {
-                        new_project.template = template.name.clone();
-                        new_project.resolution = template.resolution;
-                        new_project.normal_format = None;
-                    }
+    row(ui, tr("Project template"), Some(tr("Templates set the starting channels, resolution, normal map format and shader settings.")), |ui| {
+        let new_project = &mut app.ui.new_project;
+        let builtin = texturecraft_engine::template_cmds::builtin_templates();
+        let user_templates = app.session.templates.list.iter();
+        let listed: Vec<_> = builtin.iter().map(|template| (template, true)).chain(user_templates.map(|template| (template, false))).collect();
+        let shown = listed
+            .iter()
+            .find(|(template, _)| template.name == new_project.template)
+            .map_or_else(|| new_project.template.clone(), |(template, builtin)| template_label(&template.name, *builtin));
+        egui::ComboBox::from_id_salt("np_template").width(FIELD_WIDTH_POINTS).selected_text(shown).show_ui(ui, |ui| {
+            for (template, builtin) in listed {
+                if ui.selectable_label(template.name == new_project.template, template_label(&template.name, builtin)).clicked() {
+                    new_project.template = template.name.clone();
+                    new_project.resolution = template.resolution;
+                    new_project.normal_format = None;
                 }
-            });
-        },
-    );
+            }
+        });
+    });
 
     row(ui, tr("Document resolution (px)"), Some(tr("The texture size of every texture set. It can be changed later.")), |ui| {
         let resolution = &mut app.ui.new_project.resolution;

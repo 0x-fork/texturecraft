@@ -203,6 +203,7 @@ fn dragging_the_divider_keeps_the_uv_texture_size_and_offset_on_screen() {
         harness.state_mut().ui.uv_zoom = zoom;
         harness.state_mut().ui.uv_pan = [0.2, 0.1];
         harness.run_steps(2);
+
         // The split starts centred, so the views end as far right of the divider as they start left of it
         let views_left = harness.state().viewport_rect.left();
         let views_right = views_left + (divider_x(&harness) - views_left) * 2.0;

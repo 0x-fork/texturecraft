@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
 use rayon::prelude::*;
@@ -43,6 +43,8 @@ pub struct SceneSync {
     pub env: Option<(String, Option<Arc<ImageRes>>)>,
     pub tiles: Vec<(usize, DisplayKind, u32, u32, Vec<u8>)>,
     pub aux: Vec<(usize, u32, Vec<u8>)>,
+    /// One image buffer per resolution, with all texture sets that need it.
+    pub image_aux: BTreeMap<u32, (Vec<usize>, Vec<u8>)>,
     /// Bake mode's high poly (`None` removes it) and the id it is sent under
     pub bake_high: Option<(Option<Arc<Mesh>>, u64)>,
     /// Which vertices of the high poly (by its id) the bake's rays miss (1) or reach (0)
@@ -93,9 +95,11 @@ pub struct GpuLink {
     /// The display shift the GPU has (`Prefs::viewport_texture`).
     shift: u32,
     /// The environment the GPU has: name and image identity (a re-imported resource differs).
-    env: (String, usize),
-    /// What each set's aux texture holds: (mesh map or mask key, revision).
+    env: (String, Option<Weak<ImageRes>>),
+    /// What each set's aux texture holds: (view key, revision).
     aux: BTreeMap<usize, (String, u64)>,
+    /// Image identity without holding its decoded pixels alive.
+    aux_image: Option<Weak<ImageRes>>,
     /// The display kinds sent to the GPU per set: kinds the set has no channels for are not
     /// converted, unless an earlier upload gave them content that must be overwritten. Only the
     /// renderer recreating a set's textures ([`GpuState::recreated`]) replaces its entry with
@@ -125,8 +129,8 @@ pub fn init(rs: &egui_wgpu::RenderState, ctx: &egui::Context) -> GpuLink {
     let reset = Arc::new(AtomicBool::new(false));
     let recreated = Arc::new(Mutex::new(BTreeMap::new()));
     let reports = Arc::new(Mutex::new(GpuReports::default()));
-    // wgpu's default handler panics on any error no scope caught (an out-of-memory texture, a
-    // driver hiccup): report it instead, so the user keeps the session.
+
+    // Report uncaptured wgpu errors to preserve the session when texture allocation or the driver fails
     let (sink, wake) = (reports.clone(), ctx.clone());
     rs.device.on_uncaptured_error(Arc::new(move |e: wgpu::Error| {
         log::error!("GPU error: {e}");
@@ -135,7 +139,8 @@ pub fn init(rs: &egui_wgpu::RenderState, ctx: &egui::Context) -> GpuLink {
         if r.errors.len() < MAX_GPU_ERRORS && !r.errors.contains(&text) {
             r.errors.push(text);
         }
-        // The UI may be idle: draw a frame to show it.
+
+        // The UI may be idle: draw a frame to show it
         wake.request_repaint();
     }));
     let renderer = Renderer::new(&rs.device, &rs.queue, rs.target_format);
@@ -157,6 +162,7 @@ pub fn init(rs: &egui_wgpu::RenderState, ctx: &egui::Context) -> GpuLink {
         shift: 0,
         env: Default::default(),
         aux: BTreeMap::new(),
+        aux_image: None,
         sent: HashMap::new(),
         adapter: format!("{} ({:?})", info.name, info.backend),
         composite_total: 0,
@@ -209,6 +215,7 @@ impl GpuLink {
         if sets != self.sets || shift != self.shift || out.mesh.is_some() {
             // Retained GPU sets need their prior kinds to overwrite stale textures
             self.sent.retain(|&texture_set, _| texture_set < sets.len());
+
             // Recreated sets start with blank aux textures: resend the shown view
             self.aux.clear();
 
@@ -219,9 +226,8 @@ impl GpuLink {
 
         let display = &session.doc.project.display;
         let image = display.environment_resource().and_then(|name| session.images.get(name));
-        let image_identity = image.map_or(0, |image| Arc::as_ptr(image) as usize);
-        if self.env.0 != display.environment || self.env.1 != image_identity {
-            self.env = (display.environment.clone(), image_identity);
+        if self.env.0 != display.environment || self.env.1.as_ref().map(Weak::as_ptr) != image.map(Arc::as_ptr) {
+            self.env = (display.environment.clone(), image.map(Arc::downgrade));
             out.env = Some((display.environment.clone(), image.cloned()));
         }
 
@@ -274,6 +280,11 @@ impl GpuLink {
             }
         }
 
+        if self.aux_image.as_ref().is_some_and(|image| image.strong_count() == 0) {
+            self.aux_image = None;
+            self.aux.retain(|_, (view, _)| view != "image");
+        }
+
         match aux_map {
             Some(AuxView::MeshMap(map)) => {
                 for texture_set in 0..session.caches.len() {
@@ -324,17 +335,29 @@ impl GpuLink {
                 }
             }
             Some(AuxView::Image) => {
-                for texture_set in 0..session.caches.len() {
-                    let Some(cache) = session.caches.get(texture_set) else { continue };
-                    let shown = session.view_image.as_deref().and_then(|name| session.images.get(name));
-                    let key = (format!("image{}", session.view_image.as_deref().unwrap_or_default()), shown.map_or(0, |image| Arc::as_ptr(image) as u64));
-                    if self.aux.get(&texture_set) == Some(&key) {
+                let shown = session.view_image.as_deref().and_then(|name| session.images.get(name));
+                let same_image = match (&self.aux_image, shown) {
+                    (Some(previous), Some(image)) => std::ptr::eq(previous.as_ptr(), Arc::as_ptr(image)),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if !same_image {
+                    self.aux.clear();
+                    self.aux_image = shown.map(Arc::downgrade);
+                }
+
+                for (texture_set, cache) in session.caches.iter().enumerate() {
+                    if self.aux.get(&texture_set).is_some_and(|(view, _)| view == "image") {
                         continue;
                     }
+
                     let resolution = texturecraft_render::aux_size(cache.size);
-                    let rgba = session.image_view_rgba(resolution).unwrap_or_else(|| MASK_VIEW_BLANK.repeat((resolution * resolution) as usize));
-                    out.aux.push((texture_set, resolution, rgba));
-                    self.aux.insert(texture_set, key);
+                    let (sets, _) = out.image_aux.entry(resolution).or_insert_with(|| {
+                        let rgba = session.image_view_rgba(resolution).unwrap_or_else(|| MASK_VIEW_BLANK.repeat((resolution * resolution) as usize));
+                        (Vec::new(), rgba)
+                    });
+                    sets.push(texture_set);
+                    self.aux.insert(texture_set, ("image".into(), 0));
                 }
             }
             Some(AuxView::QuickMask) => {
@@ -435,6 +458,11 @@ impl CallbackTrait for ViewCallback {
             for (texture_set, size, bytes) in &sync.aux {
                 gpu.renderer.upload_aux(device, queue, *texture_set, *size, bytes);
             }
+            for (size, (sets, bytes)) in &sync.image_aux {
+                for &texture_set in sets {
+                    gpu.renderer.upload_aux(device, queue, texture_set, *size, bytes);
+                }
+            }
             if let Some((high, id)) = &sync.bake_high
                 && let Err(error) = gpu.renderer.set_bake_high(device, queue, high.as_deref(), *id)
             {
@@ -519,6 +547,7 @@ mod tests {
             shift: 0,
             env: Default::default(),
             aux: BTreeMap::new(),
+            aux_image: None,
             sent: HashMap::new(),
             adapter: String::new(),
             composite_total: 0,
@@ -586,10 +615,14 @@ mod tests {
         execute(&mut s, "viewport.view", &json!({"mode": "image", "image": name})).unwrap();
 
         let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
-        assert!(!out.aux.is_empty());
+        assert_eq!(out.image_aux.len(), 1, "equal resolutions share a single pixel buffer");
+        let (targets, bytes) = out.image_aux.values().next().unwrap();
+        assert!(targets.len() > 1);
+        assert_eq!(targets.len(), s.caches.len());
+        assert!(bytes.as_chunks::<4>().0.iter().all(|pixel| *pixel == [9, 9, 9, 255]));
         drop(out);
         let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
-        assert!(out.aux.is_empty(), "nothing is sent again while the view stays");
+        assert!(out.image_aux.is_empty(), "nothing is sent again while the view stays");
         drop(out);
 
         // The renderer recreates a resized set's textures blank, in the same frame as this sync
@@ -598,7 +631,21 @@ mod tests {
         execute(&mut s, "textureSet.resolution", &json!({"resolution": resolution})).unwrap();
         let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
         assert!(out.sets.is_some());
-        assert!(out.aux.iter().any(|(set, _, _)| *set == 0), "the recreated set gets the shown image uploaded again");
+        assert_eq!(out.image_aux.get(&resolution).unwrap().0, [0], "the resized set gets pixels at its new resolution");
+
+        // Switching images leaves the previous decoded image owned only by the session
+        let original = Arc::downgrade(s.images.get(&name).unwrap());
+        execute(&mut s, "resource.remove", &json!({"name": name})).unwrap();
+        assert!(original.upgrade().is_none(), "even a pending upload does not hold the decoded source");
+        assert!(gpu.sync(&mut s, None, None, 0, 0.0).image_aux.is_empty());
+        assert!(gpu.aux_image.is_none());
+
+        let replacement = Arc::new(ImageRes { width: 1, height: 1, rgba: vec![[1.0, 0.0, 0.0, 1.0]], srgb: true });
+        s.images.insert(name.clone(), replacement);
+        execute(&mut s, "viewport.view", &json!({"mode": "image", "image": name})).unwrap();
+        let updated = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
+        assert_eq!(updated.image_aux.len(), 2);
+        assert!(updated.image_aux.values().all(|(_, pixels)| pixels.as_chunks::<4>().0.iter().all(|pixel| *pixel == [255, 0, 0, 255])));
     }
 
     fn kinds(out: &SceneSync) -> BTreeSet<DisplayKind> {

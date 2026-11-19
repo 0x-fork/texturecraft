@@ -163,6 +163,7 @@ fn cycle_channel(s: &mut Session, d: i64) -> Result<Value> {
     if views.is_empty() {
         return set_view(s, ViewMode::Material);
     }
+
     views.push(ViewMode::NormalHeightMesh);
     let n = views.len() as i64;
     let i = match views.iter().position(|view| *view == s.view) {
@@ -200,6 +201,7 @@ fn view(s: &mut Session, p: &Value) -> Result<Value> {
             if !s.images.contains_key(name) {
                 return Err(bad("viewport.view", format!("no image resource `{name}` (import it with resource.import)")));
             }
+
             s.view_image = Some(name.to_owned());
             ViewMode::Image
         }
@@ -288,9 +290,11 @@ fn display(s: &mut Session, p: &Value) -> Result<Value> {
     {
         return Err(bad("display.set", format!("no image resource `{name}` (import it with resource.import)")));
     }
+
     if let Some(e) = env.as_deref().filter(|e| !e.starts_with(texturecraft_core::project::ENV_RESOURCE_PREFIX) && !ENVIRONMENTS.contains(e)) {
         return Err(bad("display.set", format!("unknown environment `{e}`: one of {}, or resource:<image>", ENVIRONMENTS.join(", "))));
     }
+
     let scatter_color = color_param("display.set", p, "scatterColor")?;
     let d = &mut s.doc.project.display;
     if let Some(e) = env {
@@ -353,7 +357,8 @@ fn display(s: &mut Session, p: &Value) -> Result<Value> {
             *slot = b;
         }
     }
-    // The field of view applies to the view only when set (a saved camera keeps its own).
+
+    // The field of view applies to the view only when set (a saved camera keeps its own)
     if f32p(p, "fov").is_some() {
         s.camera.fov = s.doc.project.display.fov;
     }
@@ -422,6 +427,7 @@ mod tests {
         assert_eq!(at(7, 0), [0, 255, 0], "top right: green");
         assert_eq!(at(0, 7), [255, 0, 0], "bottom left: red");
         assert_eq!(at(7, 7), [0, 0, 0], "bottom right: black");
+        assert!(s.image_view_rgba(u32::MAX).is_none(), "reject an oversized raster before allocating it");
     }
 
     #[test]

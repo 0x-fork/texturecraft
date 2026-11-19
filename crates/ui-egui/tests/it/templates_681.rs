@@ -29,10 +29,14 @@ fn open_more_save_options(h: &mut Harness<'_, TextureCraftApp>) {
 
 #[test]
 fn save_as_template_asks_in_the_templates_folder_and_saves_without_a_message() {
+    let dir = TempDir::new("save-template-destination");
     let mut h = app();
+    let library = dir.join("templates");
+    h.state_mut().session.templates.dir = Some(library.clone());
     let asked: Rc<RefCell<Vec<Request>>> = Rc::default();
     let seen = asked.clone();
-    let chosen = std::path::PathBuf::from("/nowhere/My starter v1.2.json");
+    let destination = dir.join("My starter v1.2.json");
+    let chosen = dir.join("My starter v1.2");
     h.state_mut().file_dialogs.set_override(Some(Box::new(move |request: &Request| {
         seen.borrow_mut().push(request.clone());
         Answer::Paths(vec![chosen.clone()])
@@ -45,10 +49,12 @@ fn save_as_template_asks_in_the_templates_folder_and_saves_without_a_message() {
     let asked = asked.borrow();
     let Some(Request::File(dialog)) = asked.first() else { panic!("a file dialog was asked for: {asked:?}") };
     assert_eq!(dialog.title.as_deref(), Some("Save template"));
-    assert_eq!(dialog.directory, Some(texturecraft_ui_egui::user_dir("templates")));
+    assert!(library.is_dir(), "the save picker can open a new library folder");
+    assert_eq!(dialog.directory, Some(library));
     assert_eq!(dialog.filters.len(), 1, "one file type");
     assert!(dialog.file_name.is_none(), "the name field starts empty");
     assert!(h.state().session.templates.list.iter().any(|t| t.name == "My starter v1.2"), "the template is saved under the chosen file name");
+    assert!(destination.is_file(), "the save dialog's chosen destination receives the template");
     assert!(h.state().toasts.is_empty(), "no confirmation message");
 }
 
@@ -88,7 +94,7 @@ fn save_and_reduce_file_size_is_greyed_with_the_hint() {
 }
 
 #[test]
-fn the_project_template_info_tooltip_is_the_reference_text() {
+fn the_project_template_info_tooltip_lists_the_settings_templates_apply() {
     let mut h = app();
     h.state_mut().ui.windows.new_project = true;
     h.run_steps(4);
@@ -97,13 +103,14 @@ fn the_project_template_info_tooltip_is_the_reference_text() {
         .get_all_by_label(egui_phosphor::regular::INFO)
         .find(|node| (node.rect().center().y - row).abs() < 6.0)
         .expect("the info icon in the Project template row");
+
     // The icon's node is wider than the glyph: hover its left part
     let at = icon.rect().center() - egui::vec2(6.0, 0.0);
     h.hover_at(egui::pos2(1.0, 1.0));
     h.run_steps(2);
     h.hover_at(at);
     h.run_steps(30);
-    let tip = "Select a template that will define the project's default settings for: Texture Sets, Display, Baking, Shader resources, Environment Map";
+    let tip = "Templates set the starting channels, resolution, normal map format and shader settings.";
     assert!(h.query_by_label(tip).is_some(), "hovering the info icon of the Project template row");
 }
 

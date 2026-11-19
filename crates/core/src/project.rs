@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{BakeSettings, BakedMap, Channel, ChannelFormat, CoreError, Effect, Layer, LayerId, LayerKind, Result};
 
+pub use crate::env_alignment::EnvAlignment;
+pub use crate::shadow_mode::ShadowMode;
+
 /// Project file format. 3: bent normal maps are in tangent space (older files hold world-space ones).
 pub const FORMAT_VERSION: u32 = 3;
 
@@ -260,80 +263,6 @@ pub enum ToneMapping {
     #[default]
     Linear,
     AcesFilmic,
-}
-
-/// What the environment is fixed to (Display settings > Environment Alignment)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum EnvAlignment {
-    /// The environment stays with the scene: orbiting the camera looks around it
-    #[default]
-    World,
-    /// The environment turns with the camera (about the vertical axis): the lighting stays the same while orbiting
-    Camera,
-}
-
-impl EnvAlignment {
-    pub const ALL: [EnvAlignment; 2] = [EnvAlignment::World, EnvAlignment::Camera];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            EnvAlignment::World => "World",
-            EnvAlignment::Camera => "Camera",
-        }
-    }
-
-    pub fn id(self) -> &'static str {
-        match self {
-            EnvAlignment::World => "world",
-            EnvAlignment::Camera => "camera",
-        }
-    }
-
-    pub fn parse(id: &str) -> Option<EnvAlignment> {
-        Self::ALL.into_iter().find(|alignment| alignment.id().eq_ignore_ascii_case(id))
-    }
-}
-
-/// How the key light's shadows are computed (Display settings > Computation mode): the shadow map's resolution
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum ShadowMode {
-    Intensive,
-    Average,
-    #[default]
-    Lightweight,
-}
-
-impl ShadowMode {
-    pub const ALL: [ShadowMode; 3] = [ShadowMode::Intensive, ShadowMode::Average, ShadowMode::Lightweight];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ShadowMode::Intensive => "Intensive",
-            ShadowMode::Average => "Average",
-            ShadowMode::Lightweight => "Lightweight",
-        }
-    }
-
-    pub fn id(self) -> &'static str {
-        match self {
-            ShadowMode::Intensive => "intensive",
-            ShadowMode::Average => "average",
-            ShadowMode::Lightweight => "lightweight",
-        }
-    }
-
-    pub fn parse(id: &str) -> Option<ShadowMode> {
-        Self::ALL.into_iter().find(|mode| mode.id().eq_ignore_ascii_case(id))
-    }
-
-    /// Edge of the square shadow map, in texels
-    pub fn map_size(self) -> u32 {
-        match self {
-            ShadowMode::Intensive => 4096,
-            ShadowMode::Average => 3072,
-            ShadowMode::Lightweight => 2048,
-        }
-    }
 }
 
 /// Viewport display settings (saved with the project). Fields missing from

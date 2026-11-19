@@ -133,7 +133,7 @@ fn the_environment_section_is_greyed_while_a_mesh_map_shows() {
     h.state_mut().run("viewport.view", json!({"mode": "map:ambientOcclusion"}));
     h.run_steps(SETTLE);
     assert!(h.get_by_role_and_label(Role::Button, "Studio Soft").accesskit_node().is_disabled(), "the slot is greyed in a mesh-map mode");
-    assert!(h.get_by_role_and_label(Role::CheckBox, "Shadows").accesskit_node().is_disabled(), "so is the rest of the section");
+    assert!(h.get_by_role_and_label(Role::CheckBox, "Cast shadows").accesskit_node().is_disabled(), "so is the rest of the section");
 
     h.state_mut().run("viewport.view", json!({"mode": "material"}));
     h.run_steps(SETTLE);
@@ -208,7 +208,7 @@ fn the_shadow_quality_rows_work_only_while_shadows_are_on() {
     drag(&mut h, "Shadows opacity", 20.0);
     assert_eq!(display(&h).shadow_opacity, 1.0, "the opacity does nothing while Shadows is off");
 
-    h.get_by_role_and_label(Role::CheckBox, "Shadows").click();
+    h.get_by_role_and_label(Role::CheckBox, "Cast shadows").click();
     h.run_steps(SETTLE);
     assert!(display(&h).shadows);
     assert!(!dropdown(&h, "Lightweight").accesskit_node().is_disabled());

@@ -113,9 +113,10 @@ fn environment(app: &mut TextureCraftApp, ui: &mut Ui, display: &mut DisplaySett
             });
         });
 
-        sub_heading(ui, tr("Shadows"));
+        sub_heading(ui, tr("Cast shadows"));
         indented(ui, |ui| {
-            ui.checkbox(&mut display.shadows, tr("Shadows")).on_hover_text(tr("Key light (shadow-casting light, direct only)"));
+            ui.checkbox(&mut display.shadows, tr("Cast shadows")).on_hover_text(tr("Key light (shadow-casting light, direct only)"));
+
             // The shadow settings work only while shadows are on
             ui.add_enabled_ui(display.shadows, |ui| {
                 combo(ui, tr("Computation mode"), tr(display.shadow_mode.label()), |ui| {

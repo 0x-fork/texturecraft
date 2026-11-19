@@ -84,7 +84,8 @@ fn renders_the_material_ball() {
     let Some((mut h, frame)) = setup() else { return };
     let img = render(&mut h, &frame, "headless_ball");
     assert_ne!(img.at(240, 140), img.at(5, 5), "mesh should differ from background");
-    // UV view of set 0.
+
+    // UV view of set 0
     let uv = Frame { view_id: 2, kind: ViewKind::Uv { ts: 0, zoom: 1.0, pan: [0.0, 0.0], rotation: 0.0 }, ..frame.clone() };
     let uv_img = render(&mut h, &uv, "headless_uv");
     assert_eq!(uv_img.px.len(), img.px.len());
@@ -107,7 +108,8 @@ fn exposure_brightens_the_material_but_not_data_views() {
     let a = render(&mut h, &ch, "channel_base_color");
     let b = render(&mut h, &shaded(&ch, |s| s.exposure_ev = 2.0), "channel_base_color_ev2");
     assert_eq!(a.px, b.px, "data views ignore exposure");
-    // Default base color 188 (sRGB) shows unchanged in the channel view.
+
+    // Default base color 188 (sRGB) shows unchanged in the channel view
     let [r, ..] = a.at(240, 140);
     assert!(r.abs_diff(188) <= 1, "base color channel shows the raw value, got {r}");
 }
@@ -228,6 +230,7 @@ fn the_environment_follows_the_camera_when_aligned_to_it() {
         f.camera.set_angles(yaw, f.camera.pitch);
         render(&mut h, &f, name)
     };
+
     // The mean difference of the ball's pixels between two views
     let difference = |a: &Img, b: &Img| {
         let mut sum = 0.0;

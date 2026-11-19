@@ -136,6 +136,26 @@ fn save_ui_layout_has_one_entry_per_mode_and_writes_that_modes_layout() {
 }
 
 #[test]
+fn the_legacy_layout_save_command_saves_the_active_mode() {
+    let dir = TempDir::new("legacy-layout-save");
+    let path = dir.join("layout.json");
+    let target = path.clone();
+    let mut h = app();
+    h.state_mut().ui.mode = Mode::Baking;
+    h.state_mut().file_dialogs.set_override(Some(Box::new(move |_: &Request| Answer::Paths(vec![target.clone()]))));
+    h.run_steps(3);
+    let ctx = h.ctx.clone();
+
+    let reply = texturecraft_ui_egui::control::handle(h.state_mut(), &ctx, "ui.menu.invoke", &serde_json::json!({"id": "ui.layout.save"}));
+    h.run_steps(4);
+
+    assert_eq!(reply["ok"], true);
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(saved["mode"], serde_json::to_value(Mode::Baking).unwrap());
+    assert_eq!(saved["dock_is_baking"], true);
+}
+
+#[test]
 fn load_ui_layout_asks_with_the_reference_title() {
     let mut h = app();
     let asked: Rc<RefCell<Vec<Request>>> = Rc::default();

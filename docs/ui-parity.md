@@ -89,12 +89,12 @@ that closes it back onto the bar; the float is saved with the UI state.
   confirmation, the template shows up in New project at once), *Save and reduce file size*
   (greyed, "Not available yet") and *Save as copy...*. The New project list reads "Default
   (OpenPBR)", then the other built-ins with " (starter_assets)", then the user's with
-  " (your_assets)"; the info tooltip is the reference text; the list opens on the template of the
+  " (your_assets)"; the tooltip lists the settings TextureCraft templates apply; the list opens on the template of the
   last created project. Deviations: the built-in templates are TextureCraft's own four (the
   reference's 26 starter templates are not in the measured data), the default template is
-  TextureCraft's "PBR - Metallic Roughness" shown under the reference name, and the template file
-  is always stored in the user templates folder (the file name chosen in the dialog becomes the
-  template name) as a `.json` file instead of `.spt`.
+  TextureCraft's "PBR - Metallic Roughness" shown under the reference name, and the template is
+  saved as JSON at the chosen path. The file name becomes the template name. Files saved outside
+  the user templates folder appear in the current session only.
 - **Log:** *GENERAL* and *ASSETS* tabs. Every entry has a source (the reference tags "Library agent" and "MapExporter" are used for library and texture-export entries, TextureCraft's own names elsewhere), a level and a message; the
   lines read `[Source] message` with no time stamp, light grey for info, yellow-orange for
   warnings and red for errors. Entries with the source `Library agent` (resources, templates, presets,
@@ -271,4 +271,3 @@ edges in the 3D view and the UV edges, now in red, in the 2D view, and replaces 
 The tile info button's icon is a grid of nine dots (the reference's has a small "i"). Not measured in the reference, so chosen here: the number box's look (a dark translucent box), the grid line strength,
 the tile shown in the hover label (only a tile the set paints; elsewhere the set name alone), the 3D wireframe's color, and
 that numbers hide once a tile is under 40 points on screen.
-

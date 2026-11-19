@@ -11,8 +11,10 @@ pub mod bake;
 pub mod blend;
 mod block_scales;
 pub mod channel;
+mod env_alignment;
 pub mod layer;
 pub mod project;
+mod shadow_mode;
 
 pub use bake::{
     AmbientOcclusionAttenuation, AmbientOcclusionSettings, BackfaceMode, BakeAntialiasing, BakePaintTarget, BakeResolution, BakeSettings, BakedMap,

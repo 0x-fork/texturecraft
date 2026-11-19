@@ -161,6 +161,7 @@ fn item_label(app: &TextureCraftApp, item: &Item) -> String {
     if item.id == "ui.view.properties" && app.session.project_open {
         return format!("{} - {}", tr(item.label), tr(app.session.tool.tool.label()));
     }
+
     tr(item.label).to_string()
 }
 
@@ -254,7 +255,11 @@ pub fn invoke(app: &mut TextureCraftApp, ctx: &egui::Context, id: &str) {
         "ui.navButtons" => app.ui.nav_buttons = !app.ui.nav_buttons,
         "ui.resetPanelLayout" => app.ui.reset_panel_layout(),
         "ui.resetUi" => app.ui.windows.confirm_reset_ui = true,
-        "ui.layout.save" | "ui.layout.save.painting" => crate::windows::save_layout(app, Mode::Painting),
+        "ui.layout.save" => {
+            let mode = app.ui.mode;
+            crate::windows::save_layout(app, mode);
+        }
+        "ui.layout.save.painting" => crate::windows::save_layout(app, Mode::Painting),
         "ui.layout.save.rendering" => crate::windows::save_layout(app, Mode::Rendering),
         "ui.layout.save.baking" => crate::windows::save_layout(app, Mode::Baking),
         "ui.layout.load" => crate::windows::load_layout(app),
@@ -472,9 +477,13 @@ pub fn shortcuts(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let no_widget_focused = ctx.memory(|memory| memory.focused().is_none());
     #[cfg(not(target_arch = "wasm32"))]
     let nothing_focused = ctx.memory(|memory| memory.focused().is_none());
+    let log_copies = crate::log_panel::takes_copy(app, ctx);
     let commands_to_invoke = ctx.input_mut(|input| {
         // egui's label selection copies on these events at the end of the frame
         let copies: Vec<_> = input.events.iter().filter(|event| matches!(event, egui::Event::Copy | egui::Event::Cut)).cloned().collect();
+        if log_copies {
+            input.events.retain(|event| !matches!(event, egui::Event::Copy));
+        }
 
         // Escape and Enter answer the Reset UI question first, even when a shortcut binds them
         let confirming_reset = app.ui.windows.confirm_reset_ui;
@@ -525,11 +534,7 @@ pub fn shortcuts(app: &mut TextureCraftApp, ctx: &egui::Context) {
         commands
     });
 
-    let log_copies = crate::log_panel::takes_copy(app, ctx);
     for id in &commands_to_invoke {
-        if log_copies && id == "layer.copy" {
-            continue;
-        }
         if matches!(id.as_str(), "layer.copy" | "layer.cut")
             && let Some(layer) = app.session.selected_layer().and_then(|layer| app.session.doc.project.layers.get(&layer))
         {

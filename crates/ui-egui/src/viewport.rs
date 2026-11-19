@@ -631,6 +631,7 @@ fn axis_gizmo(ui: &Ui, rect: Rect, app: &TextureCraftApp, uv_rotation: Option<f3
     if let Some(rotation) = uv_rotation {
         // The 2D view keeps it in the bottom-right corner, the label of the texture set sits bottom left
         let o = pos2(rect.right() - UV_GIZMO_INSET, rect.bottom() - UV_GIZMO_INSET);
+
         // The U and V axes turn with the 2D view
         let (u, v) = uv_axis_directions(rotation);
         p.line_segment([o, o + u * 16.0], Stroke::new(1.5, Color32::from_rgb(0xd8, 0x4a, 0x3a)));
@@ -639,6 +640,7 @@ fn axis_gizmo(ui: &Ui, rect: Rect, app: &TextureCraftApp, uv_rotation: Option<f3
         p.text(o + v * 22.0, egui::Align2::CENTER_CENTER, "V", egui::FontId::proportional(9.0), tk.viewport_text);
         return;
     }
+
     let view = app.session.camera.view();
     for (axis, color, name) in [
         (Vec3::X, Color32::from_rgb(0xd8, 0x4a, 0x3a), "X"),
@@ -1786,7 +1788,7 @@ fn polygon_fill_input(
     response: &egui::Response,
     fill_at: impl Fn(&mut Session, Pos2) -> texturecraft_engine::Result<usize>,
     drag_box: impl Fn(&mut Session, Pos2, Pos2) -> texturecraft_engine::Result<usize>,
-) -> Option<Rect> {
+) -> Option<[Pos2; 2]> {
     let origin_id = response.id.with("polygon_fill_box");
     let dragging = response.dragged_by(PointerButton::Primary);
     let released = response.drag_stopped_by(PointerButton::Primary);
@@ -1815,7 +1817,7 @@ fn polygon_fill_input(
             app.session.end_polygon_fill_box();
             (None, None)
         }
-        (Some(origin), Some(pointer)) => (Some(drag_box(&mut app.session, origin, pointer)), Some(Rect::from_two_pos(origin, pointer))),
+        (Some(origin), Some(pointer)) => (Some(drag_box(&mut app.session, origin, pointer)), Some([origin, pointer])),
         _ => (None, None),
     };
 
@@ -1830,11 +1832,22 @@ fn polygon_fill_input(
 const FILL_BOX_TINT: f32 = 0.15;
 
 /// The polygon fill box being dragged, over view `rect`
-fn polygon_fill_box_overlay(ui: &Ui, rect: Rect, fill_box: Option<Rect>) {
-    let Some(fill_box) = fill_box else { return };
+fn polygon_fill_box_overlay(ui: &Ui, rect: Rect, fill_box: Option<[Pos2; 2]>) {
+    let Some([origin, opposite]) = fill_box else { return };
 
     let accent = Tokens::get(ui.ctx()).viewport_accent;
+    let fill_box = Rect::from_two_pos(origin, opposite);
     ui.painter_at(rect).rect(fill_box, 0.0, accent.gamma_multiply(FILL_BOX_TINT), Stroke::new(1.0, accent), egui::StrokeKind::Inside);
+}
+
+/// Outline of the texture-aligned fill bounds projected into the rotated view.
+fn uv_fill_box_corners(view: crate::uv_view_map::UvViewMap, [origin, opposite]: [Pos2; 2]) -> [Pos2; 4] {
+    let origin_uv = view.to_uv(origin);
+    let opposite_uv = view.to_uv(opposite);
+    let low = origin_uv.min(opposite_uv);
+    let high = origin_uv.max(opposite_uv);
+
+    [view.to_screen(low.x, low.y), view.to_screen(high.x, low.y), view.to_screen(high.x, high.y), view.to_screen(low.x, high.y)]
 }
 
 /// V held with the Clone tool in painting mode: clicks set the clone source
@@ -2202,8 +2215,7 @@ fn view_2d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
     let adjusting = brush_drag(app, ui, &response);
     frame_uv_view_on_request(app, size);
 
-    // Pan with a middle drag (with or without Alt) or Ctrl+Alt+left drag, turn with Alt+left drag (Alt+Shift snaps),
-    // zoom with Alt+right drag or the wheel about the cursor
+    // Middle drag and Ctrl+Alt+left pan without changing the brush
     let delta = ui.input(|input| input.pointer.delta());
     let ctrl_alt_pan = alt && ctrl && response.dragged_by(PointerButton::Primary);
     if response.dragged_by(PointerButton::Middle) || ctrl_alt_pan {
@@ -2344,7 +2356,12 @@ fn view_2d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
         overlay: Vec::new(),
     };
     add_callback(app, ui, rect, frame, sync);
-    polygon_fill_box_overlay(ui, rect, fill_box);
+    if let Some(bounds) = fill_box {
+        let accent = tokens.viewport_accent;
+        let corners = uv_fill_box_corners(view_map, bounds);
+        ui.painter_at(rect).add(egui::Shape::convex_polygon(corners.to_vec(), accent.gamma_multiply(FILL_BOX_TINT), Stroke::new(1.0, accent)));
+    }
+
     crate::shelf::drop_target(app, ui, &response, crate::shelf::DropZone::View2d);
     if projection_hint {
         ui.painter_at(rect).text(

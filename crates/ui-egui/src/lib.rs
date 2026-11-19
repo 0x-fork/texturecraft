@@ -440,8 +440,7 @@ impl TextureCraftApp {
                     self.layer_panel = Default::default();
                 }
 
-                // F frames the 2D view too: the next draw resets its pan, zoom and rotation
-                // (wherever the 2D view is drawn: painting and baking, not the 3D-only layout or rendering)
+                // Schedule the reset only when Painting or Baking draws a 2D view
                 if id == "viewport.frame" && self.ui.layout != state::ViewLayout::Only3D && self.ui.mode != state::Mode::Rendering {
                     self.uv_view_reset = true;
                 }

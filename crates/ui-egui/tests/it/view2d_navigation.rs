@@ -80,6 +80,36 @@ fn start(view: Rect) -> Pos2 {
 }
 
 #[test]
+fn polygon_fill_draws_the_rotated_uv_bounds_between_the_drag_corners() {
+    let (mut harness, view) = tiled_app();
+    harness.state_mut().session.tool.tool = texturecraft_engine::Tool::PolygonFill;
+    harness.state_mut().ui.uv_rotation = 0.6;
+    let origin = view.center() - vec2(50.0, 40.0);
+    let opposite = view.center() + vec2(70.0, 20.0);
+    let tint = texturecraft_ui_egui::theme::Tokens::get(&harness.ctx).viewport_accent.gamma_multiply(0.15);
+    harness.hover_at(origin);
+    harness.run_steps(2);
+    harness.event(Event::PointerButton { pos: origin, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE });
+    harness.step();
+
+    harness.hover_at(opposite);
+    harness.run_steps(2);
+
+    let points = harness
+        .output()
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Path(path) if path.fill == tint && path.closed && path.points.len() == 4 => Some(&path.points),
+            _ => None,
+        })
+        .expect("the fill preview draws a rotated quadrilateral");
+    assert!([origin, opposite].iter().all(|endpoint| points.iter().any(|point| point.distance(*endpoint) < 0.01)));
+    let edge = points[1] - points[0];
+    assert!(edge.x.abs() > 1.0 && edge.y.abs() > 1.0);
+}
+
+#[test]
 fn alt_left_drag_turns_the_view_and_does_not_pan_or_paint() {
     let (mut harness, view) = app();
     let before = (harness.state().ui.uv_pan, harness.state().ui.uv_zoom, painted(&harness));
@@ -106,6 +136,7 @@ fn alt_left_drag_to_the_right_and_back_returns_to_the_start() {
 #[test]
 fn alt_shift_left_drag_turns_in_quarter_steps() {
     let (mut harness, view) = app();
+
     // The reference: a 300 x 200 point drag gave exactly 180 degrees
     drag(&mut harness, PointerButton::Primary, Modifiers::ALT | Modifiers::SHIFT, start(view), vec2(300.0, 200.0));
     assert!((harness.state().ui.uv_rotation - std::f32::consts::PI).abs() < 1e-3, "{}", harness.state().ui.uv_rotation);

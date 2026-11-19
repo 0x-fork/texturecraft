@@ -38,9 +38,11 @@ const EMPTY_NUMBER_BOX_ALPHA: u8 = 60;
 /// How much of the lettering's strength an empty tile's number keeps
 const EMPTY_NUMBER_STRENGTH: f32 = 0.45;
 
-/// The UDIM number of atlas block (`block_x`, `block_y`) of `grid`, counted from its top-left block and also outside it; `None` outside UDIM's 1001 to 1999 columns and 99 rows
+/// UDIM number at the block offset from the atlas’s top left, including valid tiles outside the atlas.
 pub(crate) fn udim_of(grid: TileGrid, block_x: i32, block_y: i32) -> Option<u32> {
-    let (column, row) = (grid.col as i32 + block_x, grid.row as i32 - block_y);
+    let column = (grid.col as i32).checked_add(block_x)?;
+    let row = (grid.row as i32).checked_sub(block_y)?;
+
     ((0..=9).contains(&column) && (0..=99).contains(&row)).then(|| (1001 + column + 10 * row) as u32)
 }
 
@@ -48,7 +50,10 @@ pub(crate) fn udim_of(grid: TileGrid, block_x: i32, block_y: i32) -> Option<u32>
 pub(crate) fn visible_blocks(map: UvViewMap, grid: TileGrid) -> (RangeInclusive<i32>, RangeInclusive<i32>) {
     let corners = [map.rect.left_top(), map.rect.right_top(), map.rect.right_bottom(), map.rect.left_bottom()].map(|corner| map.to_uv(corner));
     let (low, high) = corners.iter().fold((corners[0], corners[0]), |(low, high), corner| (low.min(*corner), high.max(*corner)));
-    let block = |value: f32, count: u32| (value * count as f32).floor().clamp(-1.0e5, 1.0e5) as i32;
+
+    // Leave room to step one block past either end when drawing grid lines
+    const MAX_BLOCK_OFFSET: f32 = 100_000.0;
+    let block = |value: f32, count: u32| (value * count as f32).floor().clamp(-MAX_BLOCK_OFFSET, MAX_BLOCK_OFFSET) as i32;
     (block(low.x, grid.cols)..=block(high.x, grid.cols), block(low.y, grid.rows)..=block(high.y, grid.rows))
 }
 
@@ -92,6 +97,7 @@ pub(crate) fn draw(painter: &Painter, map: UvViewMap, set: &TextureSet, grid: Ti
     if !numbers || block_on_screen < MIN_NUMBER_CELL {
         return;
     }
+
     let view = map.rect.expand(NUMBER_INSET * 8.0);
     for block_y in blocks_y.clone() {
         for block_x in blocks_x.clone() {
@@ -125,6 +131,15 @@ mod tests {
     fn grid() -> TileGrid {
         // Tiles 1001, 1002 and 1011: two columns, two rows
         TileGrid::of(&[1001, 1002, 1011]).unwrap()
+    }
+
+    #[test]
+    fn far_offscreen_tiles_do_not_overflow_the_atlas_origin() {
+        let offset_grid = TileGrid::of(&[1012]).unwrap();
+
+        assert_eq!(udim_of(offset_grid, i32::MAX, 0), None);
+        assert_eq!(udim_of(offset_grid, 0, i32::MIN), None);
+        assert_eq!(udim_of(offset_grid, 0, 0), Some(1012));
     }
 
     /// Runs `draw` over a 2 x 2 tile atlas (tiles 1001, 1002 and 1011 painted) in a 400 x 400 view and returns what it drew

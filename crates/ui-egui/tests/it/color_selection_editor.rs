@@ -245,6 +245,27 @@ fn deselection_cancels_picking_and_preserves_a_view_chosen_meanwhile() {
 }
 
 #[test]
+fn removing_an_image_during_id_picking_falls_back_to_material() {
+    let (mut harness, _) = app_with_color_selection(true);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(1, 1).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let session = &mut harness.state_mut().session;
+    let name = session.import_resource_bytes("preview.png", png.into_inner()).unwrap();
+    execute(session, "viewport.view", &json!({"mode": "image", "image": name})).unwrap();
+    harness.get_by_label(&pick_color_label()).click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().session.view, ViewMode::MeshMap(BakedMap::Id));
+    assert!(harness.state().picking_id_color.is_some());
+
+    let app = harness.state_mut();
+    execute(&mut app.session, "resource.remove", &json!({"name": name})).unwrap();
+    texturecraft_ui_egui::id_color_pick::IdColorPick::end(app);
+
+    assert_eq!(app.session.view, ViewMode::Material);
+    assert!(app.picking_id_color.is_none());
+}
+
+#[test]
 #[ignore = "requires a GPU adapter; set TC_UI_SNAPSHOTS to save the rendered views"]
 fn color_selection_snapshots_and_quick_mask_pick() {
     let (session, _) = color_selection_session(true);

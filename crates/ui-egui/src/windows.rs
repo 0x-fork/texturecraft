@@ -360,28 +360,39 @@ pub fn remember(app: &mut TextureCraftApp, path: &str) {
     app.ui.recent.truncate(10);
 }
 
+/// Start a save picker in its library folder when available.
+#[cfg(not(target_arch = "wasm32"))]
+fn in_save_folder(app: &mut TextureCraftApp, dialog: FileDialog, dir: std::path::PathBuf) -> FileDialog {
+    // Native pickers need an existing initial folder, but a different destination can still be writable
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => dialog.directory(dir),
+        Err(error) => {
+            app.session.log.warn(texturecraft_engine::log::LIBRARY_SOURCE, format!("Cannot open save folder {}: {error}", dir.display()));
+            dialog
+        }
+    }
+}
+
 /// Window › Save UI Layout › Painting / Rendering / Baking mode: the panels, windows and view
 /// settings as that mode shows them, as a JSON file.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_layout(app: &mut TextureCraftApp, mode: crate::state::Mode) {
-    use crate::state::Mode;
     let dir = crate::user_dir("layouts");
     let name = match mode {
         Mode::Painting => "painting-mode.json",
         Mode::Rendering => "rendering-mode.json",
         Mode::Baking => "baking-mode.json",
     };
-    let dialog = FileDialog::save().file_name(name).filter(tr("UI layout"), &["json"]).directory(dir.clone());
+    let dialog = in_save_folder(app, FileDialog::save().file_name(name).filter(tr("UI layout"), &["json"]), dir);
     app.ask_file(dialog, Bound::App, move |app, paths| {
         let Some(path) = paths.first() else { return };
 
         // The file carries both docks; the mode's own is the one in use when it is loaded
         let mut layout = crate::UiState { recent: Vec::new(), named_layouts: Vec::new(), mode, ..app.ui.clone() };
         layout.sync_mode_dock();
-        let result = std::fs::create_dir_all(&dir)
-            .map_err(|e| e.to_string())
-            .and_then(|_| serde_json::to_vec_pretty(&layout).map_err(|e| e.to_string()))
-            .and_then(|bytes| std::fs::write(path, bytes).map_err(|e| e.to_string()))
+        let result = serde_json::to_vec_pretty(&layout)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| texturecraft_engine::formats::write_atomic(path, &bytes).map_err(|error| error.to_string()))
             .map(|_| trf("Saved UI layout {path}", &[("path", &path.display())]));
         match result {
             Ok(msg) => app.toast(msg, false),
@@ -425,10 +436,22 @@ pub(crate) fn template_name_of(file_name: &str) -> &str {
 /// user templates folder. It saves without a confirmation and shows up in New project at once.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn save_as_template(app: &mut TextureCraftApp) {
-    let dialog = FileDialog::save().title(tr("Save template")).filter(tr("Project template"), &["json"]).directory(crate::user_dir("templates"));
+    let dir = app.session.templates.dir.clone().unwrap_or_else(|| crate::user_dir("templates"));
+    let dialog = in_save_folder(app, FileDialog::save().title(tr("Save template")).filter(tr("Project template"), &["json"]), dir);
     app.ask_file(dialog, Bound::Project, |app, paths| {
-        if let Some(name) = paths.first().and_then(|path| path.file_name()).and_then(|name| name.to_str()) {
-            app.run("project.template.save", json!({"name": template_name_of(name)}));
+        let Some(path) = paths.first() else { return };
+
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            app.toast(tr("The template file name must be valid text"), true);
+            return;
+        };
+
+        let name = template_name_of(file_name);
+        let path = if name == file_name { path.with_file_name(format!("{file_name}.json")) } else { path.clone() };
+        if let Some(path) = path.to_str() {
+            app.run("project.template.save", json!({"name": name, "path": path}));
+        } else {
+            app.toast(tr("The template path must be valid text"), true);
         }
     });
 }

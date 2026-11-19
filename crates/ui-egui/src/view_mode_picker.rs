@@ -95,6 +95,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, child: &mut Ui, id_salt: &str, wid
                 if !project_open {
                     return;
                 }
+
                 if baking {
                     ui.separator();
                     for map in BakedMap::ALL {
@@ -105,6 +106,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, child: &mut Ui, id_salt: &str, wid
                     }
                     return;
                 }
+
                 if ui.selectable_label(app.session.view == ViewMode::UvChecker, tr("UV checker")).clicked() {
                     app.run("viewport.view", json!({"mode": "uvChecker"}));
                 }

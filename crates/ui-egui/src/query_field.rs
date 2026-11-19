@@ -28,6 +28,7 @@ pub(crate) fn show(ui: &mut Ui, id: Id, default: &str) -> String {
 /// all search words.
 pub(crate) fn words(query: &str, default: &str) -> Vec<String> {
     let query = query.trim();
+
     // The default ends at a word boundary: "environmental" is not "environment" plus "al"
     let rest = query.strip_prefix(default.trim()).filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace)).unwrap_or(query);
     rest.split_whitespace().map(str::to_lowercase).collect()

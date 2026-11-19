@@ -81,12 +81,48 @@ fn ctrl_c_copies_the_selected_lines_as_plain_text() {
 }
 
 #[test]
+fn log_copy_takes_precedence_over_a_rebound_shortcut() {
+    let mut h = app();
+    h.state_mut().run("layer.add.fill", serde_json::json!({})).unwrap();
+    h.state_mut().ui.keymap.insert("layer.copy".into(), "".into());
+    h.state_mut().ui.keymap.insert("layer.duplicate".into(), "Ctrl+C".into());
+    let layer_count = h.state().session.doc.project.layers.len();
+    key_click(&mut h, "[Exporter] first", Modifiers::NONE);
+
+    h.event(Event::Copy);
+    h.step();
+
+    assert!(h.output().platform_output.commands.contains(&OutputCommand::CopyText("[Exporter] first".into())));
+    assert_eq!(h.state().session.doc.project.layers.len(), layer_count, "copying a log line cannot duplicate a layer");
+}
+
+#[test]
 fn a_new_project_starts_with_no_line_selected() {
     let mut h = app();
     key_click(&mut h, "[Exporter] first", Modifiers::NONE);
     assert_eq!(h.state().ui.log_selection.len(), 1);
     h.state_mut().run("project.new", serde_json::json!({}));
     h.run_steps(3);
+    assert!(h.state().ui.log_selection.is_empty());
+}
+
+#[test]
+fn mesh_reimport_clears_log_selection_within_the_same_project() {
+    let dir = super::temp_dir::TempDir::new("log-mesh-reimport");
+    let path = dir.join("quad.obj");
+    std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\n").unwrap();
+    let mut h = app();
+    h.state_mut().run("file.new", serde_json::json!({"mesh": path, "resolution": 128})).unwrap();
+    h.state_mut().session.log.info("Exporter", "before reimport");
+    h.run_steps(3);
+    key_click(&mut h, "[Exporter] before reimport", Modifiers::NONE);
+    assert_eq!(h.state().ui.log_selection.len(), 1);
+    let project = h.state().session.project_id;
+
+    h.state_mut().run("file.reimportMesh", serde_json::json!({"path": path})).unwrap();
+    h.run_steps(3);
+
+    assert_eq!(h.state().session.project_id, project);
     assert!(h.state().ui.log_selection.is_empty());
 }
 

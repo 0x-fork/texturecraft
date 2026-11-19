@@ -117,7 +117,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Save project settings as template",
             [],
             None,
-            "{name} → {name, path?}: the current project's channels (active texture set), resolution, normal format and shader settings; replaces a user template of that name",
+            "{name, path? (desktop)} → {name, path?}: save the active set's channels and resolution, normal format and shader settings; replace a user template of that name",
             always,
             save
         ),
@@ -236,6 +236,7 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     if builtin_templates().iter().any(|t| same(&t.name, name) || same(&template_label(&t.name, true), name)) {
         return Err(bad(CMD, format!("\"{}\" is a built-in template (read-only); choose another name", name.trim())));
     }
+
     let project = &s.doc.project;
     let set = project.texture_set(s.ts())?;
     let d = &project.display;
@@ -252,28 +253,50 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
     };
     let t = validated(t).map_err(|e| bad(CMD, e))?;
     let lib = &mut s.templates;
-    match lib.list.iter().position(|o| same(&o.name, &t.name)) {
-        Some(i) => lib.list[i] = t.clone(),
-        None if lib.list.len() >= MAX_USER_TEMPLATES => return Err(bad(CMD, format!("at most {MAX_USER_TEMPLATES} user templates"))),
-        None => lib.list.push(t.clone()),
+    let existing = lib.list.iter().position(|template| same(&template.name, &t.name));
+    if existing.is_none() && lib.list.len() >= MAX_USER_TEMPLATES {
+        return Err(bad(CMD, format!("at most {MAX_USER_TEMPLATES} user templates")));
     }
-    let path = write(lib, &t).map_err(|e| bad(CMD, e))?;
-    Ok(json!({ "name": t.name, "path": path }))
+
+    let path = write(lib, &t, strp(p, "path")).map_err(|e| bad(CMD, e))?;
+    let reply = json!({ "name": t.name, "path": path });
+    if let Some(index) = existing {
+        lib.list[index] = t;
+    } else {
+        lib.list.push(t);
+    }
+
+    Ok(reply)
 }
 
-/// Mirror template `t` to the library folder; returns the file written.
+/// Write the chosen file, or mirror a template to the configured library by default.
 #[cfg(not(target_arch = "wasm32"))]
-fn write(lib: &UserTemplates, t: &ProjectTemplate) -> std::result::Result<Option<String>, String> {
-    let Some(dir) = &lib.dir else { return Ok(None) };
-    let path = dir.join(format!("{}.json", texturecraft_formats::export::sanitize_file_stem(&t.name)));
+fn write(lib: &UserTemplates, t: &ProjectTemplate, chosen_path: Option<&str>) -> std::result::Result<Option<String>, String> {
+    let path = if let Some(path) = chosen_path {
+        std::path::PathBuf::from(path)
+    } else if let Some(dir) = &lib.dir {
+        dir.join(format!("{}.json", texturecraft_formats::export::sanitize_file_stem(&t.name)))
+    } else {
+        return Ok(None);
+    };
+
+    if let Some(dir) = &lib.dir
+        && path.parent() == Some(dir.as_path())
+    {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+
     let json = serde_json::to_string_pretty(t).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     texturecraft_formats::write_atomic(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
     Ok(Some(path.display().to_string()))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn write(_: &UserTemplates, _: &ProjectTemplate) -> std::result::Result<Option<String>, String> {
+fn write(_: &UserTemplates, _: &ProjectTemplate, chosen_path: Option<&str>) -> std::result::Result<Option<String>, String> {
+    if chosen_path.is_some() {
+        return Err("saving to a path is only available on the desktop".into());
+    }
+
     Ok(None)
 }
 
@@ -339,6 +362,37 @@ mod tests {
         execute(&mut fresh, "project.new", &json!({})).unwrap();
         assert!(fresh.template("My glow").is_some());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_chosen_path_in_a_new_template_library_can_be_saved_and_reloaded() {
+        let mut session = Session::new_project("Template", texturecraft_geom::primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let library = temporary.path().join("templates");
+        session.load_templates(library.clone());
+        let destination = library.join("First.json");
+
+        execute(&mut session, "project.template.save", &json!({"name": "First", "path": destination})).unwrap();
+
+        assert!(destination.is_file());
+        assert!(session.load_templates(library).is_empty());
+        assert_eq!(session.template("First").unwrap().resolution, 128);
+    }
+
+    #[test]
+    fn a_save_error_leaves_the_existing_template_intact() {
+        let mut session = Session::new_project("Template", texturecraft_geom::primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        execute(&mut session, "project.template.save", &json!({"name": "Starter"})).unwrap();
+        execute(&mut session, "textureSet.resolution", &json!({"resolution": 256})).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let unavailable = dir.path().join("blocked");
+        std::fs::write(&unavailable, "").unwrap();
+        session.templates.dir = Some(unavailable);
+
+        let result = execute(&mut session, "project.template.save", &json!({"name": "Starter"}));
+
+        assert!(result.unwrap_err().to_string().contains("cannot create"));
+        assert_eq!(session.template("Starter").unwrap().resolution, 128);
     }
 
     #[test]

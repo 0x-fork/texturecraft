@@ -29,6 +29,7 @@ fn recovered_project_opens_with_a_warning_in_the_session_log() {
     let path = std::env::temp_dir().join(format!("texturecraft-recovery-{}.tcraft", std::process::id()));
     std::fs::write(&path, &bytes).unwrap();
     execute(&mut original, "file.open", &json!({"path": path})).unwrap();
+
     // The same entries, logged at another time
     let entries = |log: &texturecraft_engine::SessionLog| log.iter().map(|entry| (entry.level, entry.line())).collect::<Vec<_>>();
     assert_eq!(entries(&original.log), entries(&recovered.log));

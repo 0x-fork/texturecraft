@@ -544,9 +544,9 @@ pub struct UiState {
     /// The Log line a Shift+click extends from
     #[serde(skip)]
     pub log_anchor: Option<usize>,
-    /// The project the selected Log lines were chosen in; another project's log starts unselected
+    /// Identity of the log that owns the selected rows.
     #[serde(skip)]
-    pub log_project: u64,
+    pub log_id: u64,
 }
 
 impl UiState {
@@ -668,7 +668,7 @@ impl Default for UiState {
             last_template: String::new(),
             log_selection: Default::default(),
             log_anchor: None,
-            log_project: 0,
+            log_id: 0,
         }
     }
 }

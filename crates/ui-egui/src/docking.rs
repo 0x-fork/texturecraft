@@ -451,8 +451,7 @@ pub(crate) fn input_blocked(app: &TextureCraftApp, context: &egui::Context) -> b
 
 /// Draw the dock (viewport and panels) into `ui`.
 pub fn show(app: &mut TextureCraftApp, ui: &mut Ui) {
-    // Rendering shares the painting dock, so it closes only what the painting dock cannot show;
-    // the panels its Views menu greys out stay until the user closes them
+    // Rendering keeps disabled panels visible because it shares the painting dock
     let dock_mode = if app.ui.mode == crate::state::Mode::Rendering { crate::state::Mode::Painting } else { app.ui.mode };
     for panel in Panel::ALL {
         let kept = panel.available_in(dock_mode) || (panel == Panel::Renderer && app.ui.mode == crate::state::Mode::Rendering);

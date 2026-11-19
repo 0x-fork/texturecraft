@@ -419,6 +419,7 @@ fn a_shared_shortcut_warns_by_name_and_keeps_ok_disabled_until_it_is_gone() {
 
     let warnings = h.query_all_by_label(egui_phosphor::regular::WARNING).count();
     assert!(warnings >= 2, "both rows carry a warning: {warnings}");
+
     // Hovering a warning shows the other action's name next to its own row
     let names = |h: &Harness<'_, TextureCraftApp>| h.query_all_by_label("Undo").count() + h.query_all_by_label(save.label).count();
     let before = names(&h);

@@ -37,7 +37,8 @@ impl IdColorPick {
         let Some(pick) = app.picking_id_color.take() else { return };
 
         if app.session.view == ViewMode::MeshMap(BakedMap::Id) {
-            app.run("viewport.view", view_params(pick.previous_view, app.session.view_image.as_deref()));
+            let image = app.session.view_image.as_deref().filter(|name| app.session.images.contains_key(*name));
+            app.run("viewport.view", view_params(pick.previous_view, image));
         }
     }
 
@@ -88,7 +89,7 @@ fn view_params(view: ViewMode, image: Option<&str>) -> Value {
         ViewMode::MeshMap(map) => json!({"mode": format!("map:{}", map.id())}),
         ViewMode::UvChecker => json!({"mode": "uvChecker"}),
         ViewMode::NormalHeightMesh => json!({"mode": "normalHeightMesh"}),
-        ViewMode::Image => json!({"mode": "image", "image": image}),
+        ViewMode::Image => image.map_or_else(|| json!({"mode": "material"}), |name| json!({"mode": "image", "image": name})),
         ViewMode::Mask(layer) => json!({"mode": "mask", "layer": layer.0}),
     }
 }

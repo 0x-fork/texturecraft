@@ -352,6 +352,7 @@ impl GpuTracer {
             if bvh_depth(&nodes).is_none_or(|d| d >= STACK) {
                 return Err("the mesh's BVH is too deep for GPU traversal".into());
             }
+
             let (data, verts) = geometry_data(&scene.mesh, &scene.bvh, &scene.tri_set);
             let (nodes, tris) = data;
             for (what, b) in [("BVH", nodes.len()), ("triangle list", tris.len()), ("vertex list", verts.len())] {
@@ -654,7 +655,8 @@ impl GpuTracer {
         }
         queue.write_buffer(&self.post, 0, &bytes);
         let post = wgpu::BufferBinding { buffer: &self.post, offset: 0, size: wgpu::BufferSize::new(size_of::<PostRaw>() as u64) };
-        // a: illum[0] → illum[1], b: illum[1] → illum[0].
+
+        // a: illum[0] → illum[1], b: illum[1] → illum[0]
         let group = |src: &wgpu::Buffer, dst: &wgpu::Buffer| {
             let mut entries = vec![wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(post.clone()) }];
             entries.extend(acc.acc.iter().zip(1..).map(|(b, binding)| wgpu::BindGroupEntry { binding, resource: b.as_entire_binding() }));
@@ -673,7 +675,7 @@ impl GpuTracer {
             cpass.dispatch_workgroups(groups.0, groups.1, 1);
         };
         if display.denoise {
-            // The five steps alternate b, a, b, a, b, leaving the result in illum[0].
+            // The five steps alternate b, a, b, a, b, leaving the result in illum[0]
             run(&self.init_pipe, &a, 0);
             for slot in 1..STEPS.len() {
                 run(&self.step_pipe, if slot % 2 == 1 { &b } else { &a }, slot);
@@ -930,8 +932,7 @@ mod tests {
 
     #[test]
     fn white_furnace_on_the_gpu_stays_bounded_and_finite() {
-        // White spheres in a uniform white environment reflect at most what arrives: at half
-        // exposure the environment shows as 0.5 and the spheres between 0.25 and 0.5.
+        // Half exposure puts the white environment at 0.5 and bounds the spheres below it
         use Channel::*;
         let Some((mut h, mut t)) = gpu() else { return };
         let everything = [(CoatWeight, [1.0; 3]), (SheenWeight, [1.0; 3]), (AnisotropyLevel, [1.0; 3]), (ScatterWeight, [1.0; 3])];
@@ -982,8 +983,7 @@ mod tests {
 
     #[test]
     fn gpu_reads_full_size_channels_beside_placeholders() {
-        // Base color stays at its default (a 1×1 placeholder texture) while roughness varies
-        // across the surface (a full-size texture): the tracer must still read every texel of it.
+        // A 1×1 base-color placeholder must not limit sampling of the full-size roughness map
         use Channel::*;
         let Some((mut h, mut t)) = gpu() else { return };
         let mut composite = Composite::new(&[Roughness, Metallic], 64);

@@ -143,7 +143,8 @@ impl ResizeTask {
         crate::session::check_size(set)?;
         let size = set.size();
         let mut log = crate::log::SessionLog::new();
-        // Tiles of their own resolution keep it, so the others move within their atlas blocks.
+
+        // Tiles of their own resolution keep it, so the others move within their atlas blocks
         if old.tile_resolutions.is_empty() {
             crate::layer_ops::resample_set(&mut doc, ts, size);
         } else {

@@ -215,7 +215,7 @@ fn display_settings_show_the_reference_rows() {
         "Environment Blur",
         "Environment Rotation",
         "Environment Alignment",
-        "Shadows",
+        "Cast shadows",
         "Computation mode",
         "Shadows opacity",
         "CAMERA SETTINGS",

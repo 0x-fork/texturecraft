@@ -7,9 +7,9 @@
 //! read back until the render is saved. Otherwise (WebGL2, the CPU setting, or a GPU error) the CPU
 //! tracer runs on a worker thread (one slice per frame on the single-threaded web).
 
-use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 use std::sync::{Mutex, PoisonError};
 
 use eframe::egui_wgpu::{self, CallbackResources, CallbackTrait, ScreenDescriptor};
@@ -249,8 +249,8 @@ pub struct RenderView {
     env: Mutex<Option<(EnvKey, Arc<EnvImage>)>>,
 }
 
-/// The display's environment name and its retained imported image (None: built-in).
-type EnvKey = (String, Option<Arc<ImageRes>>);
+/// The environment name and allocation identity of its imported image.
+type EnvKey = (String, Option<Weak<ImageRes>>);
 
 /// Viewport resolution of a CPU render (the web renders at half size: it has one thread).
 fn render_size(rect: Rect) -> (u32, u32) {
@@ -288,18 +288,14 @@ fn trace_scene(app: &TextureCraftApp) -> TraceScene {
     drop(cached);
 
     let mut env_cached = app.render.env.lock().unwrap_or_else(PoisonError::into_inner);
-    let same_image = |source: &Option<Arc<ImageRes>>| match (source, env_image) {
-        (Some(cached), Some(current)) => Arc::ptr_eq(cached, current),
-        (None, None) => true,
-        _ => false,
-    };
+    let current_source = env_image.map(Arc::as_ptr);
     let env = match env_cached.as_ref() {
-        Some(((name, source), environment)) if *name == display.environment && same_image(source) => environment.clone(),
+        Some(((name, source), environment)) if *name == display.environment && source.as_ref().map(Weak::as_ptr) == current_source => environment.clone(),
         _ => {
             let environment = Arc::new(TraceScene::display_env(display, env_image.map(|image| image.as_ref())));
 
-            // Retaining the source prevents a later image from reusing its cached identity
-            let env_key = (display.environment.clone(), env_image.cloned());
+            // Reserve the address used in the scene key while allowing removed pixels to drop
+            let env_key = (display.environment.clone(), env_image.map(Arc::downgrade));
             *env_cached = Some((env_key, environment.clone()));
             environment
         }
@@ -333,7 +329,9 @@ fn scene_key(session: &texturecraft_engine::Session, composites: bool) -> String
     let revisions: Vec<u64> = if composites { session.caches.iter().map(|cache| cache.revision).collect() } else { Vec::new() };
     let sets: Vec<_> = session.doc.project.texture_sets.iter().map(|set| (set.material, set.atlas_height_strength())).collect();
 
-    format!("{}|{revisions:?}|{sets:?}|{:?}", session.mesh_id, session.doc.project.display)
+    let display = &session.doc.project.display;
+    let env_image = display.environment_resource().and_then(|name| session.images.get(name)).map(Arc::as_ptr);
+    format!("{}|{revisions:?}|{sets:?}|{env_image:?}|{display:?}", session.mesh_id)
 }
 
 /// [`scene_key`] of the GPU render. It takes texture changes in by copying the display textures
@@ -856,7 +854,7 @@ impl RenderView {
 }
 
 /// Window > Views > Renderer Settings: what the path tracer is doing. It sets its samples per
-/// frame by itself and takes the camera, environment and shadows from Display Settings.
+/// frame by itself and uses the camera and environment from Display Settings.
 pub(crate) fn settings_body(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tokens = Tokens::get(ui.ctx());
     let tracer = if app.render.gpu.is_some() { tr("GPU") } else { tr("CPU") };
@@ -870,7 +868,7 @@ pub(crate) fn settings_body(app: &mut TextureCraftApp, ui: &mut Ui) {
     });
     ui.add_space(6.0);
     ui.label(
-        RichText::new(tr("The path tracer adds samples while the view stands still. Environment, shadows and camera come from Display Settings."))
+        RichText::new(tr("The path tracer adds samples while the view stands still. Environment and camera come from Display Settings."))
             .color(tokens.text_dim),
     );
 }

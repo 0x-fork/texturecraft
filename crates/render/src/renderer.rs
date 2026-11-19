@@ -242,7 +242,7 @@ impl Shade {
             env_blur: d.env_blur,
             env_opacity: d.env_opacity,
             ao_intensity: d.ao_intensity,
-            // The key light (on with shadows), in environment space.
+            // The key light (on with shadows), in environment space
             light: if d.shadows { [0.5, 0.8, 0.4, 2.5] } else { [0.0; 4] },
             shadows: d.shadows,
             shadow_size: d.shadow_mode.map_size(),
@@ -638,6 +638,7 @@ pub struct Renderer {
     accum_pipeline: wgpu::RenderPipeline,
     env: Tex,
     env_name: String,
+    env_is_imported: bool,
     sh: [[f32; 4]; 9],
     /// Bumped by every change of what the views show (uploads, mesh, environment): restarts
     /// accumulation.
@@ -1278,6 +1279,7 @@ impl Renderer {
             memory_failures: Vec::new(),
             env,
             env_name: String::new(),
+            env_is_imported: false,
             sh: [[0.0; 4]; 9],
             content_rev: 0,
             mesh: None,
@@ -1312,11 +1314,14 @@ impl Renderer {
     /// any image, linearized), prefiltered on the CPU (rayon); otherwise the built-in of that
     /// name (no-op when already current; unknown names give the default studio).
     pub fn set_environment(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, name: &str, image: Option<&ImageRes>) {
-        let img = match image.and_then(|i| ibl::EnvImage::from_rgba(i.width, i.height, &i.rgba, i.srgb)) {
+        let imported = image.and_then(|image| ibl::EnvImage::from_rgba(image.width, image.height, &image.rgba, image.srgb));
+        let is_imported = imported.is_some();
+        let img = match imported {
             Some(img) => img,
-            None if self.env_name == name => return,
+            None if !self.env_is_imported && self.env_name == name => return,
             None => ibl::environment(name, 512),
         };
+
         let levels = ibl::prefilter(&img, ENV_LEVELS);
         if self.env.texture.width() != img.width || self.env.texture.height() != img.height {
             self.env = Tex::new(device, "tc_env", img.width, img.height, wgpu::TextureFormat::Rgba16Float, ENV_LEVELS);
@@ -1333,6 +1338,7 @@ impl Renderer {
         let sh = ibl::sh9(&img);
         self.sh = sh.map(|c| [c[0], c[1], c[2], 0.0]);
         self.env_name = name.to_string();
+        self.env_is_imported = is_imported;
         self.content_rev += 1;
         for v in self.views.values_mut() {
             v.globals_bg = None;

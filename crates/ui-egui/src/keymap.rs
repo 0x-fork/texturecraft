@@ -16,6 +16,10 @@ use crate::theme::{Tokens, caption};
 use crate::unavailable::NOT_AVAILABLE;
 use crate::widgets::{icon_button, section};
 
+mod shortcut_list_entry;
+
+use shortcut_list_entry::ShortcutListEntry;
+
 pub type Keymap = BTreeMap<String, String>;
 
 /// Something a shortcut can trigger.
@@ -37,53 +41,41 @@ pub static NOT_AVAILABLE_ACTIONS: [(&str, Binding); 2] = [
     ("viewport.frame", Binding { id: "ui.toggleAnimation", group: "Viewport", label: "Toggle animation", default: Some("Space") }),
 ];
 
-/// An item of the shortcut list under the name and key the reference lists it with. The menus keep
-/// their own texts; Quit keeps Ctrl+Q, where the reference has no key.
-struct Listed {
-    id: &'static str,
-    label: &'static str,
-    default: Option<&'static str>,
-}
-
-const fn listed(id: &'static str, label: &'static str, default: Option<&'static str>) -> Listed {
-    Listed { id, label, default }
-}
-
 /// The shortcut list's first rows, in the reference's order. The `>` and `<` of the reference are
 /// the shifted Period and Comma keys.
-const LISTED: &[Listed] = &[
-    listed("ui.hideUi", "Hide UI", Some("Tab")),
-    listed("edit.undo", "Undo", Some("Ctrl+Z")),
-    listed("edit.redo", "Redo", Some("Ctrl+Y")),
-    listed("file.open", "Open project", Some("Ctrl+O")),
-    listed("file.close", "Close project", Some("Ctrl+F4")),
-    listed("file.save", "Save project", Some("Ctrl+S")),
-    listed("file.saveAs", "Save as project", Some("Ctrl+Shift+S")),
-    listed("ui.newProject", "New project", Some("Ctrl+N")),
-    listed("ui.quit", "Quit application", Some("Ctrl+Q")),
-    listed("ui.export", "Export Textures...", Some("Ctrl+Shift+E")),
-    listed("file.reimportMesh", "Reimport mesh", Some("Ctrl+Shift+R")),
-    listed("ui.mode.bake", "Switch to baking mode", Some("Ctrl+Shift+B")),
-    listed("ui.mode.paint", "Switch to edition mode", Some("F9")),
-    listed("ui.mode.render", "Switch to rendering mode (path traced)", Some("F10")),
-    listed("ui.wireframe", "Show mesh wireframe", None),
-    listed("camera.perspective", "Camera projection: Perspective view", Some("F5")),
-    listed("camera.orthographic", "Camera projection: Orthographic view", Some("F6")),
-    listed("viewport.nextChannel", "Display next channel", Some("C")),
-    listed("viewport.previousChannel", "Display previous channel", Some("Shift+C")),
-    listed("viewport.displayMaterial", "Display material", Some("M")),
-    listed("viewport.nextMeshMap", "Display next mesh map", Some("B")),
-    listed("viewport.previousMeshMap", "Display previous mesh map", Some("Shift+B")),
-    listed("viewport.frame", "Show entire mesh/path", Some("F")),
-    listed("camera.next", "Select next camera", Some("Shift+Period")),
-    listed("camera.previous", "Select previous camera", Some("Shift+Comma")),
-    listed("viewport.quickMask", "Enable quick mask", Some("Y")),
-    listed("viewport.quickMask.edit", "Edit quick mask", Some("U")),
-    listed("viewport.quickMask.invert", "Invert quick mask", Some("Ctrl+Shift+I")),
-    listed("ui.layout.split", "Viewers layout: 3D/2D", Some("F1")),
-    listed("ui.layout.3d", "Viewers layout: 3D only", Some("F2")),
-    listed("ui.layout.2d", "Viewers layout: 2D only", Some("F3")),
-    listed("ui.layout.swap", "Viewers layout: Swap 3D/2D", Some("F4")),
+const LISTED_SHORTCUTS: &[ShortcutListEntry] = &[
+    ShortcutListEntry::new("ui.hideUi", "Hide UI", Some("Tab")),
+    ShortcutListEntry::new("edit.undo", "Undo", Some("Ctrl+Z")),
+    ShortcutListEntry::new("edit.redo", "Redo", Some("Ctrl+Y")),
+    ShortcutListEntry::new("file.open", "Open project", Some("Ctrl+O")),
+    ShortcutListEntry::new("file.close", "Close project", Some("Ctrl+F4")),
+    ShortcutListEntry::new("file.save", "Save project", Some("Ctrl+S")),
+    ShortcutListEntry::new("file.saveAs", "Save as project", Some("Ctrl+Shift+S")),
+    ShortcutListEntry::new("ui.newProject", "New project", Some("Ctrl+N")),
+    ShortcutListEntry::new("ui.quit", "Quit application", Some("Ctrl+Q")),
+    ShortcutListEntry::new("ui.export", "Export Textures...", Some("Ctrl+Shift+E")),
+    ShortcutListEntry::new("file.reimportMesh", "Reimport mesh", Some("Ctrl+Shift+R")),
+    ShortcutListEntry::new("ui.mode.bake", "Switch to baking mode", Some("Ctrl+Shift+B")),
+    ShortcutListEntry::new("ui.mode.paint", "Switch to edition mode", Some("F9")),
+    ShortcutListEntry::new("ui.mode.render", "Switch to rendering mode (path traced)", Some("F10")),
+    ShortcutListEntry::new("ui.wireframe", "Show mesh wireframe", None),
+    ShortcutListEntry::new("camera.perspective", "Camera projection: Perspective view", Some("F5")),
+    ShortcutListEntry::new("camera.orthographic", "Camera projection: Orthographic view", Some("F6")),
+    ShortcutListEntry::new("viewport.nextChannel", "Display next channel", Some("C")),
+    ShortcutListEntry::new("viewport.previousChannel", "Display previous channel", Some("Shift+C")),
+    ShortcutListEntry::new("viewport.displayMaterial", "Display material", Some("M")),
+    ShortcutListEntry::new("viewport.nextMeshMap", "Display next mesh map", Some("B")),
+    ShortcutListEntry::new("viewport.previousMeshMap", "Display previous mesh map", Some("Shift+B")),
+    ShortcutListEntry::new("viewport.frame", "Show entire mesh/path", Some("F")),
+    ShortcutListEntry::new("camera.next", "Select next camera", Some("Shift+Period")),
+    ShortcutListEntry::new("camera.previous", "Select previous camera", Some("Shift+Comma")),
+    ShortcutListEntry::new("viewport.quickMask", "Enable quick mask", Some("Y")),
+    ShortcutListEntry::new("viewport.quickMask.edit", "Edit quick mask", Some("U")),
+    ShortcutListEntry::new("viewport.quickMask.invert", "Invert quick mask", Some("Ctrl+Shift+I")),
+    ShortcutListEntry::new("ui.layout.split", "Viewers layout: 3D/2D", Some("F1")),
+    ShortcutListEntry::new("ui.layout.3d", "Viewers layout: 3D only", Some("F2")),
+    ShortcutListEntry::new("ui.layout.2d", "Viewers layout: 2D only", Some("F3")),
+    ShortcutListEntry::new("ui.layout.swap", "Viewers layout: Swap 3D/2D", Some("F4")),
 ];
 
 /// The menu a command without a menu entry is listed under, from its id.
@@ -105,12 +97,12 @@ pub fn bindings() -> &'static [Binding] {
     static ALL: std::sync::OnceLock<Vec<Binding>> = std::sync::OnceLock::new();
     ALL.get_or_init(|| {
         let mut v: Vec<Binding> = Vec::new();
-        for l in LISTED {
-            let group = match CATALOG.iter().find(|i| i.id == l.id) {
+        for entry in LISTED_SHORTCUTS {
+            let group = match CATALOG.iter().find(|i| i.id == entry.id) {
                 Some(item) => item.menu,
-                None => texturecraft_engine::command_specs().iter().find(|c| c.id == l.id).and_then(|c| c.menu.first().copied()).unwrap_or("Viewport"),
+                None => texturecraft_engine::command_specs().iter().find(|c| c.id == entry.id).and_then(|c| c.menu.first().copied()).unwrap_or("Viewport"),
             };
-            v.push(Binding { id: l.id, group, label: l.label, default: l.default });
+            v.push(Binding { id: entry.id, group, label: entry.label, default: entry.default });
         }
         for i in CATALOG.iter().filter(|i| i.label != "-" && !crate::menus::UNAVAILABLE.contains(&i.id)) {
             if !v.iter().any(|b| b.id == i.id) {
@@ -412,6 +404,7 @@ pub(crate) fn actions_page(ui: &mut egui::Ui, keymap: &mut Keymap, recorder: &Bi
             add(ui);
         });
     };
+
     // A pencil that cannot be used yet
     let locked_pencil = |ui: &mut egui::Ui, action: &str| {
         let edit = trf("Edit the shortcut of {item}", &[("item", &tr(action))]);
@@ -549,6 +542,7 @@ pub fn window(app: &mut TextureCraftApp, ctx: &egui::Context) {
                         if !needle.is_empty() && ![row.label, row.group, tr(row.label), tr(row.group), key].iter().any(|t| t.to_lowercase().contains(&needle)) {
                             continue;
                         }
+
                         ui.horizontal(|ui| {
                             ui.label(tr(row.label));
                             ui.label(RichText::new(tr(row.group)).size(10.5).color(tk.text_dim));

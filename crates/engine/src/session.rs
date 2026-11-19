@@ -471,6 +471,8 @@ pub struct Session {
     pub revision: u64,
     /// Messages for the UI (status bar / toasts).
     pub log: crate::log::SessionLog,
+    /// Changes when the session and its log are replaced, including mesh reimport.
+    pub log_id: u64,
     /// The last stroke's camera visibility buffer: reused while the camera, view size and mesh
     /// are unchanged, so back-to-back dabs start instantly.
     pub(crate) depth_cache: Option<DepthCache>,
@@ -536,6 +538,7 @@ impl Session {
             modified: false,
             revision: 1,
             log: crate::log::SessionLog::new(),
+            log_id: next_mesh_id(),
             depth_cache: None,
             polygon_fill_drag: None,
             export_presets: Default::default(),
@@ -1151,13 +1154,22 @@ impl Session {
     }
 
     /// The image resource of the "Other..." view as `size` x `size` RGBA8 pixels over the UV square (stretched, bilinear,
-    /// values as stored; HDR values clamp to 1); None when the view shows no image of the project
+    /// values as stored; HDR values clamp to 1). Returns None for a missing image, excessive
+    /// resolution or allocation failure.
     pub fn image_view_rgba(&self, size: u32) -> Option<Vec<u8>> {
+        if size > texturecraft_core::MAX_RESOLUTION {
+            return None;
+        }
+
         let image = self.images.get(self.view_image.as_deref()?)?;
         let (width, height) = (image.width.max(1) as usize, image.height.max(1) as usize);
+        width.checked_mul(height)?;
         let size = size.max(1) as usize;
-        let texel = |x: usize, y: usize| image.rgba.get(y.min(height - 1) * width + x.min(width - 1)).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
-        let mut out = Vec::with_capacity(size * size * 4);
+        let fallback = [0.0, 0.0, 0.0, 1.0];
+        let texel = |x: usize, y: usize| image.rgba.get(y.min(height - 1) * width + x.min(width - 1)).copied().unwrap_or(fallback);
+        let mut out = Vec::new();
+        out.try_reserve_exact(size * size * 4).ok()?;
+
         for y in 0..size {
             let v = ((y as f32 + 0.5) / size as f32 * height as f32 - 0.5).max(0.0);
             let (y0, fy) = (v.floor() as usize, v.fract());
@@ -1289,8 +1301,10 @@ pub(crate) fn detect_uv_tiles(mesh: &Mesh, m: usize, mode: Option<bool>, log: &m
     if mode == Some(false) {
         return Ok(Vec::new());
     }
+
     let cells = mesh.uv_tiles(m);
-    // Mesh v points down: UDIM row r is v in -r..1-r.
+
+    // Mesh v points down: UDIM row r is v in -r..1-r
     let udims: Option<Vec<u32>> =
         cells.iter().map(|&(u, v)| ((0..=9).contains(&u) && (-99..=0).contains(&v)).then(|| 1001 + u.unsigned_abs() + 10 * v.unsigned_abs())).collect();
     match (mode, udims) {
