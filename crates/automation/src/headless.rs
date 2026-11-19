@@ -474,7 +474,8 @@ mod tests {
         assert!(sets >= 2);
 
         // A template without $textureSet gives every set the same file name
-        let preset = json!({"name": "same", "maps": [{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]});
+        let preset =
+            json!({"name": "same", "maps": [{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]});
         let r = client.export(&json!({"dir": dir.join("tex").display().to_string(), "preset": preset, "ts": "all"})).unwrap();
         assert_eq!(r["files"].as_array().unwrap().len(), 1, "only the first set's file is written: {r}");
         let warned = r["warnings"].as_array().unwrap().iter().filter(|w| w.as_str().unwrap().contains("so it was not written")).count();

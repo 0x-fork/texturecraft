@@ -242,14 +242,19 @@ fn closing_the_window_writes_no_further_texture_set() {
     let (mut h, dir) = harness("close");
     long_export(&mut h, &dir);
     h.run_steps(2);
-    let before = exports(&h);
     assert!(h.state().ui.export.job.is_some());
+    let (writes, frame) = (exports(&h), h.ctx.cumulative_frame_nr());
+
+    // The click is a frame per pointer event; the last one (the release) closes the window. Every
+    // frame before it writes a texture set, that one writes none.
     h.get_by_role_and_label(egui::Role::Button, "Close window").click();
     h.run_steps(1);
-    assert!(!h.state().ui.windows.export);
+    assert!(!h.state().ui.windows.export && h.state().ui.export.job.is_none());
+    let frames = h.ctx.cumulative_frame_nr() - frame;
+    assert!(frames >= 1);
+    assert_eq!((exports(&h) - writes) as u64, frames - 1, "the frame that closed the window wrote nothing");
     h.run_steps(2);
-    assert_eq!(exports(&h), before, "the frame that closed the window wrote nothing");
-    assert!(h.state().ui.export.job.is_none());
+    assert_eq!((exports(&h) - writes) as u64, frames - 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -50,7 +50,8 @@ fn a_file_name_an_earlier_texture_set_exports_is_not_overwritten() {
     assert!(s.set_count() >= 2);
 
     // A template without $textureSet gives every set the same file name
-    let preset = json!({"name": "same", "maps": [{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]});
+    let preset =
+        json!({"name": "same", "maps": [{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]});
     let plan = execute(&mut s, "export.plan", &json!({"preset": preset, "ts": "all"})).unwrap();
     assert_eq!(plan.as_array().unwrap().len(), s.set_count(), "every set has roughness: {plan}");
     let dir = std::env::temp_dir().join(format!("tc_export_same_name_{}", std::process::id()));

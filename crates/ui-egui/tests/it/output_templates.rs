@@ -258,8 +258,10 @@ fn moves_under_an_unfinished_edit_are_forgotten_when_the_template_is_saved_elsew
     h.state_mut().run("export.preset.save", json!({ "preset": agent })).unwrap();
     h.run_steps(2);
 
-    // The edit is finished and the first map moved down once more: the override at 0 moves to 1
+    // The edit is finished (the "Not saved" line goes, so the buttons move first) and the first map
+    // moved down once more: the override at 0 moves to 1
     h.state_mut().ui.export.draft.as_mut().unwrap().maps[last].file = saved.maps[last].file.clone();
+    h.run_steps(2);
     h.get_all_by_label("Move down").next().unwrap().click();
     h.run_steps(4);
     let now = h.state().session.export_preset("Mine").unwrap();
