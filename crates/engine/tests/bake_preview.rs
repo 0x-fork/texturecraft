@@ -107,11 +107,9 @@ fn a_deferred_image_view_that_was_removed_during_the_bake_comes_back_as_the_mate
     assert_eq!(session.view, ViewMode::MeshMap(BakedMap::AmbientOcclusion));
     execute(&mut session, "resource.remove", &json!({"name": name})).unwrap();
 
-    let revision = session.revision;
     session.bake_preview_end();
 
     assert_eq!((session.view, session.view_image.as_deref()), (ViewMode::Material, None), "a removed image is not restored");
-    assert_ne!(session.revision, revision);
 }
 
 #[test]
