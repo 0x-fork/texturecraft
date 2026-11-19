@@ -28,7 +28,8 @@ pub(crate) fn show(ui: &mut Ui, id: Id, default: &str) -> String {
 /// all search words.
 pub(crate) fn words(query: &str, default: &str) -> Vec<String> {
     let query = query.trim();
-    let rest = query.strip_prefix(default.trim()).unwrap_or(query);
+    // The default ends at a word boundary: "environmental" is not "environment" plus "al"
+    let rest = query.strip_prefix(default.trim()).filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace)).unwrap_or(query);
     rest.split_whitespace().map(str::to_lowercase).collect()
 }
 
@@ -55,6 +56,7 @@ mod tests {
         assert_eq!(words("Stone", "u:image PRs"), ["stone"]);
         assert_eq!(words("prs", "u:image PRs"), ["prs"], "a search word equal to a word of the default still searches");
         assert_eq!(words("u:image PRs prs", "u:image PRs"), ["prs"]);
+        assert_eq!(words("environmental", "environment "), ["environmental"], "only whole words of the default are dropped");
         assert!(matches(&words("environment studio", "environment "), "Studio 02"));
         assert!(!matches(&words("environment studio", "environment "), "Sunset"));
     }

@@ -783,6 +783,20 @@ fn specular_glossiness_takes_f0_from_the_specular_color() {
 }
 
 #[test]
+fn a_lit_metallic_view_ignores_the_specular_channel() {
+    let Some((mut h, frame)) = setup() else { return };
+    let lit = shaded(&frame, |s| {
+        s.view_mode = 1;
+        s.channel = 1;
+        s.solo_lit = true;
+    });
+    upload_height(&mut h, |_, _| [0.0, 1.0, 0.6, 0.1]);
+    let off = render(&mut h, &lit, "solo_lit_metallic_gold_specular");
+    let on = render(&mut h, &shaded(&lit, |s| s.spec_gloss = true), "solo_lit_metallic_gold_spec_gloss");
+    assert_eq!(off.px, on.px, "spec/gloss does not turn the neutral lit material into the specular colour");
+}
+
+#[test]
 fn parallax_follows_the_height_channel() {
     let Some((mut h, frame)) = setup() else { return };
     let pom = shaded(&frame, |s| s.parallax = true);

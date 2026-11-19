@@ -209,6 +209,8 @@ impl GpuLink {
         if sets != self.sets || shift != self.shift || out.mesh.is_some() {
             // Retained GPU sets need their prior kinds to overwrite stale textures
             self.sent.retain(|&texture_set, _| texture_set < sets.len());
+            // Recreated sets start with blank aux textures: resend the shown view
+            self.aux.clear();
 
             out.sets = Some((sets.clone(), session.mesh.materials.len().max(1), shift));
             self.sets = sets;
@@ -571,6 +573,32 @@ mod tests {
         let out = gpu.sync(&mut s, Some(AuxView::Mask(layer)), None, 0, 0.0);
         assert_eq!(out.aux.len(), 1, "re-enabling the mask uploads its values again");
         assert!(out.aux[0].2.chunks(4).any(|pixel| pixel != MASK_VIEW_BLANK));
+    }
+
+    #[test]
+    fn a_resized_set_gets_the_shown_image_view_again() {
+        let mut gpu = link();
+        let mut s = texturecraft_engine::sample_session(128, 64).unwrap();
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]));
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let name = s.import_resource_bytes("stone.png", png).unwrap();
+        execute(&mut s, "viewport.view", &json!({"mode": "image", "image": name})).unwrap();
+
+        let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
+        assert!(!out.aux.is_empty());
+        drop(out);
+        let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
+        assert!(out.aux.is_empty(), "nothing is sent again while the view stays");
+        drop(out);
+
+        // The renderer recreates a resized set's textures blank, in the same frame as this sync
+        let shown = s.doc.project.texture_set(0).unwrap().size().0;
+        let resolution = if shown == 256 { 512 } else { 256 };
+        execute(&mut s, "textureSet.resolution", &json!({"resolution": resolution})).unwrap();
+        let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
+        assert!(out.sets.is_some());
+        assert!(out.aux.iter().any(|(set, _, _)| *set == 0), "the recreated set gets the shown image uploaded again");
     }
 
     fn kinds(out: &SceneSync) -> BTreeSet<DisplayKind> {

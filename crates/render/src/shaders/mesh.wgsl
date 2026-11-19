@@ -531,8 +531,8 @@ fn shade_mesh(i: VOut, front: bool) -> Shaded {
     let nov = clamp(abs(dot(n, v)), GRAZING_COSINE_FLOOR, 1.0);
     var f0 = mix(vec3<f32>(0.08 * orm.a), albedo, metal);
     var diffuse_col = albedo * (1.0 - metal);
-    if (g.material.x > 0.5) {
-        // Specular color gives F0; remove its energy from diffuse
+    if (g.material.x > 0.5 && !solo_lit) {
+        // Specular color gives F0 (a solo-lit channel view keeps its neutral material); remove its energy from diffuse
         f0 = hgt.gba;
         diffuse_col = albedo * (1.0 - max(f0.r, max(f0.g, f0.b)));
     }

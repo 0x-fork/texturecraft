@@ -346,7 +346,7 @@ fn gpu_scene_key(session: &texturecraft_engine::Session) -> String {
 
 /// What the render of scene `scene_key` depends on; a change restarts it.
 fn key(app: &TextureCraftApp, scene_key: &str, size: (u32, u32)) -> String {
-    format!("{scene_key}|{:?}|{size:?}|{:?}", app.session.camera, app.ui.render)
+    format!("{scene_key}|{:?}|{size:?}|{:?}|{:?}", app.session.camera, app.ui.render, app.ui.prefs.background)
 }
 
 fn start(app: &TextureCraftApp, ctx: &egui::Context, key: String, size: (u32, u32)) -> Job {

@@ -62,6 +62,20 @@ fn environment_cache_retains_source_identity_until_replaced() {
     assert!(!Arc::ptr_eq(&second, &super::trace_scene(&app).env), "the environment name is also part of the key");
 }
 
+/// The display background is drawn into the render, so a new color starts it over.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_new_display_background_restarts_the_render() {
+    let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut app = egui_kittest::Harness::builder().build_eframe(|context| crate::TextureCraftApp::new(context, session())).into_state();
+    let before = super::key(&app, "scene", (64, 64));
+    assert_eq!(super::key(&app, "scene", (64, 64)), before);
+
+    app.ui.prefs.background[0] = [0.9, 0.1, 0.1];
+
+    assert_ne!(super::key(&app, "scene", (64, 64)), before);
+}
+
 /// Create one harness device, skipping unavailable or non-compute backends.
 #[cfg(not(target_arch = "wasm32"))]
 fn gpu_app() -> Option<crate::TextureCraftApp> {

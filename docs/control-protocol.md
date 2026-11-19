@@ -508,7 +508,7 @@ current angles. The orbit pivot (`camera.get` `target`) is the framed center, so
 Alt+drag orbit turn around the object being painted even with a floor plane or other helper geometry in
 the mesh. `viewport.frameSelection` (Shift+F) is the same as `target: "selection"`; a set with no triangles
 frames the whole mesh. Both return the camera like `camera.get`.
-In the app, `viewport.frame` also resets the 2D view (pan, zoom and rotation; in a UV tile set it frames tile 1001), as F does; the engine alone has no 2D view state.
+In the app, `viewport.frame` also resets the 2D view (pan, zoom and rotation), as F does, on the next 2D draw. This happens only when the layout is not `Only3D` and the mode is not `Rendering`; otherwise the previous pan, zoom and rotation stay. In a UV tile set the reset frames tile 1001, or the lowest tile when tile 1001 is absent. The engine alone has no 2D view state.
 
 ## Camera views and projection
 

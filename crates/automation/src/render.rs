@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn the_unlit_switch_decides_whether_a_channel_view_is_lit() {
-        let mut s = texturecraft_engine::sample_session(64, 64).unwrap();
+        let mut s = texturecraft_engine::sample_session(128, 64).unwrap();
         assert!(!shade(&s).solo_lit, "channel views are flat by default");
         execute(&mut s, "display.set", &json!({"soloUnlit": false})).unwrap();
         assert!(shade(&s).solo_lit);
