@@ -30,7 +30,11 @@ pub const PROJECT_OPEN_NOTE: &str = n_("Library locations can't be added/removed
 const LABEL_WIDTH: f32 = 176.0;
 const CONTROL_WIDTH: f32 = 340.0;
 const PAGE_WIDTH: f32 = 560.0;
-const PAGE_HEIGHT: f32 = 520.0;
+const MAX_PAGE_HEIGHT_POINTS: f32 = 520.0;
+// Reserve room for the title bar, window margins, separator and footer buttons
+const WINDOW_CHROME_HEIGHT_POINTS: f32 = 112.0;
+// Leave room for the column gap, layout spacing and scroll bar
+const CONTENT_WIDTH_ALLOWANCE_POINTS: f32 = 32.0;
 /// The page buttons of the left column.
 const PAGE_BUTTON: egui::Vec2 = vec2(84.0, 80.0);
 const PAGE_ICON_SIZE: f32 = 44.0;
@@ -56,25 +60,33 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     #[cfg(not(target_arch = "wasm32"))]
     let resources = settings_resources(ctx);
 
+    let viewport = ctx.content_rect();
+    let page_height = (viewport.height() - WINDOW_CHROME_HEIGHT_POINTS).clamp(0.0, MAX_PAGE_HEIGHT_POINTS);
+    let frame_width = egui::Frame::window(&ctx.global_style()).total_margin().sum().x;
+    let content_width = (viewport.width() - frame_width).clamp(0.0, PAGE_BUTTON.x + PAGE_WIDTH + CONTENT_WIDTH_ALLOWANCE_POINTS);
+
     crate::windows::window("settings", tr("Settings"), &mut open).resizable(false).show(ctx, |ui| {
-        // The window keeps to the column and the page; the OK and Cancel row would widen it otherwise
-        ui.set_max_width(PAGE_BUTTON.x + PAGE_WIDTH + 32.0);
+        // Keep the footer inside the viewport when the fixed-width controls need to scroll
+        ui.set_max_width(content_width);
         ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(PAGE_BUTTON.x);
-                for page in SettingsPage::ALL {
-                    if page_button(ui, page, draft.page == page).clicked() {
-                        draft.page = page;
+            egui::ScrollArea::vertical().id_salt("settings_navigation").min_scrolled_height(0.0).max_height(page_height).show(ui, |ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(PAGE_BUTTON.x);
+                    for page in SettingsPage::ALL {
+                        if page_button(ui, page, draft.page == page).clicked() {
+                            draft.page = page;
+                        }
+                        ui.add_space(6.0);
                     }
-                    ui.add_space(6.0);
-                }
+                });
             });
             ui.add_space(8.0);
-            egui::ScrollArea::vertical()
+            egui::ScrollArea::both()
                 .id_salt(("settings_page", draft.page as u8))
                 .auto_shrink([false, false])
-                .min_scrolled_height(PAGE_HEIGHT)
-                .max_height(PAGE_HEIGHT)
+                .min_scrolled_width(0.0)
+                .min_scrolled_height(page_height)
+                .max_height(page_height)
                 .show(ui, |ui| {
                     ui.vertical(|ui| {
                         ui.set_width(PAGE_WIDTH);

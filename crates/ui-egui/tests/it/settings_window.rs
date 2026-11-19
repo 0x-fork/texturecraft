@@ -73,6 +73,13 @@ fn type_into(h: &mut Harness<'_, TextureCraftApp>, label: &str, text: &str) {
 fn the_left_column_switches_between_the_three_pages() {
     let mut h = harness(texturecraft_engine::sample_session(128, 32).unwrap());
     open_settings(&mut h);
+
+    let tab_center = |label| h.get_by_role_and_label(Role::Tab, label).rect().center();
+    let [general, shortcuts, libraries] = ["General", "Shortcuts", "Libraries"].map(tab_center);
+    assert_eq!(general.x, shortcuts.x);
+    assert_eq!(shortcuts.x, libraries.x);
+    assert!(general.y < shortcuts.y && shortcuts.y < libraries.y);
+
     assert_eq!(page(&h), Some(SettingsPage::General));
     assert!(toggled(&h, "General"), "the chosen page is highlighted");
     assert!(!toggled(&h, "Shortcuts"));
@@ -215,6 +222,28 @@ fn cancel_drops_the_changes_and_ok_applies_and_keeps_them() {
     eframe::App::save(h.state_mut(), &mut storage);
     let restored: UiState = serde_json::from_str(&storage.values["ui.json"]).unwrap();
     assert_eq!(restored.prefs, prefs, "the settings are kept between runs");
+}
+
+#[test]
+fn settings_footer_is_clickable_in_a_short_zoomed_window() {
+    let mut h = harness(Session::closed().unwrap());
+    h.set_size(egui::vec2(960.0, 600.0));
+    h.state_mut().ui.prefs.ui_scale = 1.5;
+    h.run_steps(4);
+
+    assert_eq!(h.ctx.zoom_factor(), 1.5);
+    assert_eq!(h.ctx.content_rect().size(), egui::vec2(640.0, 400.0));
+    for label in ["Cancel", "OK"] {
+        open_settings(&mut h);
+        let button = h.get_by_role_and_label(Role::Button, label);
+        let viewport = h.ctx.content_rect();
+
+        assert!(viewport.contains_rect(button.rect()), "{label} must fit in {viewport:?}, got {:?}", button.rect());
+        button.click();
+        h.run_steps(4);
+
+        assert!(!h.state().ui.windows.settings, "{label} closes Settings without scrolling the page");
+    }
 }
 
 #[test]

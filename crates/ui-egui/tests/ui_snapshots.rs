@@ -858,7 +858,7 @@ fn tile_generator_gradient_map_snapshot() {
     save(&mut harness, &output_dir, "tile-generator-gradient-map");
 }
 
-/// Edit > Settings: the General page, then the Shortcuts and Libraries pages
+/// Edit > Settings: the three pages and a compact window at 150% scale
 #[test]
 #[ignore]
 fn settings_pages_snapshot() {
@@ -892,4 +892,9 @@ fn settings_pages_snapshot() {
         }
         save(&mut harness, &output_dir, name);
     }
+
+    harness.set_size(egui::vec2(960.0, 600.0));
+    harness.state_mut().ui.prefs.ui_scale = 1.5;
+    harness.state_mut().ui.windows.settings_draft.as_mut().unwrap().page = SettingsPage::General;
+    save(&mut harness, &output_dir, "settings-compact");
 }
