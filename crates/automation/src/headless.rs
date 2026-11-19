@@ -79,7 +79,7 @@ impl Headless {
     fn new_with_brush_dir(mut session: Session, fs: Filesystem, brush_dir: std::path::PathBuf) -> Headless {
         if matches!(fs, Filesystem::TrustedLocal) && session.brush_presets.dir.is_none() {
             let warnings = session.load_brush_presets(brush_dir);
-            session.log.extend_warnings(warnings.into_iter().map(|warning| format!("Brush preset skipped: {warning}")));
+            session.log.warnings(texturecraft_engine::log::LIBRARY_SOURCE, warnings.into_iter().map(|warning| format!("Brush preset skipped: {warning}")));
         } else if !matches!(fs, Filesystem::TrustedLocal) {
             session.brush_presets.dir = None;
             for preset in &mut session.brush_presets.list {
@@ -196,7 +196,7 @@ impl Headless {
         let f = self.read_mesh(path)?;
         let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or("Untitled");
         let mut next = Session::from_mesh_bytes(&f.name, &f.bytes, resolution.unwrap_or(2048), name.unwrap_or(stem))?;
-        next.log.extend_warnings(f.warnings);
+        next.log.warnings("Importer", f.warnings);
         Ok(self.replace(next))
     }
 
@@ -319,7 +319,7 @@ impl Headless {
         let session = &self.session;
         let kind = match options.view.as_deref().unwrap_or("3d") {
             "3d" => ViewKind::Scene,
-            "2d" | "uv" => ViewKind::Uv { ts: session.ts(), zoom: 1.0, pan: [0.0, 0.0] },
+            "2d" | "uv" => ViewKind::Uv { ts: session.ts(), zoom: 1.0, pan: [0.0, 0.0], rotation: 0.0 },
             other => return Err(bad(format!("unknown view `{other}` (3d, 2d or uv)"))),
         };
         let max_side = if self.trusted() { MAX_LOCAL_RENDER_SIDE } else { MAX_PNG_SIDE };

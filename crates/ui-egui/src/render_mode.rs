@@ -313,7 +313,7 @@ fn settings(app: &TextureCraftApp) -> TraceSettings {
 }
 
 fn display(app: &TextureCraftApp) -> TraceDisplay {
-    TraceDisplay { denoise: app.ui.render.denoise, ..TraceDisplay::from_display(&app.session.doc.project.display) }
+    TraceDisplay { denoise: app.ui.render.denoise, background: app.ui.prefs.background, ..TraceDisplay::from_display(&app.session.doc.project.display) }
 }
 
 fn work(app: &TextureCraftApp, size: (u32, u32)) -> Work {
@@ -853,6 +853,26 @@ impl RenderView {
     pub fn is_active(&self) -> bool {
         self.job.is_some() || self.gpu.is_some() || self.texture.is_some()
     }
+}
+
+/// Window > Views > Renderer Settings: what the path tracer is doing. It sets its samples per
+/// frame by itself and takes the camera, environment and shadows from Display Settings.
+pub(crate) fn settings_body(app: &mut TextureCraftApp, ui: &mut Ui) {
+    let tokens = Tokens::get(ui.ctx());
+    let tracer = if app.render.gpu.is_some() { tr("GPU") } else { tr("CPU") };
+    ui.horizontal(|ui| {
+        ui.label(tr("Tracer"));
+        ui.label(RichText::new(tracer).color(tokens.text_dim));
+    });
+    ui.horizontal(|ui| {
+        ui.label(tr("Samples"));
+        ui.label(RichText::new(app.render.samples.to_string()).color(tokens.text_dim));
+    });
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(tr("The path tracer adds samples while the view stands still. Environment, shadows and camera come from Display Settings."))
+            .color(tokens.text_dim),
+    );
 }
 
 /// Stop rendering (leaving Rendering mode frees the worker, the GPU memory and the image).

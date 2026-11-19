@@ -153,6 +153,9 @@ pub enum ViewMode {
     /// The surface normal the shading uses, unlit: the mesh normal turned by the Height
     /// channel's slope and the Normal channel ("Normal+height+mesh").
     NormalHeightMesh,
+    /// One of the project's image resources shown on the mesh (and in the 2D view) as it is: the
+    /// picker's "Other..." (the image is [`Session::view_image`]).
+    Image,
 }
 
 /// The view picker's entry for [`ViewMode::NormalHeightMesh`]
@@ -167,6 +170,7 @@ impl ViewMode {
             ViewMode::UvChecker => "UV checker".into(),
             ViewMode::Mask(_) => "Layer mask".into(),
             ViewMode::NormalHeightMesh => NORMAL_HEIGHT_MESH_LABEL.into(),
+            ViewMode::Image => "Other...".into(),
         }
     }
 }
@@ -434,6 +438,8 @@ pub struct Session {
     pub camera: OrbitCamera,
     pub(crate) selected_camera_name: Option<String>,
     pub view: ViewMode,
+    /// The image resource [`ViewMode::Image`] shows
+    pub view_image: Option<String>,
     /// The layer shown alone in the viewport (not saved, not in the history; see [`crate::solo`]).
     pub solo: Option<crate::Solo>,
     /// The live bake preview while the app bakes (see [`crate::bake_preview`]).
@@ -464,7 +470,7 @@ pub struct Session {
     /// Bumps on every document change.
     pub revision: u64,
     /// Messages for the UI (status bar / toasts).
-    pub log: crate::SessionLog,
+    pub log: crate::log::SessionLog,
     /// The last stroke's camera visibility buffer: reused while the camera, view size and mesh
     /// are unchanged, so back-to-back dabs start instantly.
     pub(crate) depth_cache: Option<DepthCache>,
@@ -513,6 +519,7 @@ impl Session {
             camera,
             selected_camera_name: None,
             view: ViewMode::Material,
+            view_image: None,
             solo: None,
             bake_preview: None,
             viewport: Vec2::new(1280.0, 800.0),
@@ -528,7 +535,7 @@ impl Session {
             project_open: true,
             modified: false,
             revision: 1,
-            log: crate::SessionLog::default(),
+            log: crate::log::SessionLog::new(),
             depth_cache: None,
             polygon_fill_drag: None,
             export_presets: Default::default(),
@@ -580,7 +587,7 @@ impl Session {
         let res = check_resolution(resolution)?;
         let mut project = Project::new(name, mesh_ref);
         let mats = if mesh.materials.is_empty() { vec!["Default".to_string()] } else { mesh.materials.clone() };
-        let mut log = Vec::new();
+        let mut log = crate::log::SessionLog::new();
         for (i, m) in mats.iter().enumerate() {
             let mut ts = TextureSet::new(m.clone(), i, res);
             ts.uv_tiles = detect_uv_tiles(&mesh, i, uv_tiles, &mut log).map_err(|e| EngineError::Other(format!("texture set \"{m}\": {e}")))?;
@@ -596,7 +603,7 @@ impl Session {
             mesh,
             mesh_source,
         )?;
-        s.log.extend_warnings(log);
+        s.log.append(log);
         Ok(s)
     }
 
@@ -1143,6 +1150,31 @@ impl Session {
         Some(gray.iter().flat_map(|g| [*g, *g, *g, 255]).collect())
     }
 
+    /// The image resource of the "Other..." view as `size` x `size` RGBA8 pixels over the UV square (stretched, bilinear,
+    /// values as stored; HDR values clamp to 1); None when the view shows no image of the project
+    pub fn image_view_rgba(&self, size: u32) -> Option<Vec<u8>> {
+        let image = self.images.get(self.view_image.as_deref()?)?;
+        let (width, height) = (image.width.max(1) as usize, image.height.max(1) as usize);
+        let size = size.max(1) as usize;
+        let texel = |x: usize, y: usize| image.rgba.get(y.min(height - 1) * width + x.min(width - 1)).copied().unwrap_or([0.0, 0.0, 0.0, 1.0]);
+        let mut out = Vec::with_capacity(size * size * 4);
+        for y in 0..size {
+            let v = ((y as f32 + 0.5) / size as f32 * height as f32 - 0.5).max(0.0);
+            let (y0, fy) = (v.floor() as usize, v.fract());
+            for x in 0..size {
+                let u = ((x as f32 + 0.5) / size as f32 * width as f32 - 0.5).max(0.0);
+                let (x0, fx) = (u.floor() as usize, u.fract());
+                let (a, b, c, d) = (texel(x0, y0), texel(x0 + 1, y0), texel(x0, y0 + 1), texel(x0 + 1, y0 + 1));
+                for k in 0..3 {
+                    let value = (a[k] * (1.0 - fx) + b[k] * fx) * (1.0 - fy) + (c[k] * (1.0 - fx) + d[k] * fx) * fy;
+                    out.push((value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                }
+                out.push(255);
+            }
+        }
+        Some(out)
+    }
+
     /// Mask values at texture-set coordinates in request order; None without an enabled mask
     /// Uncovered and out-of-range texels read zero; neighbourhood filters also read surrounding texels
     pub fn mask_at(&self, id: LayerId, texels: &[(u32, u32)]) -> Option<Vec<f32>> {
@@ -1253,7 +1285,7 @@ pub fn check_size(ts: &TextureSet) -> Result<()> {
 /// UDIM numbers of the UV tiles material `m` of `mesh` paints, ascending: `mode` as in
 /// [`Session::new_project_tiled`]. Tiles outside 1001..=2000 are an error in UV tile mode and
 /// leave an automatic set classic (with a note in `log`).
-pub(crate) fn detect_uv_tiles(mesh: &Mesh, m: usize, mode: Option<bool>, log: &mut Vec<String>) -> std::result::Result<Vec<u32>, String> {
+pub(crate) fn detect_uv_tiles(mesh: &Mesh, m: usize, mode: Option<bool>, log: &mut crate::log::SessionLog) -> std::result::Result<Vec<u32>, String> {
     if mode == Some(false) {
         return Ok(Vec::new());
     }
@@ -1270,7 +1302,7 @@ pub(crate) fn detect_uv_tiles(mesh: &Mesh, m: usize, mode: Option<bool>, log: &m
         }
         (Some(true), None) => Err("UVs lie outside UDIM tiles 1001..2000".into()),
         (None, None) => {
-            log.push(format!("material {m}: UVs outside UDIM tiles 1001..2000; painting tile 1001 only"));
+            log.warn("Importer", format!("material {m}: UVs outside UDIM tiles 1001..2000; painting tile 1001 only"));
             Ok(Vec::new())
         }
         (Some(false), _) => Ok(Vec::new()),

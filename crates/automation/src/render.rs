@@ -74,6 +74,7 @@ impl Gpu {
             let aux = match s.view {
                 ViewMode::MeshMap(m) => Some(texturecraft_render::mesh_maps::mesh_map_rgba(s.doc.baked.get(&ts), m, res, cache.size, &comp.block_scales)),
                 ViewMode::Mask(id) if s.doc.project.locate(id).is_some_and(|(t, _, _)| t == ts) => s.mask_view_rgba(id, res),
+                ViewMode::Image => s.image_view_rgba(res),
                 _ => None,
             };
             if let Some(rgba) = aux {
@@ -158,7 +159,7 @@ pub fn shade(s: &Session) -> Shade {
     let (view_mode, channel) = match s.view {
         ViewMode::Material => (0, 0),
         ViewMode::Channel(c) => (1, c.index() as u32),
-        ViewMode::MeshMap(_) | ViewMode::Mask(_) => (2, 0),
+        ViewMode::MeshMap(_) | ViewMode::Mask(_) | ViewMode::Image => (2, 0),
         ViewMode::UvChecker => (3, 0),
         ViewMode::NormalHeightMesh => (4, 0),
     };
@@ -191,6 +192,14 @@ mod tests {
             out.extend((0..64).flat_map(|_| px));
         }
         out
+    }
+
+    #[test]
+    fn the_unlit_switch_decides_whether_a_channel_view_is_lit() {
+        let mut s = texturecraft_engine::sample_session(64, 64).unwrap();
+        assert!(!shade(&s).solo_lit, "channel views are flat by default");
+        execute(&mut s, "display.set", &json!({"soloUnlit": false})).unwrap();
+        assert!(shade(&s).solo_lit);
     }
 
     #[test]
@@ -255,7 +264,7 @@ mod tests {
         };
         let cam = s.camera;
         // A 2:1 atlas fills a 2:1 view's middle 92%: tile 1001 left of center, 1002 right.
-        let (w, _, px) = gpu.render(&mut s, ViewKind::Uv { ts: 0, zoom: 1.0, pan: [0.0, 0.0] }, [200, 100], cam).unwrap();
+        let (w, _, px) = gpu.render(&mut s, ViewKind::Uv { ts: 0, zoom: 1.0, pan: [0.0, 0.0], rotation: 0.0 }, [200, 100], cam).unwrap();
         let at = |x: u32, y: u32| px.get(((y * w + x) * 4) as usize..((y * w + x) * 4 + 3) as usize).unwrap().to_vec();
         let red = |p: &[u8]| i32::from(p[0]) - i32::from(p[1]) > 60;
         let (left, right) = (at(77, 50), at(123, 50));

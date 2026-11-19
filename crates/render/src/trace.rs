@@ -23,7 +23,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 use texturecraft_compose::{Composite, ImageRes};
 use texturecraft_core::Channel;
-use texturecraft_core::project::{DisplaySettings, ToneMapping};
+use texturecraft_core::project::{DisplaySettings, EnvAlignment, ToneMapping};
 use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_geom::{Bvh, Mesh, OrbitCamera};
 
@@ -47,6 +47,8 @@ pub struct TraceScene {
     pub env: Arc<EnvImage>,
     /// Environment rotation around +Y (radians), as in the viewport.
     pub env_rotation: f32,
+    /// The environment turns with the camera about the vertical axis (Environment Alignment: Camera).
+    pub env_camera: bool,
     /// Texture set per triangle (`usize::MAX`: none, default material).
     pub(crate) tri_set: Arc<Vec<usize>>,
     /// Importance sampling of the environment (None for an empty image).
@@ -93,6 +95,7 @@ impl TraceScene {
             sets,
             env,
             env_rotation,
+            env_camera: false,
             tri_set: Arc::new(tri_set),
             light,
             spec_gloss: false,
@@ -130,6 +133,7 @@ impl TraceScene {
     /// [`TraceScene::for_display`] under `env`, from [`TraceScene::display_env`] of the same display.
     pub fn for_display_env(mesh: Arc<Mesh>, bvh: Arc<Bvh>, sets: Vec<TraceSet>, display: &DisplaySettings, env: Arc<EnvImage>) -> TraceScene {
         let mut scene = TraceScene::new(mesh, bvh, sets, env, display.env_rotation.to_radians());
+        scene.env_camera = display.env_alignment == EnvAlignment::Camera;
         scene.spec_gloss = display.spec_gloss;
         scene.set_scatter(display.scatter_color, display.scatter_radius);
         scene.ior = display.ior;
@@ -255,12 +259,20 @@ pub struct TraceDisplay {
     pub env_opacity: f32,
     /// Filter the remaining noise (edge-aware; keeps texture detail).
     pub denoise: bool,
+    /// The plain background behind the mesh at the top and at the bottom of the view (linear RGB).
+    pub background: [[f32; 3]; 2],
 }
 
 impl TraceDisplay {
     /// Exposure, tone mapping and background as the viewport shows them.
     pub fn from_display(d: &DisplaySettings) -> TraceDisplay {
-        TraceDisplay { exposure: d.env_exposure.exp2(), aces: d.tone_mapping == ToneMapping::AcesFilmic, env_opacity: d.env_opacity, denoise: false }
+        TraceDisplay {
+            exposure: d.env_exposure.exp2(),
+            aces: d.tone_mapping == ToneMapping::AcesFilmic,
+            env_opacity: d.env_opacity,
+            denoise: false,
+            background: crate::DEFAULT_BACKGROUND,
+        }
     }
 }
 
@@ -325,6 +337,14 @@ impl Tracer {
     /// new sample then counts in [`Tracer::samples`]). Lets a single-threaded caller spread a
     /// pass over several frames.
     pub fn pass_rows(&mut self, scene: &TraceScene, cam: &OrbitCamera, settings: &TraceSettings, rows: u32) -> bool {
+        // Environment Alignment: Camera turns the environment with the camera
+        let aligned;
+        let scene = if scene.env_camera {
+            aligned = TraceScene { env_rotation: scene.env_rotation + crate::renderer::camera_yaw(cam), ..scene.clone() };
+            &aligned
+        } else {
+            scene
+        };
         let (w, h, pass) = (self.width, self.height, self.samples);
         let aspect = w as f32 / h as f32;
         let (y0, y1) = (self.row, self.row.saturating_add(rows.max(1)).min(h));
@@ -368,7 +388,7 @@ impl Tracer {
             let uv = Vec2::new(((i as u32 % self.width) as f32 + 0.5) / w, ((i as u32 / self.width) as f32 + 0.5) / h);
             let a = px.hits / n;
             let misses = n - px.hits;
-            let back = if misses > 0.0 { backdrop(uv).lerp(tonemap(px.env / misses, d), d.env_opacity.clamp(0.0, 1.0)) } else { backdrop(uv) };
+            let back = if misses > 0.0 { backdrop(uv, d).lerp(tonemap(px.env / misses, d), d.env_opacity.clamp(0.0, 1.0)) } else { backdrop(uv, d) };
             let mean = denoised.get(i).copied().unwrap_or(px.hit / px.hits.max(1.0));
             let scene = if px.hits > 0.0 { tonemap(mean, d) } else { Vec3::ZERO };
             let c = back.lerp(scene, a);
@@ -455,10 +475,9 @@ impl Tracer {
     }
 }
 
-/// The viewport's studio backdrop: a cool slate, lighter at the top (matches the post pass).
-fn backdrop(uv: Vec2) -> Vec3 {
-    let d = uv * 2.0 - Vec2::ONE;
-    Vec3::new(0.0295, 0.0343, 0.0437).lerp(Vec3::new(0.0110, 0.0130, 0.0168), uv.y) * (1.0 - 0.09 * d.length_squared())
+/// The viewport's plain background, top to bottom (matches the post pass).
+fn backdrop(uv: Vec2, d: &TraceDisplay) -> Vec3 {
+    Vec3::from(d.background[0]).lerp(Vec3::from(d.background[1]), uv.y)
 }
 
 fn tonemap(hdr: Vec3, d: &TraceDisplay) -> Vec3 {
@@ -1083,7 +1102,7 @@ mod tests {
             tr.pass(&s, &camera(), &TraceSettings::default());
         }
         assert_eq!(tr.samples, 8);
-        let d = TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: false };
+        let d = TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: false, background: crate::DEFAULT_BACKGROUND };
         let img = tr.rgba8(&d);
         assert_eq!(img.len(), 48 * 32 * 4);
         let px = |x: usize, y: usize| &img[(y * 48 + x) * 4..(y * 48 + x) * 4 + 3];
@@ -1095,11 +1114,32 @@ mod tests {
     }
 
     #[test]
+    fn the_cpu_tracer_turns_the_environment_with_the_camera_when_aligned_to_it() {
+        // The environment shows as the background, so the whole image follows its turn
+        let view = |camera_aligned: bool, yaw: f32| {
+            let mut s = scene("Sunset");
+            s.env_camera = camera_aligned;
+            let mut cam = camera();
+            cam.set_angles(yaw, 0.0);
+            let mut tr = Tracer::new(24, 12);
+            tr.pass(&s, &cam, &TraceSettings::default());
+            tr.rgba8(&TraceDisplay { exposure: 1.0, aces: true, env_opacity: 1.0, denoise: false, background: crate::DEFAULT_BACKGROUND })
+        };
+        let difference = |a: &[u8], b: &[u8]| a.iter().zip(b).map(|(x, y)| x.abs_diff(*y) as f32).sum::<f32>() / a.len() as f32;
+        let world = difference(&view(false, 0.0), &view(false, 1.8));
+        let camera_aligned = difference(&view(true, 0.0), &view(true, 1.8));
+        assert!(world > 3.0, "World: the environment stays put ({world})");
+        assert!(camera_aligned < world / 3.0, "Camera: the environment turns with the view ({camera_aligned} against {world})");
+    }
+
+    #[test]
     fn environment_shows_behind_the_mesh_with_opacity() {
         let s = scene("Overcast");
         let mut tr = Tracer::new(16, 8);
         tr.pass(&s, &camera(), &TraceSettings::default());
-        let corner = |opacity: f32| tr.rgba8(&TraceDisplay { exposure: 1.0, aces: true, env_opacity: opacity, denoise: false })[0];
+        let corner = |opacity: f32| {
+            tr.rgba8(&TraceDisplay { exposure: 1.0, aces: true, env_opacity: opacity, denoise: false, background: crate::DEFAULT_BACKGROUND })[0]
+        };
         assert!(corner(1.0) > corner(0.0) + 40);
     }
 
@@ -1125,7 +1165,7 @@ mod tests {
     fn passes_split_into_row_slices_match_whole_passes() {
         let s = scene("Studio Soft");
         let (mut whole, mut sliced) = (Tracer::new(40, 30), Tracer::new(40, 30));
-        let d = TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: false };
+        let d = TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: false, background: crate::DEFAULT_BACKGROUND };
         for _ in 0..2 {
             whole.pass(&s, &camera(), &TraceSettings::default());
             let mut done = false;
@@ -1144,8 +1184,8 @@ mod tests {
         for _ in 0..4 {
             tr.pass(&s, &camera(), &TraceSettings::default());
         }
-        let raw = tr.rgba8(&TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: false });
-        let clean = tr.rgba8(&TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: true });
+        let raw = tr.rgba8(&TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: false, background: crate::DEFAULT_BACKGROUND });
+        let clean = tr.rgba8(&TraceDisplay { exposure: 1.0, aces: true, env_opacity: 0.0, denoise: true, background: crate::DEFAULT_BACKGROUND });
         // Neighbour differences inside the ball (rows 18..30, columns 26..38) drop; the mean stays.
         let stats = |img: &[u8]| {
             let px = |x: usize, y: usize| img[(y * 64 + x) * 4] as f32;
