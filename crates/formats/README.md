@@ -97,8 +97,11 @@ pub fn preset_to_json(preset: &ExportPreset) -> Result<String>;
 - Formats: PNG 8/16, JPEG 8 (q 95), JNG 8 (JPEG colour, deflate alpha), PGM 8/16 (gray; colour
   becomes luminance), TGA 8, TIFF 8/16/32f, BMP 8, WebP 8 (lossless), PSD 8/16 (merged image, no
   layers; alpha is an extra alpha channel, not transparency), EXR 16f/32f (`Y`, `YA`, `RGB`, `RGBA`, ZIP), HDR 32f. 8-bit files can be dithered
-  (`ExportOptions::dither`, an 8×8 ordered pattern). Color maps are sRGB in 8/16-bit and linear in
-  float files; data maps are linear; height is stored as `h · 0.5 + 0.5`.
+  (`ExportOptions::dither`, an 8×8 ordered pattern). When `ExportOptions::color_space` is unset,
+  color maps default to sRGB in integer files and linear Rec.709 in float files. An explicit
+  override can select another supported space. PGM writes sRGB or linear Rec.709 luminance and
+  falls back to linear Rec.709 when an ACES space is requested. Data maps are linear, and height
+  is stored as `h · 0.5 + 0.5`.
 - Final normal: Sobel normal from the height channel (strength = `height_strength`; with 1, a
   height change of 1 over 1/16 of the texture width tilts 45°; `+Y` up the image), combined with
   the normal channel, then with the baked normal map, by Reoriented Normal Mapping. DirectX

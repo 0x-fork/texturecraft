@@ -709,13 +709,13 @@ fn a_chosen_colour_space_is_embedded_as_an_icc_profile() {
 
             for space in ColorSpace::ALL {
                 let mut warnings = Vec::new();
-                let bytes = encode(Encoding { format, depth, dither: false }, (8, 8), 3, &data, &[false; 3], Some(space), &mut warnings).unwrap();
+                let bytes = encode(Encoding { format, depth, dither: false }, (8, 8), 3, data.clone(), &[false; 3], Some(space), &mut warnings).unwrap();
                 assert_eq!(embedded_icc(format, &bytes), crate::icc::profile(space), "{format:?} {depth}-bit {space:?}");
                 assert!(warnings.is_empty(), "{warnings:?}");
             }
 
             // No colour space chosen (a data map, or the default): nothing is embedded
-            let bytes = encode(Encoding { format, depth, dither: false }, (8, 8), 3, &data, &[false; 3], None, &mut Vec::new()).unwrap();
+            let bytes = encode(Encoding { format, depth, dither: false }, (8, 8), 3, data.clone(), &[false; 3], None, &mut Vec::new()).unwrap();
             assert_eq!(embedded_icc(format, &bytes), None, "{format:?} {depth}-bit");
         }
     }
@@ -729,12 +729,15 @@ fn exr_carries_the_chromaticities_of_the_space() {
         meta.headers[0].shared_attributes.chromaticities
     };
     assert!(
-        read(&encode(Encoding { format: FileFormat::Exr, depth: 16, dither: false }, (4, 4), 3, &data, &[false; 3], None, &mut Vec::new()).unwrap()).is_none()
+        read(&encode(Encoding { format: FileFormat::Exr, depth: 16, dither: false }, (4, 4), 3, data.clone(), &[false; 3], None, &mut Vec::new()).unwrap())
+            .is_none()
     );
     for space in ColorSpace::ALL {
-        let c =
-            read(&encode(Encoding { format: FileFormat::Exr, depth: 32, dither: false }, (4, 4), 3, &data, &[false; 3], Some(space), &mut Vec::new()).unwrap())
-                .unwrap_or_else(|| panic!("{space:?}"));
+        let c = read(
+            &encode(Encoding { format: FileFormat::Exr, depth: 32, dither: false }, (4, 4), 3, data.clone(), &[false; 3], Some(space), &mut Vec::new())
+                .unwrap(),
+        )
+        .unwrap_or_else(|| panic!("{space:?}"));
         let [r, g, b, w] = space.chromaticities();
         for (got, want) in [(c.red, r), (c.green, g), (c.blue, b), (c.white, w)] {
             assert!((f64::from(got.0) - want[0]).abs() < 1e-5 && (f64::from(got.1) - want[1]).abs() < 1e-5, "{space:?}: {got:?} vs {want:?}");
@@ -747,10 +750,10 @@ fn formats_without_a_place_for_a_colour_space_say_so() {
     let data = vec![0.25f32; 4 * 4 * 3];
     for format in [FileFormat::Tga, FileFormat::Bmp, FileFormat::Hdr] {
         let mut warnings = Vec::new();
-        encode(Encoding { format, depth: 8, dither: false }, (4, 4), 3, &data, &[false; 3], Some(ColorSpace::AcesCg), &mut warnings).unwrap();
+        encode(Encoding { format, depth: 8, dither: false }, (4, 4), 3, data.clone(), &[false; 3], Some(ColorSpace::AcesCg), &mut warnings).unwrap();
         assert!(warnings.iter().any(|w| w.contains("colour space") && w.contains("ACEScg")), "{format:?}: {warnings:?}");
         let mut quiet = Vec::new();
-        encode(Encoding { format, depth: 8, dither: false }, (4, 4), 3, &data, &[false; 3], None, &mut quiet).unwrap();
+        encode(Encoding { format, depth: 8, dither: false }, (4, 4), 3, data.clone(), &[false; 3], None, &mut quiet).unwrap();
         assert!(quiet.is_empty(), "{format:?}: nothing to say without a chosen space: {quiet:?}");
     }
 }
@@ -919,8 +922,10 @@ fn pgm_is_a_binary_graymap() {
     assert!((i32::from(first) - 16384).abs() <= 2, "roughness 0.25: {first}");
 
     // Colour becomes its luminance, weighted in linear light, with a warning
-    let files = fx.render(&one_map(FileFormat::Pgm, 8, rgba_half_alpha()));
-    let f = find(&files, "out.pgm");
+    let mut color = one_map(FileFormat::Pgm, 8, rgba_half_alpha());
+    color.preset.maps[0].file = "out_$colorSpace".into();
+    let files = fx.render(&color);
+    let f = find(&files, "out_sRGB.pgm");
     let header = b"P5\n64 64\n255\n";
     assert!(f.bytes.starts_with(header) && f.warnings.iter().any(|w| w.contains("luminance")), "{:?}", f.warnings);
     let [r, g, b] = fx.comp.value(Channel::BaseColor, 63, 0);
@@ -928,11 +933,15 @@ fn pgm_is_a_binary_graymap() {
     assert!((f32::from(f.bytes[header.len() + 63]) - want).abs() <= 1.0, "{} vs {want}", f.bytes[header.len() + 63]);
 
     // In another colour space the luminance is still that of the colour, not of its converted primaries
-    let opts = ExportOptions { color_space: Some(ColorSpace::AcesCg), ..one_map(FileFormat::Pgm, 16, rgba_half_alpha()) };
-    let f = find(&fx.render(&opts), "out.pgm").bytes.clone();
+    color.preset.maps[0].bit_depth = 16;
+    let opts = ExportOptions { color_space: Some(ColorSpace::AcesCg), ..color };
+    let files = fx.render(&opts);
+    let f = find(&files, "out_linear.pgm");
+    assert!(f.warnings.iter().any(|warning| warning.contains("ACEScg") && warning.contains("cannot")), "{:?}", f.warnings);
+    assert!(!f.warnings.iter().any(|warning| warning.contains("clamped")), "{:?}", f.warnings);
     let header = b"P5\n64 64\n65535\n";
     let at = header.len() + 63 * 2;
-    let got = f32::from(u16::from_be_bytes([f[at], f[at + 1]])) / 65535.0;
+    let got = f32::from(u16::from_be_bytes([f.bytes[at], f.bytes[at + 1]])) / 65535.0;
     let want = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     assert!((got - want).abs() < 1e-3, "ACEScg luminance {got} vs {want}");
 
@@ -951,16 +960,29 @@ fn psd_holds_the_merged_image_planar() {
     assert_eq!(u16::from_be_bytes([b[12], b[13]]), 4, "channels");
     assert_eq!((u32::from_be_bytes(b[14..18].try_into().unwrap()), u32::from_be_bytes(b[18..22].try_into().unwrap())), (64, 64));
     assert_eq!((u16::from_be_bytes([b[22], b[23]]), u16::from_be_bytes([b[24], b[25]])), (8, 3), "8-bit RGB");
-    let data = 26 + 12 + 2;
-    assert_eq!(b.len(), data + 4 * 64 * 64);
-    let plane = |c: usize| &b[data + c * 64 * 64..data + (c + 1) * 64 * 64];
+    let parsed = craft_psd::PsdFile::from_bytes(b).unwrap();
+    assert!(!parsed.merged_has_alpha());
+    assert_eq!(parsed.alpha_channel_names(), ["Alpha"]);
+    let samples = parsed.decode_merged().unwrap();
+    assert_eq!(samples.len(), 4 * 64 * 64);
+    let plane = |c: usize| &samples[c * 64 * 64..(c + 1) * 64 * 64];
     assert!(plane(3).iter().all(|a| *a == 128), "alpha plane");
     let png = decode(&fx.render(&one_map(FileFormat::Png, 8, rgba_half_alpha()))[0]).to_rgba8();
     assert_eq!(plane(0)[64 * 10 + 40], png.get_pixel(40, 10)[0], "the red plane holds the same values as a PNG");
 
     let f16 = &fx.render(&one_map(FileFormat::Psd, 16, roughness()))[0];
     assert_eq!((u16::from_be_bytes([f16.bytes[12], f16.bytes[13]]), u16::from_be_bytes([f16.bytes[22], f16.bytes[23]])), (1, 16));
-    assert_eq!(f16.bytes.len(), data + 2 * 64 * 64);
+    assert_eq!(f16.bytes.len(), 26 + 12 + 2 + 2 * 64 * 64);
+
+    let mut gray_alpha = roughness();
+    gray_alpha.push((Dest::A, SourceRef::Constant(0.5)));
+    let f16 = &fx.render(&one_map(FileFormat::Psd, 16, gray_alpha))[0];
+    let parsed = craft_psd::PsdFile::from_bytes(&f16.bytes).unwrap();
+    assert!(!parsed.merged_has_alpha());
+    assert_eq!(parsed.alpha_channel_names(), ["Alpha"]);
+    let samples = parsed.decode_merged().unwrap();
+    assert_eq!(samples.len(), 2 * 2 * 64 * 64);
+    assert!(samples[2 * 64 * 64..].as_chunks::<2>().0.iter().all(|sample| *sample == [128, 0]));
 }
 
 #[test]
@@ -976,6 +998,42 @@ fn psd_plan_rejects_a_version_one_atlas_over_its_dimension_limit() {
     assert!(error.to_string().contains("PSD") && error.to_string().contains("32768"));
     options.atlas = false;
     assert_eq!(list_outputs(&fx.project, 0, "sphere", &options).unwrap().len(), 2);
+}
+
+#[test]
+fn psd_plan_rejects_a_file_over_the_version_one_byte_limit() {
+    let fx = Fx::new(&default_channels());
+    let mut options = one_map(FileFormat::Psd, 16, rgba_half_alpha());
+    options.size = Some(16_384);
+
+    let error = list_outputs(&fx.project, 0, "sphere", &options).unwrap_err();
+
+    assert!(error.to_string().contains("PSD") && error.to_string().contains("2 GiB"), "{error}");
+    options.bit_depth_override = Some(8);
+    assert_eq!(list_outputs(&fx.project, 0, "sphere", &options).unwrap().len(), 1);
+    options.bit_depth_override = None;
+    options.preset.maps[0].channels.pop();
+    assert_eq!(list_outputs(&fx.project, 0, "sphere", &options).unwrap().len(), 1);
+}
+
+#[test]
+fn psd_byte_limit_includes_resources_and_keeps_separate_tiles_valid() {
+    // These RGBA16 planes are 32 bytes below 2 GiB before headers and the alpha name
+    let (width, height) = (10_924, 24_573);
+    assert!(check_psd_size((width, height), 4, 16).is_err());
+    assert!(check_psd_size((width, height - 1), 4, 16).is_ok());
+
+    let mut fx = Fx::new(&default_channels());
+    fx.project.texture_sets[0].uv_tiles = vec![1001, 1003, 1011];
+    let mut options = one_map(FileFormat::Psd, 16, rgba_half_alpha());
+    options.size = Some(8192);
+    options.atlas = true;
+
+    let error = list_outputs(&fx.project, 0, "sphere", &options).unwrap_err();
+
+    assert!(error.to_string().contains("2 GiB"), "{error}");
+    options.atlas = false;
+    assert_eq!(list_outputs(&fx.project, 0, "sphere", &options).unwrap().len(), 3);
 }
 
 #[test]
@@ -1028,6 +1086,34 @@ fn tiff_32f_holds_linear_floats() {
     let img = decode(colour).to_rgba32f();
     let v = fx.comp.value(Channel::BaseColor, 40, 10);
     assert!((img.get_pixel(40, 10)[0] - v[0]).abs() < 1e-3, "colour stays linear: {:?} vs {v:?}", img.get_pixel(40, 10));
+    assert_eq!(img.get_pixel(40, 10)[3], 0.5);
+}
+
+#[test]
+fn float_tiff_marks_straight_alpha_and_preserves_the_color_profile() {
+    use craft_image_codecs::{ExtraSampleKind, tiff_info};
+
+    let fx = Fx::new(&default_channels());
+    let options = ExportOptions { color_space: Some(ColorSpace::Srgb), ..one_map(FileFormat::Tiff, 32, rgba_half_alpha()) };
+    let files = fx.render(&options);
+    let bytes = &files[0].bytes;
+
+    assert_eq!(tiff_info(bytes).unwrap().pages[0].extra_samples, [ExtraSampleKind::UnassociatedAlpha]);
+    assert_eq!(embedded_icc(FileFormat::Tiff, bytes), crate::icc::profile(ColorSpace::Srgb));
+    let pixel = decode(&files[0]).to_rgba32f().get_pixel(40, 10).0;
+    assert!((pixel[0] - linear_to_srgb(fx.comp.value(Channel::BaseColor, 40, 10)[0])).abs() < 1e-3);
+    assert_eq!(pixel[3], 0.5);
+
+    let mut gray_alpha = roughness();
+    gray_alpha.push((Dest::A, SourceRef::Constant(0.75)));
+    let files = fx.render(&one_map(FileFormat::Tiff, 32, gray_alpha));
+    let file = &files[0];
+
+    assert_eq!(tiff_info(&file.bytes).unwrap().pages[0].extra_samples, [ExtraSampleKind::UnassociatedAlpha]);
+    assert_eq!(embedded_icc(FileFormat::Tiff, &file.bytes), None);
+    let pixel = decode(file).to_rgba32f().get_pixel(5, 5).0;
+    assert!((pixel[0] - 0.25).abs() < 1e-3);
+    assert_eq!(pixel, [pixel[0], pixel[0], pixel[0], 0.75]);
 }
 
 #[test]

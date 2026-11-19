@@ -102,6 +102,25 @@ fn colour_maps_are_tagged_with_the_export_colour_space() {
 }
 
 #[test]
+fn pgm_colour_maps_are_tagged_with_the_written_luminance_space() {
+    let mut session = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+    for (space, tag) in [(None, "srgb_texture"), (Some("ACEScg"), "lin_rec709"), (Some("ACES2065-1"), "lin_rec709")] {
+        let directory = temp(tag);
+        let result = execute(
+            &mut session,
+            "file.exportTextures",
+            &json!({"dir": directory.display().to_string(), "preset": OPENPBR, "format": "pgm", "colorSpace": space, "materialX": true}),
+        )
+        .unwrap();
+
+        let material = files(&result).into_iter().find(|path| path.ends_with(".mtlx")).unwrap();
+        let text = std::fs::read_to_string(material).unwrap();
+        assert!(text.contains(&format!("_base_color.pgm\" colorspace=\"{tag}\"")), "{space:?}: {text}");
+        assert!(!result["warnings"].to_string().contains("lin_ap0_scene"), "{result}");
+    }
+}
+
+#[test]
 fn sets_with_the_same_file_name_warn_instead_of_overwriting() {
     let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
     assert!(s.set_count() >= 2);

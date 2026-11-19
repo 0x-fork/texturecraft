@@ -5,8 +5,8 @@
 //! composite channels, virtual maps (final normal in OpenGL or DirectX convention, glossiness,
 //! mixed AO, F0), baked mesh maps and constants. The final normal is the baked normal, the
 //! composited normal channel and the normal derived from height combined with Reoriented Normal
-//! Mapping. Color maps are sRGB-encoded in 8/16-bit formats and linear in float formats; data
-//! maps are always linear. Height is stored with 0.5 = zero (`h * 0.5 + 0.5`) in every format.
+//! Mapping. By default, color maps are sRGB-encoded in integer formats and linear in float
+//! formats. Data maps are always linear. Height is stored with 0.5 = zero (`h * 0.5 + 0.5`) in every format.
 //!
 //! A UV-tiled (UDIM) texture set writes one file per map per tile: `$udim` in the file name
 //! becomes the tile number, and names without it get `.$udim` appended. Padding never crosses
@@ -34,6 +34,7 @@ pub use map_override::MapOverride;
 const HEIGHT_SPAN: f32 = 16.0;
 const JPEG_QUALITY: u8 = 95;
 const PSD_MAX_SIDE_PIXELS: u32 = 30_000;
+const PSD_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Preset limits (user presets are untrusted JSON).
 const MAX_MAPS: usize = 64;
 const MAX_TEMPLATE: usize = 256;
@@ -308,6 +309,20 @@ pub struct MapSpec {
     pub inverted: Vec<Dest>,
 }
 
+impl MapSpec {
+    /// Whether a non-alpha destination draws from a color source.
+    pub fn is_color(&self) -> bool {
+        self.channels.iter().any(|(dest, source)| {
+            *dest != Dest::A
+                && match source {
+                    SourceRef::Channel { channel, .. } => channel.kind() == ChannelKind::Color,
+                    SourceRef::Virtual { map, .. } => *map == VirtualMap::SheenTint,
+                    _ => false,
+                }
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExportPreset {
     pub name: String,
@@ -392,7 +407,7 @@ pub struct ExportOptions {
     /// (for formats without UDIM support, with the mesh's UVs in atlas space).
     pub atlas: bool,
     /// The colour space of the colour maps (data maps are never converted); None writes sRGB
-    /// into 8/16-bit files and linear Rec.709 into float files (EXR, HDR).
+    /// into integer files and linear Rec.709 into float files.
     #[serde(skip)]
     pub color_space: Option<ColorSpace>,
     /// Per map (by index into the preset's maps) settings.
@@ -411,7 +426,10 @@ impl ExportOptions {
 
     /// The colour space colour maps are written in when `format` is used at `depth`.
     pub fn space_for_depth(&self, format: FileFormat, depth: u8) -> ColorSpace {
-        self.color_space.unwrap_or(if format.holds_float(depth) { ColorSpace::LinearRec709 } else { ColorSpace::Srgb })
+        let space = self.color_space.unwrap_or(if format.holds_float(depth) { ColorSpace::LinearRec709 } else { ColorSpace::Srgb });
+
+        // PGM has one luminance channel and cannot represent ACES primaries
+        if format == FileFormat::Pgm && space != ColorSpace::Srgb { ColorSpace::LinearRec709 } else { space }
     }
 }
 
@@ -511,17 +529,6 @@ fn layout<'m>(set: &TextureSet, map: &'m MapSpec) -> Vec<(Dest, &'m SourceRef)> 
     out
 }
 
-fn is_color(map: &MapSpec) -> bool {
-    map.channels.iter().any(|(d, s)| {
-        *d != Dest::A
-            && match s {
-                SourceRef::Channel { channel, .. } => channel.kind() == ChannelKind::Color,
-                SourceRef::Virtual { map, .. } => *map == VirtualMap::SheenTint,
-                _ => false,
-            }
-    })
-}
-
 fn channel_label(map: &MapSpec) -> &'static str {
     map.channels
         .iter()
@@ -563,10 +570,8 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
     let mut used = BTreeSet::new();
     let mut out = Vec::new();
     let tiles: Vec<Option<u32>> = if set.uv_tiles.is_empty() || opts.atlas { vec![None] } else { set.uv_tiles.iter().copied().map(Some).collect() };
-    let atlas_size = set.tile_grid().filter(|_| opts.atlas).map(|grid| {
-        let side = opts.size.unwrap_or_else(|| set.block_resolution());
-        (side.saturating_mul(grid.cols), side.saturating_mul(grid.rows))
-    });
+    let grid = set.tile_grid();
+    let block_resolution = set.block_resolution();
     for (i, map) in opts.preset.maps.iter().enumerate() {
         if !map.channels.iter().any(|(_, s)| source_present(set, s)) {
             continue;
@@ -576,27 +581,41 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
         let format = own.and_then(|o| o.format).or(opts.format_override).unwrap_or(map.format);
         let bit_depth = format.depth(own.and_then(|o| o.bit_depth).or(opts.bit_depth_override).unwrap_or(map.bit_depth));
         let enabled = own.is_none_or(|o| o.enabled);
-        if enabled
-            && format == FileFormat::Psd
-            && let Some(size) = atlas_size
-        {
-            check_psd_size(size)?;
-        }
-
+        let psd_channels = (enabled && format == FileFormat::Psd).then(|| layout(set, map).len());
         let dither = bit_depth == 8 && !format.holds_float(bit_depth) && own.and_then(|o| o.dither).unwrap_or(opts.dither);
         let space = opts.space_for_depth(format, bit_depth);
-        let color_space = match (is_color(map), space) {
+        let color_map = map.is_color();
+        let color_space = match (color_map, space) {
             (false, _) | (true, ColorSpace::LinearRec709) => "linear",
             (true, ColorSpace::Srgb) => "sRGB",
             (true, other) => other.name(),
         };
 
         // Integer files clamp wide-gamut linear color to 0–1
-        let clamps = is_color(map) && !format.holds_float(bit_depth) && matches!(space, ColorSpace::AcesCg | ColorSpace::Aces2065);
+        let clamps = color_map && !format.holds_float(bit_depth) && matches!(space, ColorSpace::AcesCg | ColorSpace::Aces2065);
 
         // Append `$udim` to names for separate UV tiles
         let template = if tiles.iter().any(Option::is_some) && !map.file.contains("$udim") { format!("{}.$udim", map.file) } else { map.file.clone() };
         for &tile in &tiles {
+            if let Some(channels) = psd_channels {
+                let size = match (tile, grid) {
+                    (Some(tile), Some(_)) => {
+                        let side = tile_side(set, tile, block_resolution);
+                        let side = scale_export_side(side, block_resolution, opts.size);
+                        (side, side)
+                    }
+                    (_, Some(grid)) => {
+                        let side = opts.size.unwrap_or(block_resolution);
+                        (side.saturating_mul(grid.cols), side.saturating_mul(grid.rows))
+                    }
+                    (_, None) => {
+                        let side = opts.size.unwrap_or(block_resolution);
+                        (side, side)
+                    }
+                };
+                check_psd_size(size, channels, bit_depth)?;
+            }
+
             let stem = template
                 .replace("$udim", &tile.unwrap_or(1001).to_string())
                 .replace("$project", &project.name)
@@ -620,6 +639,17 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
             let ext = format.extension();
             let mut name = format!("{stem}.{ext}");
             let mut warnings = Vec::new();
+            if color_map
+                && format == FileFormat::Pgm
+                && let Some(requested) = opts.color_space
+            {
+                let message = if requested == space {
+                    format!("PGM export writes luminance in {} without embedding a colour space", space.name())
+                } else {
+                    format!("PGM cannot write {} primaries; luminance is written in {}", requested.name(), space.name())
+                };
+                warnings.push(message);
+            }
             if clamps {
                 warnings.push(format!(
                     "{} colours outside 0-1 are clamped in {} files; use EXR or HDR to keep them",
@@ -853,17 +883,17 @@ pub fn render_maps(input: &ExportInput, options: &ExportOptions) -> Result<Vec<E
                     let (bx, by) = g.block(t).ok_or_else(|| FormatError::Invalid(format!("UV tile {t} is not in the set's grid")))?;
 
                     // A tile smaller than its block fills the block's top-left corner
-                    let side = ((tile_res as f32 * set.tile_scale(t)).round() as u32).clamp(1, tile_res);
+                    let side = tile_side(set, t, tile_res);
                     (bx * tile_res, by * tile_res, side, side)
                 }
                 _ => (0, 0, width, height),
             };
 
             // An atlas scales by the requested size per tile
-            let scale = |value: u32| (u64::from(value) * u64::from(options.size.unwrap_or(tile_res)) / u64::from(tile_res)) as u32;
+            let scale = |value| scale_export_side(value, tile_res, options.size);
             let size = (scale(w), scale(h));
             if planned_file.format == FileFormat::Psd {
-                check_psd_size(size)?;
+                check_psd_size(size, component_count, planned_file.bit_depth)?;
             }
 
             let mut data = vec![0.0f32; w as usize * h as usize * component_count];
@@ -908,11 +938,10 @@ pub fn render_maps(input: &ExportInput, options: &ExportOptions) -> Result<Vec<E
             let float = planned_file.format.holds_float(planned_file.bit_depth);
             let rgb = channel_layout.len() >= 3 && channel_layout.iter().take(3).map(|(d, _)| *d).eq([Dest::R, Dest::G, Dest::B]);
             let mut warnings = planned_file.warnings;
-            let color_map = is_color(map);
+            let color_map = map.is_color();
             let convert = color_map && (space != ColorSpace::Srgb || float) && space != ColorSpace::LinearRec709;
 
-            // PGM computes luminance in Rec.709 before any primary conversion
-            if convert && rgb && planned_file.format != FileFormat::Pgm {
+            if convert && rgb {
                 data.par_chunks_mut(component_count).for_each(|px| {
                     if let [r, g, b, ..] = px {
                         [*r, *g, *b] = space.from_linear_rec709([*r, *g, *b]);
@@ -929,7 +958,7 @@ pub fn render_maps(input: &ExportInput, options: &ExportOptions) -> Result<Vec<E
                 Encoding { format: planned_file.format, depth: planned_file.bit_depth, dither: planned_file.dither },
                 size,
                 component_count,
-                &data,
+                data,
                 &srgb,
                 embed,
                 &mut warnings,
@@ -937,6 +966,16 @@ pub fn render_maps(input: &ExportInput, options: &ExportOptions) -> Result<Vec<E
             Ok(ExportedFile { name: planned_file.name, bytes, width: size.0, height: size.1, warnings })
         })
         .collect()
+}
+
+fn tile_side(set: &TextureSet, tile: u32, block_resolution: u32) -> u32 {
+    ((block_resolution as f32 * set.tile_scale(tile)).round() as u32).clamp(1, block_resolution.max(1))
+}
+
+fn scale_export_side(source_side: u32, block_resolution: u32, export_size: Option<u32>) -> u32 {
+    let export_size = export_size.unwrap_or(block_resolution);
+    let scaled = u64::from(source_side) * u64::from(export_size) / u64::from(block_resolution.max(1));
+    u32::try_from(scaled).unwrap_or(u32::MAX)
 }
 
 fn diffuse_blocks(data: &mut Vec<f32>, (width, height): (usize, usize), channels: usize, known: &[bool], block: usize) {
@@ -1102,7 +1141,7 @@ fn encode(
     encoding: Encoding,
     size: (u32, u32),
     component_count: usize,
-    data: &[f32],
+    data: Vec<f32>,
     srgb: &[bool],
     embed: Option<ColorSpace>,
     warnings: &mut Vec<String>,
@@ -1111,39 +1150,48 @@ fn encode(
     let encoding_error = |error: &dyn std::fmt::Display| FormatError::Invalid(format!("{} encoding failed: {error}", format.extension()));
 
     // Embed ICC or EXR chromaticities only where the format supports them
-    if let Some(space) = embed {
-        if format == FileFormat::Pgm {
-            let luminance_space = if space == ColorSpace::Srgb { ColorSpace::Srgb } else { ColorSpace::LinearRec709 };
-            warnings.push(format!("PGM export writes luminance in {} without embedding a colour space", luminance_space.name()));
-        } else if matches!(format, FileFormat::Tga | FileFormat::Bmp | FileFormat::Hdr | FileFormat::Jng | FileFormat::Psd) {
-            warnings.push(format!("{} export does not embed a colour space; the colours are in {}", format.extension().to_ascii_uppercase(), space.name()));
-        }
+    if let Some(space) = embed
+        && matches!(format, FileFormat::Tga | FileFormat::Bmp | FileFormat::Hdr | FileFormat::Jng | FileFormat::Psd)
+    {
+        warnings.push(format!("{} export does not embed a colour space; the colours are in {}", format.extension().to_ascii_uppercase(), space.name()));
     }
     match format {
-        FileFormat::Exr => return write_exr(size, component_count, data, depth == 16, embed).map_err(|error| encoding_error(&error)),
+        FileFormat::Exr => return write_exr(size, component_count, &data, depth == 16, embed).map_err(|error| encoding_error(&error)),
         FileFormat::Hdr => {
             if component_count == 2 || component_count == 4 {
                 warnings.push("HDR has no alpha channel; alpha was dropped".into());
             }
-            let rgb = remap(data, component_count, if component_count <= 2 { &[0, 0, 0] } else { &[0, 1, 2] });
+            let rgb = remap(&data, component_count, if component_count <= 2 { &[0, 0, 0] } else { &[0, 1, 2] });
             let bytes: Vec<u8> = rgb.iter().flat_map(|v| v.to_ne_bytes()).collect();
             return write_image(format, &bytes, size, image::ExtendedColorType::Rgb32F, None).map_err(|error| encoding_error(&error));
         }
 
-        // Float TIFF: linear values, gray widened to RGB
+        // Widen float gray for readers that only support float RGB and RGBA
         FileFormat::Tiff if depth == 32 => {
-            let expanded;
-            let samples = match component_count {
-                1 | 2 => {
-                    let components: &[usize] = if component_count == 1 { &[0, 0, 0] } else { &[0, 0, 0, 1] };
-                    expanded = remap(data, component_count, components);
-                    &expanded
-                }
-                _ => data,
+            let samples = if component_count <= 2 {
+                let components: &[usize] = if component_count == 1 { &[0, 0, 0] } else { &[0, 0, 0, 1] };
+                let expanded = remap(&data, component_count, components);
+                drop(data);
+                expanded
+            } else {
+                data
             };
-            let color = if matches!(component_count, 1 | 3) { image::ExtendedColorType::Rgb32F } else { image::ExtendedColorType::Rgba32F };
 
-            return write_image(format, bytemuck::cast_slice(samples), size, color, embed.and_then(crate::icc::profile))
+            let profile = embed.and_then(crate::icc::profile);
+            if matches!(component_count, 2 | 4) {
+                use craft_image_codecs::{ChannelLayout, Format, Image, SampleType};
+                let source = bytemuck::cast_slice::<f32, u8>(&samples);
+                let mut bytes = Vec::new();
+                bytes.try_reserve_exact(source.len()).map_err(|error| encoding_error(&error))?;
+                bytes.extend_from_slice(source);
+                drop(samples);
+
+                let image =
+                    Image::from_raw(size.0, size.1, ChannelLayout::Rgba, SampleType::F32, bytes).map_err(|error| encoding_error(&error))?.with_icc(profile);
+                return craft_image_codecs::encode(&image, Format::Tiff, &Default::default()).map_err(|error| encoding_error(&error));
+            }
+
+            return write_image(format, bytemuck::cast_slice(&samples), size, image::ExtendedColorType::Rgb32F, profile)
                 .map_err(|error| encoding_error(&error));
         }
         _ => {}
@@ -1174,7 +1222,7 @@ fn encode(
         gray_srgb = [srgb.first().copied().unwrap_or(false)];
         (&gray, &gray_srgb, 1)
     } else {
-        (data, srgb, component_count)
+        (&data, srgb, component_count)
     };
 
     // Integer formats: transfer function and quantization first, then fit the channel layout
@@ -1227,21 +1275,50 @@ fn encode(
     write_image(format, &bytes, size, color, icc).map_err(|error| encoding_error(&error))
 }
 
-fn check_psd_size((width, height): (u32, u32)) -> Result<()> {
+fn check_psd_size((width, height): (u32, u32), channels: usize, depth: u8) -> Result<()> {
     if width == 0 || height == 0 || width > PSD_MAX_SIDE_PIXELS || height > PSD_MAX_SIDE_PIXELS {
         return Err(FormatError::Invalid(format!("PSD size {width}×{height} must be between 1 and {PSD_MAX_SIDE_PIXELS} pixels per side")));
+    }
+
+    // Measure the flat file's overhead without allocating any pixel buffers
+    let overhead = flat_psd((width, height), channels, depth).encoded_len().map_err(|error| FormatError::Invalid(format!("PSD sizing failed: {error}")))?;
+    let sample_bytes = u64::from(width) * u64::from(height) * channels as u64 * u64::from(depth / 8);
+    if overhead + sample_bytes >= PSD_MAX_FILE_BYTES {
+        return Err(FormatError::Invalid(format!("PSD size {width}×{height} would reach the 2 GiB file limit; use a smaller export size or another format")));
     }
 
     Ok(())
 }
 
-/// Write a merged PSD image with raw planes, including an extra alpha plane when present.
-fn psd(bytes: Vec<u8>, (width, height): (u32, u32), channels: usize, depth: u8) -> craft_psd::Result<Vec<u8>> {
-    use craft_psd::{ColorMode, Compression, Header, ImageData, PsdFile, Version};
+fn flat_psd((width, height): (u32, u32), channels: usize, depth: u8) -> craft_psd::PsdFile {
+    use craft_psd::{ColorMode, Compression, Header, ImageData, ImageResource, PsdFile, Version};
 
+    const PSD_ALPHA_NAMES_RESOURCE_ID: u16 = 1006;
     let color_mode = if channels <= 2 { ColorMode::Grayscale } else { ColorMode::Rgb };
     let header = Header::new(Version::Psd, width, height, channels as u16, u16::from(depth), color_mode);
-    let mut planes = Vec::with_capacity(bytes.len());
+
+    // A Pascal name marks the extra plane as a channel separate from merged transparency
+    let resources = if matches!(channels, 2 | 4) { vec![ImageResource::new(PSD_ALPHA_NAMES_RESOURCE_ID, b"\x05Alpha".to_vec())] } else { Vec::new() };
+
+    PsdFile {
+        header,
+        color_mode_data: Vec::new(),
+        resources,
+        layer_info: None,
+        layer_info_placement: Default::default(),
+        global_layer_mask: None,
+        global_blocks: Vec::new(),
+        layer_mask_trailing: Vec::new(),
+        image_data: ImageData::new(Compression::Raw, Vec::new()),
+        write_as_psb: false,
+    }
+}
+
+/// Write a merged PSD image with raw planes, including an extra alpha plane when present.
+fn psd(bytes: Vec<u8>, size: (u32, u32), channels: usize, depth: u8) -> craft_psd::Result<Vec<u8>> {
+    let mut file = flat_psd(size, channels, depth);
+    let planes = &mut file.image_data.data;
+    planes.try_reserve_exact(bytes.len()).map_err(|_| craft_psd::PsdError::OutOfMemory("cannot allocate PSD planes"))?;
     if depth == 16 {
         let samples = bytes.as_chunks::<2>().0;
         for channel in 0..channels {
@@ -1254,19 +1331,7 @@ fn psd(bytes: Vec<u8>, (width, height): (u32, u32), channels: usize, depth: u8) 
     }
     drop(bytes);
 
-    PsdFile {
-        header,
-        color_mode_data: Vec::new(),
-        resources: Vec::new(),
-        layer_info: None,
-        layer_info_placement: Default::default(),
-        global_layer_mask: None,
-        global_blocks: Vec::new(),
-        layer_mask_trailing: Vec::new(),
-        image_data: ImageData::new(Compression::Raw, planes),
-        write_as_psb: false,
-    }
-    .to_bytes()
+    file.to_bytes()
 }
 
 /// A JNG file: the colour as JPEG, alpha (when present) as lossless 8-bit deflate data.

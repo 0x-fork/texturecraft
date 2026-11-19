@@ -650,13 +650,12 @@ fn export_textures(s: &mut Session, p: &Value) -> Result<Value> {
 fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std::path::Path, warnings: &mut Vec<String>) -> Result<Vec<std::path::PathBuf>> {
     use texturecraft_formats::materialx::{self, Texture};
     let mesh_name = stem_of(s.doc.project.mesh.trim_start_matches("builtin:"));
-    if opts.color_space == Some(texturecraft_texel::ColorSpace::Aces2065) {
-        warnings.push("MaterialX: version 1.39 has no ACES2065-1 colour space; the colour maps are tagged lin_ap0_scene, its name in later versions, which older readers may not know".into());
-    }
     let mut out = Vec::new();
     let mut stems = std::collections::HashSet::new();
     let mut written_names = std::collections::HashSet::new();
     let mut normal_map_written = false;
+    let aces2065_tag = materialx::colorspace_name(texturecraft_texel::ColorSpace::Aces2065);
+    let mut aces2065_written = false;
     for &ts in sets {
         let set = s.doc.project.texture_set(ts).map_err(|e| EngineError::Other(e.to_string()))?;
         let files = texturecraft_formats::list_outputs(&s.doc.project, ts, &mesh_name, opts).map_err(fe)?;
@@ -671,11 +670,17 @@ fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std:
 
         let mut textures: Vec<Texture> = Vec::new();
         for file in files.into_iter().filter(|file| !skipped_maps.contains(&file.map)) {
-            let Some(input) = opts.preset.maps.get(file.map).and_then(|map| materialx::input_of_template(&map.file)) else { continue };
+            let Some(map) = opts.preset.maps.get(file.map) else { continue };
+            let Some(input) = materialx::input_of_template(&map.file) else { continue };
 
             // The first tile stands for all the tiles with the same naming pattern
             let filename = file.udim_name.unwrap_or(file.name);
-            let colorspace = materialx::colorspace_name(opts.space_for_depth(file.format, file.bit_depth));
+            let space = if file.format == FileFormat::Pgm && !map.is_color() {
+                texturecraft_texel::ColorSpace::LinearRec709
+            } else {
+                opts.space_for_depth(file.format, file.bit_depth)
+            };
+            let colorspace = materialx::colorspace_name(space);
             if !textures.iter().any(|texture| texture.input == input) {
                 textures.push(Texture { input: input.to_owned(), file: filename, colorspace });
             }
@@ -699,7 +704,13 @@ fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std:
 
         let path = dir.join(format!("{stem}.mtlx"));
         texturecraft_formats::write_atomic(&path, materialx::write(&format!("{mesh_name}_{}", set.name), &textures, None).as_bytes()).map_err(fe)?;
+        aces2065_written |=
+            textures.iter().any(|texture| texture.colorspace == aces2065_tag && materialx::INPUTS.contains(&(texture.input.as_str(), materialx::Kind::Color)));
         out.push(path);
+    }
+
+    if aces2065_written {
+        warnings.push("MaterialX: version 1.39 has no ACES2065-1 colour space; the colour maps are tagged lin_ap0_scene, its name in later versions, which older readers may not know".into());
     }
 
     // The normalmap node only exists in a material that has a normal map
