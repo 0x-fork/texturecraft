@@ -670,11 +670,40 @@ mod tests {
         let prefs = serde_json::json!({"prefs": {"gpu_raytracing": false}});
         assert_eq!(crate::control::handle(&mut app, &context, "ui.set", &prefs)["ok"], true);
         let draft = app.ui.windows.settings_draft.take().unwrap();
+        assert_eq!(draft.prefs.autosave_minutes, 30, "an unrelated control update keeps the pending interval");
         assert_eq!(draft.library_name, "Studio");
         apply(&mut app, draft);
 
         assert!(!app.ui.prefs.gpu_raytracing, "confirming Settings keeps the control update");
+        assert_eq!(app.ui.prefs.autosave_minutes, 30, "confirming Settings applies the pending interval");
         assert_eq!(app.ui.keymap.get("file.save").map(String::as_str), Some("Ctrl+Alt+S"));
+    }
+
+    #[test]
+    fn feedback_control_refreshes_changed_preferences_in_an_open_draft() {
+        let context = egui::Context::default();
+        let session = texturecraft_engine::Session::closed().unwrap();
+        let mut app = TextureCraftApp::new(&eframe::CreationContext::_new_kittest(context.clone()), session);
+        app.ui.prefs.language = "fr".into();
+        let mut draft = SettingsDraft::of(&app);
+        draft.prefs.autosave_minutes = 30;
+        draft.prefs.language = "ja".into();
+        draft.prefs.data_folder = "pending-data".into();
+        app.ui.windows.settings = true;
+        app.ui.windows.settings_draft = Some(draft);
+
+        let invalid = serde_json::json!({"prefs": {"autosave_minutes": -1}});
+        assert_eq!(crate::control::handle(&mut app, &context, "ui.set", &invalid)["ok"], false);
+        assert_eq!(app.ui.prefs.autosave_minutes, Prefs::default().autosave_minutes);
+        assert_eq!(app.ui.windows.settings_draft.as_ref().unwrap().prefs.autosave_minutes, 30);
+
+        let update = serde_json::json!({"prefs": {"autosave_minutes": 45}});
+        assert_eq!(crate::control::handle(&mut app, &context, "ui.set", &update)["ok"], true);
+        let draft = app.ui.windows.settings_draft.take().unwrap();
+
+        assert_eq!(draft.prefs.autosave_minutes, 45, "the external change takes precedence for the same field");
+        assert_eq!(draft.prefs.language, Prefs::default().language, "an omitted field reset by the request counts as a change");
+        assert_eq!(draft.prefs.data_folder, "pending-data", "an unchanged live field keeps its pending edit");
     }
 
     #[test]

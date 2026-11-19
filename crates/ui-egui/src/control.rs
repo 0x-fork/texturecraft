@@ -20,6 +20,7 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 
 use crate::TextureCraftApp;
+use crate::state::Prefs;
 
 pub struct ControlRequest {
     pub method: String,
@@ -73,6 +74,43 @@ pub(crate) fn encode_png(w: u32, h: u32, rgba: Vec<u8>) -> Option<(u32, u32, Vec
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).ok()?;
     Some((w, h, png))
+}
+
+fn refresh_draft_preferences(draft: &mut Prefs, previous: &Prefs, current: &Prefs) {
+    // Exhaustive destructuring requires reconciliation for every new preference
+    macro_rules! refresh_fields {
+        ($($field:ident),+ $(,)?) => {
+            let Prefs { $($field),+ } = current;
+
+            $(
+                if &previous.$field != $field {
+                    draft.$field.clone_from($field);
+                }
+            )+
+        };
+    }
+
+    refresh_fields!(
+        ui_scale,
+        autosave_minutes,
+        language,
+        viewport_texture,
+        brightness,
+        accent,
+        system_title_bar,
+        data_folder,
+        reserved_cores,
+        project_open_limit_gib,
+        save_ram_percent,
+        work_threads,
+        rotation_speed,
+        zoom_speed,
+        zoom_inverse,
+        wheel_speed,
+        wheel_inverse,
+        gpu_raytracing,
+        libraries,
+    );
 }
 
 pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, params: &Value) -> Value {
@@ -238,11 +276,11 @@ pub fn handle(app: &mut TextureCraftApp, ctx: &egui::Context, method: &str, para
                     }
                     ui.bake_preset_name = std::mem::take(&mut app.ui.bake_preset_name);
 
-                    // Refresh the preference snapshot while keeping the other editors in the draft
-                    if ui.prefs != app.ui.prefs
+                    // Live changes take precedence only for the fields they affect
+                    if params.get("prefs").is_some()
                         && let Some(draft) = &mut ui.windows.settings_draft
                     {
-                        draft.prefs = ui.prefs.clone();
+                        refresh_draft_preferences(&mut draft.prefs, &app.ui.prefs, &ui.prefs);
                     }
 
                     app.ui = ui;
