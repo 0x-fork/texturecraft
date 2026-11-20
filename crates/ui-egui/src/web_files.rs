@@ -320,7 +320,7 @@ mod web {
         match app.session.to_project_bytes().map_err(|e| e.to_string()).and_then(|b| download(&name, &b)) {
             Ok(()) => {
                 app.session.modified = false;
-                app.session.log.push(format!("Saved {name}"));
+                app.session.log.info("Project", format!("Saved {name}"));
                 app.toast(trf("Downloaded {name}", &[("name", &name)]), false);
             }
             Err(e) => app.toast(trf("Couldn't save {name}: {error}", &[("name", &name), ("error", &e)]), true),
@@ -353,15 +353,16 @@ mod web {
 
     fn export(app: &mut TextureCraftApp, jobs: &[(usize, Value)]) -> Result<String, String> {
         let mut files = Vec::new();
-        for (ts, params) in jobs {
-            let opts = texturecraft_engine::file_cmds::export_options(&app.session, params, "file.exportTextures").map_err(|e| e.to_string())?;
-            files.extend(app.session.export_files(&[*ts], &opts).map_err(|e| e.to_string())?);
+        for (set_index, params) in jobs {
+            let options = texturecraft_engine::file_cmds::export_options(&app.session, params, "file.exportTextures").map_err(|e| e.to_string())?;
+            files.extend(app.session.export_files(&[*set_index], &options).map_err(|e| e.to_string())?);
         }
 
         // Keep one file for each case-insensitive name in the download
         texturecraft_engine::formats::skip_repeated_names(&mut files);
-        app.session.log.extend_warnings(files.iter().flat_map(|f| f.warnings.iter().cloned()));
+        app.session.log.warnings("MapExporter", files.iter().flat_map(|file| file.warnings.iter().cloned()));
         let file_count = files.len();
+
         let name = match files.as_slice() {
             [] => return Err("the preset produced no files".into()),
             [f] => {
@@ -374,7 +375,8 @@ mod web {
                 name
             }
         };
-        app.session.log.push(format!("Exported {file_count} textures ({name})"));
+
+        app.session.log.info("MapExporter", format!("Exported {file_count} textures ({name})"));
         Ok(name)
     }
 

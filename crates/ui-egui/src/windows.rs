@@ -307,7 +307,7 @@ fn about(app: &mut TextureCraftApp, ctx: &egui::Context) {
     app.ui.windows.about = open;
 }
 
-/// Render the session log as text, preserving each entry's occurrence time and severity.
+/// Render the session log as text, preserving each entry's occurrence time, severity and source.
 fn log_text(entries: &[texturecraft_engine::LogEntry]) -> String {
     use std::fmt::Write as _;
 
@@ -321,7 +321,7 @@ fn log_text(entries: &[texturecraft_engine::LogEntry]) -> String {
         for line in entry.message.split('\n') {
             text.push('[');
             let _ = timestamp.write_to(&mut text);
-            let _ = writeln!(text, "] {:5} {line}", entry.level.as_str());
+            let _ = writeln!(text, "] {:5} [{}] {line}", entry.level.as_str(), entry.source);
         }
     }
 
@@ -360,28 +360,40 @@ pub fn remember(app: &mut TextureCraftApp, path: &str) {
     app.ui.recent.truncate(10);
 }
 
-/// Window › Save / Load UI layout: panels, windows and view settings as a JSON file.
+/// Start a save picker in its library folder when available.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn layout_file(app: &mut TextureCraftApp, save: bool) {
+fn in_save_folder(app: &mut TextureCraftApp, dialog: FileDialog, dir: std::path::PathBuf) -> FileDialog {
+    // Native pickers need an existing initial folder, but a different destination can still be writable
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => dialog.directory(dir),
+        Err(error) => {
+            app.session.log.warn(texturecraft_engine::log::LIBRARY_SOURCE, format!("Cannot open save folder {}: {error}", dir.display()));
+            dialog
+        }
+    }
+}
+
+/// Window › Save UI Layout › Painting / Rendering / Baking mode: the panels, windows and view
+/// settings as that mode shows them, as a JSON file.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_layout(app: &mut TextureCraftApp, mode: crate::state::Mode) {
     let dir = crate::user_dir("layouts");
-    let dialog = if save { FileDialog::save().file_name("layout.json") } else { FileDialog::open() };
-    app.ask_file(dialog.filter(tr("UI layout"), &["json"]).directory(dir.clone()), Bound::App, move |app, paths| {
+    let name = match mode {
+        Mode::Painting => "painting-mode.json",
+        Mode::Rendering => "rendering-mode.json",
+        Mode::Baking => "baking-mode.json",
+    };
+    let dialog = in_save_folder(app, FileDialog::save().file_name(name).filter(tr("UI layout"), &["json"]), dir);
+    app.ask_file(dialog, Bound::App, move |app, paths| {
         let Some(path) = paths.first() else { return };
-        let result = if save {
-            let layout = crate::UiState { recent: Vec::new(), named_layouts: Vec::new(), ..app.ui.clone() };
-            std::fs::create_dir_all(&dir)
-                .map_err(|e| e.to_string())
-                .and_then(|_| serde_json::to_vec_pretty(&layout).map_err(|e| e.to_string()))
-                .and_then(|bytes| std::fs::write(path, bytes).map_err(|e| e.to_string()))
-                .map(|_| trf("Saved UI layout {path}", &[("path", &path.display())]))
-        } else {
-            std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| serde_json::from_slice::<crate::UiState>(&bytes).map_err(|e| e.to_string())).map(
-                |layout| {
-                    app.ui.adopt_layout(layout);
-                    trf("Loaded UI layout {path}", &[("path", &path.display())])
-                },
-            )
-        };
+
+        // The file carries both docks; the mode's own is the one in use when it is loaded
+        let mut layout = crate::UiState { recent: Vec::new(), named_layouts: Vec::new(), mode, ..app.ui.clone() };
+        layout.sync_mode_dock();
+        let result = serde_json::to_vec_pretty(&layout)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| texturecraft_engine::formats::write_atomic(path, &bytes).map_err(|error| error.to_string()))
+            .map(|_| trf("Saved UI layout {path}", &[("path", &path.display())]));
         match result {
             Ok(msg) => app.toast(msg, false),
             Err(e) => app.toast(trf("UI layout: {error}", &[("error", &e)]), true),
@@ -389,9 +401,74 @@ pub fn layout_file(app: &mut TextureCraftApp, save: bool) {
     });
 }
 
+/// Window › Load UI Layout: read a layout file saved by Save UI Layout.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_layout(app: &mut TextureCraftApp) {
+    let dir = crate::user_dir("layouts");
+    let dialog = FileDialog::open().title(tr("Select a UI layout file.")).filter(tr("UI layout"), &["json"]).directory(dir);
+    app.ask_file(dialog, Bound::App, move |app, paths| {
+        let Some(path) = paths.first() else { return };
+        let result = std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| serde_json::from_slice::<crate::UiState>(&bytes).map_err(|e| e.to_string()))
+            .map(|layout| {
+                app.ui.adopt_layout(layout);
+                trf("Loaded UI layout {path}", &[("path", &path.display())])
+            });
+        match result {
+            Ok(msg) => app.toast(msg, false),
+            Err(e) => app.toast(trf("UI layout: {error}", &[("error", &e)]), true),
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The template name a chosen file name stands for: only a trailing ".json" is dropped, so
+/// "Metal v1.2" stays whole
+pub(crate) fn template_name_of(file_name: &str) -> &str {
+    match file_name.len().checked_sub(5) {
+        Some(at) if file_name.is_char_boundary(at) && file_name[at..].eq_ignore_ascii_case(".json") => &file_name[..at],
+        _ => file_name,
+    }
+}
+
+/// File > More save options > Save as template...: the project's settings as a template in the
+/// user templates folder. It saves without a confirmation and shows up in New project at once.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn save_as_template(app: &mut TextureCraftApp) {
+    let dir = app.session.templates.dir.clone().unwrap_or_else(|| crate::user_dir("templates"));
+    let dialog = in_save_folder(app, FileDialog::save().title(tr("Save template")).filter(tr("Project template"), &["json"]), dir);
+    app.ask_file(dialog, Bound::Project, |app, paths| {
+        let Some(path) = paths.first() else { return };
+
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            app.toast(tr("The template file name must be valid text"), true);
+            return;
+        };
+
+        let name = template_name_of(file_name);
+        let path = if name == file_name { path.with_file_name(format!("{file_name}.json")) } else { path.clone() };
+        if let Some(path) = path.to_str() {
+            app.run("project.template.save", json!({"name": name, "path": path}));
+        } else {
+            app.toast(tr("The template path must be valid text"), true);
+        }
+    });
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn save_as_template(app: &mut TextureCraftApp) {
+    app.toast(tr("Saving templates to files is available in the desktop app"), false);
+}
+
 /// The browser has no file paths; layouts persist with the rest of the UI state.
 #[cfg(target_arch = "wasm32")]
-pub fn layout_file(app: &mut TextureCraftApp, _save: bool) {
+pub fn save_layout(app: &mut TextureCraftApp, _mode: crate::state::Mode) {
+    app.toast(tr("Saving UI layouts to files is available in the desktop app"), false);
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn load_layout(app: &mut TextureCraftApp) {
     app.toast(tr("Saving UI layouts to files is available in the desktop app"), false);
 }
 
@@ -441,7 +518,7 @@ pub fn file_action(app: &mut TextureCraftApp, _ctx: &egui::Context, id: &str) ->
                 {
                     let name = result["material"].as_str().unwrap_or_default();
                     for warning in result["warnings"].as_array().into_iter().flatten().filter_map(serde_json::Value::as_str) {
-                        app.session.log.warn(format!("MaterialX {name}: {warning}"));
+                        app.session.log.warn(texturecraft_engine::log::LIBRARY_SOURCE, format!("MaterialX {name}: {warning}"));
                     }
                     app.toast(trf("Imported {name}", &[("name", &name)]), false);
                     app.ui.dock.focus(crate::docking::Panel::Layers);
@@ -557,6 +634,14 @@ pub fn file_action(app: &mut TextureCraftApp, ctx: &egui::Context, id: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_template_name_keeps_dots_and_loses_only_json() {
+        assert_eq!(super::template_name_of("Metal v1.2.json"), "Metal v1.2");
+        assert_eq!(super::template_name_of("Metal v1.2"), "Metal v1.2");
+        assert_eq!(super::template_name_of("wood.2k.JSON"), "wood.2k");
+        assert_eq!(super::template_name_of("plain"), "plain");
+    }
+
     use egui_kittest::Harness;
     use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
@@ -734,12 +819,25 @@ mod log_export_tests {
         use texturecraft_engine::{LogEntry, LogLevel};
 
         let entries = [
-            LogEntry { time: chrono::DateTime::from_timestamp(1_709_164_799, 0).unwrap(), level: LogLevel::Info, message: "Loaded".into() },
-            LogEntry { time: chrono::DateTime::from_timestamp(1_709_164_800, 0).unwrap(), level: LogLevel::Warning, message: "Skipped".into() },
+            LogEntry {
+                time: chrono::DateTime::from_timestamp(1_709_164_799, 0).unwrap(),
+                source: "Importer".into(),
+                level: LogLevel::Info,
+                message: "Loaded".into(),
+            },
+            LogEntry {
+                time: chrono::DateTime::from_timestamp(1_709_164_800, 0).unwrap(),
+                source: "Library agent".into(),
+                level: LogLevel::Warning,
+                message: "Skipped".into(),
+            },
         ];
 
         let text = log_text(&entries);
 
-        assert_eq!(text.lines().skip(1).collect::<Vec<_>>(), ["[2024-02-28T23:59:59.000000Z] INFO  Loaded", "[2024-02-29T00:00:00.000000Z] WARN  Skipped"]);
+        assert_eq!(
+            text.lines().skip(1).collect::<Vec<_>>(),
+            ["[2024-02-28T23:59:59.000000Z] INFO  [Importer] Loaded", "[2024-02-29T00:00:00.000000Z] WARN  [Library agent] Skipped"]
+        );
     }
 }
