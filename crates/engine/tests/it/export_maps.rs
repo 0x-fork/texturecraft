@@ -74,17 +74,34 @@ fn planned_uv_tile_sizes_match_the_written_files() {
 fn a_file_name_an_earlier_texture_set_exports_is_not_overwritten() {
     let mut s = session();
     assert!(s.set_count() >= 2);
+    execute(&mut s, "textureSet.rename", &json!({"ts": 0, "name": "SAME"})).unwrap();
+    execute(&mut s, "textureSet.rename", &json!({"ts": 1, "name": "same"})).unwrap();
 
-    // A template without $textureSet gives every set the same file name
-    let preset =
-        json!({"name": "same", "maps": [{"file": "same", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}]});
-    let plan = execute(&mut s, "export.plan", &json!({"preset": preset, "ts": "all"})).unwrap();
-    assert_eq!(plan.as_array().unwrap().len(), s.set_count(), "every set has roughness: {plan}");
+    let preset = json!({"name": "same", "maps": [
+        {"file": "$textureSet", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]},
+        {"file": "$textureSet", "format": "Tga", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]},
+        {"file": "other", "format": "Png", "bit_depth": 8, "channels": [["L", {"Channel": {"channel": "Roughness"}}]]}
+    ]});
+    let single = execute(&mut s, "export.plan", &json!({"preset": preset, "ts": 1})).unwrap();
+    let plan = execute(&mut s, "export.plan", &json!({"preset": preset, "ts": [1, 0]})).unwrap();
     let dir = std::env::temp_dir().join(format!("tc_export_same_name_{}", std::process::id()));
-    let r = execute(&mut s, "file.exportTextures", &json!({"dir": dir.display().to_string(), "preset": preset, "ts": "all"})).unwrap();
-    let files: Vec<&str> = r["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
-    assert_eq!(files.len(), 1, "only the first set's file is written: {r}");
-    let warnings = r["warnings"].as_array().unwrap();
-    assert_eq!(warnings.iter().filter(|w| w.as_str().unwrap().contains("an earlier texture set exports")).count(), s.set_count() - 1, "{r}");
-    let _ = std::fs::remove_dir_all(&dir);
+    let result = execute(&mut s, "file.exportTextures", &json!({"dir": dir.display().to_string(), "preset": preset, "ts": [1, 0]})).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    let names = ["same.png", "same.tga", "other.png"];
+    let single = single.as_array().unwrap();
+    let plan = plan.as_array().unwrap();
+    assert_eq!(single.len(), names.len());
+    assert_eq!(plan.len(), names.len(), "{plan:?}");
+    for (index, name) in names.into_iter().enumerate() {
+        assert_eq!(single[index]["file"], name);
+        assert_eq!(single[index]["warnings"], json!([]));
+        assert_eq!(plan[index]["file"], name);
+        assert_eq!(plan[index]["ts"], 1);
+        let warning = plan[index]["warnings"][0].as_str().unwrap();
+        assert!(warning.contains("an earlier texture set exports"), "{warning}");
+        assert_eq!(result["warnings"][index], warning);
+        assert_eq!(std::path::Path::new(result["files"][index].as_str().unwrap()).file_name().unwrap(), name);
+    }
+    assert_eq!(result["files"].as_array().unwrap().len(), names.len());
 }

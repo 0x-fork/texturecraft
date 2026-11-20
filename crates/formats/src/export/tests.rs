@@ -544,6 +544,33 @@ fn uv_tiles_export_one_file_per_tile_without_padding_across() {
 }
 
 #[test]
+fn small_export_size_keeps_each_nonempty_udim_tile_one_pixel_or_larger() {
+    let mut project = Project::new("p", "builtin:udim_plane");
+    let mut set = TextureSet::new("body", 0, 512);
+    set.uv_tiles = vec![1001, 1002];
+    set.tile_resolutions.insert(1002, 128);
+    project.texture_sets.push(set);
+    let composite = Composite::with_size(&[Channel::Roughness], 1024, 512);
+    let coverage = vec![true; 1024 * 512];
+    let input = ExportInput { project: &project, ts: 0, composite: &composite, baked: &BakedMaps::default(), coverage: &coverage, mesh_name: "m" };
+
+    for format in [FileFormat::Png, FileFormat::Psd] {
+        let opts = ExportOptions { size: Some(2), padding: Padding::None, ..one_map(format, 8, roughness()) };
+        let planned = list_outputs(&project, 0, "m", &opts).unwrap();
+        let exported = render_maps(&input, &opts).unwrap();
+
+        assert_eq!(planned.iter().map(|file| file.tile).collect::<Vec<_>>(), [Some(1001), Some(1002)]);
+        assert_eq!(exported.iter().map(|file| (file.width, file.height)).collect::<Vec<_>>(), [(2, 2), (1, 1)]);
+        for (plan, file) in planned.iter().zip(&exported) {
+            assert_eq!(plan.name, file.name);
+        }
+        if format == FileFormat::Png {
+            assert_eq!(decode(&exported[1]).dimensions(), (1, 1));
+        }
+    }
+}
+
+#[test]
 fn the_udim_name_is_the_file_name_with_its_tile_number_as_placeholder() {
     let mut project = Project::new("p", "builtin:udim_plane");
     let mut ts = TextureSet::new("Body", 0, RES);

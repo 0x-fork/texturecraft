@@ -121,6 +121,49 @@ fn pgm_colour_maps_are_tagged_with_the_written_luminance_space() {
 }
 
 #[test]
+fn explicit_srgb_float_tiff_tags_match_gray_and_rgb_samples() {
+    use texturecraft_engine::formats::{Dest, ExportPreset, FileFormat, MapSpec, SourceRef};
+    use texturecraft_engine::{core::Channel, texel::linear_to_srgb};
+
+    let mut session = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+    execute(&mut session, "layer.add.fill", &json!({})).unwrap();
+    execute(&mut session, "layer.fill.set", &json!({"channel": "baseColor", "color": [0.25, 0.5, 0.75]})).unwrap();
+    let source = |component| SourceRef::Channel { channel: Channel::BaseColor, component };
+    let mut linear_sample = None;
+    for (channels, tag) in
+        [(vec![(Dest::L, source(0))], "lin_rec709"), (vec![(Dest::R, source(0)), (Dest::G, source(1)), (Dest::B, source(2))], "srgb_texture")]
+    {
+        let directory = temp(tag);
+        let preset = ExportPreset {
+            name: "TIFF base colour".into(),
+            maps: vec![MapSpec { file: "$mesh_$textureSet_base_color".into(), format: FileFormat::Tiff, bit_depth: 32, channels, inverted: Vec::new() }],
+        };
+        let result = execute(
+            &mut session,
+            "file.exportTextures",
+            &json!({"dir": directory.display().to_string(), "preset": preset, "ts": 0, "colorSpace": "sRGB", "materialX": true}),
+        )
+        .unwrap();
+
+        let paths = files(&result);
+        let texture = paths.iter().find(|file| file.ends_with(".tif")).unwrap();
+        let material = std::fs::read_to_string(paths.iter().find(|file| file.ends_with(".mtlx")).unwrap()).unwrap();
+        let warned = result["warnings"].to_string().contains("written in linear Rec.709");
+        let samples = image::open(texture).unwrap().to_rgb32f();
+        assert!(material.contains(&format!("_base_color.tif\" colorspace=\"{tag}\"")), "{material}");
+        assert_eq!(warned, tag == "lin_rec709", "{result}");
+        if let Some(expected) = linear_sample {
+            let (x, y, red) = expected;
+            assert!((samples.get_pixel(x, y)[0] - linear_to_srgb(red)).abs() < 1e-5);
+        } else {
+            let (x, y, pixel) = samples.enumerate_pixels().find(|(_, _, pixel)| (0.01..0.99).contains(&pixel[0])).unwrap();
+            assert_eq!(pixel.0, [pixel[0]; 3]);
+            linear_sample = Some((x, y, pixel[0]));
+        }
+    }
+}
+
+#[test]
 fn sets_with_the_same_file_name_warn_instead_of_overwriting() {
     let mut s = Session::new_project("t", primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
     assert!(s.set_count() >= 2);

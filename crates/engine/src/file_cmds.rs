@@ -73,7 +73,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "List export outputs",
             [],
             None,
-            "{preset?: name or preset object, ts?, format?, bitDepth?, dithering?, size?, colorSpace?, maps?} → [{ts, map, file, format, bitDepth, dithering, size, sourceSize, warnings}]",
+            "{preset?: name or preset object, ts?, format?, bitDepth?, dithering?, size?, colorSpace?, maps?} → [{ts, map, file, format, bitDepth, dithering, size, sourceSize, warnings}] (keeps the first file per case-insensitive name and warns about later duplicates)",
             always,
             plan
         ),
@@ -407,18 +407,24 @@ fn set_index(s: &Session, v: &Value, cmd: &str) -> Result<usize> {
 }
 
 fn plan(session: &mut Session, params: &Value) -> Result<Value> {
+    use texturecraft_formats::export::{list_set_outputs, scale_export_side};
+
     let options = export_options(session, params, "export.plan")?;
     let project = &session.doc.project;
     let mesh_name = stem_of(project.mesh.trim_start_matches("builtin:"));
+    let sets = sets_param(session, params, "export.plan")?;
+    let outputs = list_set_outputs(project, &sets, &mesh_name, &options).map_err(fe)?;
 
-    let mut files = Vec::new();
-    for set_index in sets_param(session, params, "export.plan")? {
-        let set = project.texture_set(set_index).map_err(|error| EngineError::Other(error.to_string()))?;
-        let block_size = set.block_resolution().max(1);
-        let requested_size = options.size.unwrap_or(block_size);
-        for output in texturecraft_formats::list_outputs(project, set_index, &mesh_name, &options).map_err(fe)? {
+    let mut files = Vec::with_capacity(outputs.len());
+    for set_outputs in outputs.chunk_by(|(left, _), (right, _)| left == right) {
+        let Some((set_index, _)) = set_outputs.first() else { continue };
+
+        let set = project.texture_set(*set_index).map_err(|error| EngineError::Other(error.to_string()))?;
+        let block_size = set.block_resolution();
+        for (_, output) in set_outputs {
             let source_size = output.tile.map_or(set.resolution, |tile| set.tile_resolution(tile));
-            let size = u64::from(source_size) * u64::from(requested_size) / u64::from(block_size);
+            let size = scale_export_side(source_size, block_size, options.size);
+
             files.push(json!({
                 "ts": set_index,
                 "map": output.map,
@@ -675,11 +681,7 @@ fn write_materialx(s: &Session, sets: &[usize], opts: &ExportOptions, dir: &std:
 
             // The first tile stands for all the tiles with the same naming pattern
             let filename = file.udim_name.unwrap_or(file.name);
-            let space = if file.format == FileFormat::Pgm && !map.is_color() {
-                texturecraft_texel::ColorSpace::LinearRec709
-            } else {
-                opts.space_for_depth(file.format, file.bit_depth)
-            };
+            let space = opts.space_for_map(map, file.format, file.bit_depth);
             let colorspace = materialx::colorspace_name(space);
             if !textures.iter().any(|texture| texture.input == input) {
                 textures.push(Texture { input: input.to_owned(), file: filename, colorspace });

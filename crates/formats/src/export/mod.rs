@@ -12,7 +12,7 @@
 //! becomes the tile number, and names without it get `.$udim` appended. Padding never crosses
 //! tiles.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, hash_map::Entry};
 use std::io::Cursor;
 
 use craft_image_codecs::{ChannelLayout, EncodeOptions, Format as CodecFormat, Image as CodecImage, SampleType};
@@ -432,6 +432,22 @@ impl ExportOptions {
         // PGM has one luminance channel and cannot represent ACES primaries
         if format == FileFormat::Pgm && space != ColorSpace::Srgb { ColorSpace::LinearRec709 } else { space }
     }
+
+    /// The colour space of the written map samples after layout-specific fallbacks.
+    pub fn space_for_map(&self, map: &MapSpec, format: FileFormat, depth: u8) -> ColorSpace {
+        if !map.is_color() {
+            return ColorSpace::LinearRec709;
+        }
+
+        let space = self.space_for_depth(format, depth);
+
+        // L maps can use the integer sRGB transfer but have no RGB triplet to convert
+        if map.channels.iter().any(|(dest, _)| *dest == Dest::L) && (space != ColorSpace::Srgb || format.holds_float(depth)) {
+            ColorSpace::LinearRec709
+        } else {
+            space
+        }
+    }
 }
 
 impl ExportOptions {
@@ -584,12 +600,13 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
         let enabled = own.is_none_or(|o| o.enabled);
         let psd_channels = (enabled && format == FileFormat::Psd).then(|| layout(set, map).len());
         let dither = bit_depth == 8 && !format.holds_float(bit_depth) && own.and_then(|o| o.dither).unwrap_or(opts.dither);
-        let space = opts.space_for_depth(format, bit_depth);
+        let space = opts.space_for_map(map, format, bit_depth);
+        let requested_space = opts.space_for_depth(format, bit_depth);
         let color_map = map.is_color();
-        let color_space = match (color_map, space) {
-            (false, _) | (true, ColorSpace::LinearRec709) => "linear",
-            (true, ColorSpace::Srgb) => "sRGB",
-            (true, other) => other.name(),
+        let color_space = match space {
+            ColorSpace::LinearRec709 => "linear",
+            ColorSpace::Srgb => "sRGB",
+            other => other.name(),
         };
 
         // Integer files clamp wide-gamut linear color to 0–1
@@ -673,6 +690,10 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
                 continue;
             }
 
+            if color_map && requested_space != space {
+                warnings.push(format!("\"{name}\" packs colour into one channel (L), so it is written in linear Rec.709, not {}", requested_space.name()));
+            }
+
             // Use a UDIM name only when substituting its tile recovers the output name
             // Truncation or literal placeholder text can make that substitution ambiguous
             let udim_name = token_stem.filter(|t| tile.is_some_and(|n| t.contains("UDIMTOKEN") && t.replace("UDIMTOKEN", &n.to_string()) == stem)).map(|t| {
@@ -683,6 +704,16 @@ pub fn list_outputs(project: &Project, ts: usize, mesh_name: &str, opts: &Export
         }
     }
     Ok(out)
+}
+
+/// Plan a selection in export order, keeping only the first case-insensitive use of a name.
+pub fn list_set_outputs(project: &Project, sets: &[usize], mesh_name: &str, opts: &ExportOptions) -> Result<Vec<(usize, PlannedFile)>> {
+    let mut files = Vec::new();
+    for &set in sets {
+        files.extend(list_outputs(project, set, mesh_name, opts)?.into_iter().map(|file| (set, file)));
+    }
+
+    Ok(keep_first_names(files, |(_, file)| &file.name, |(_, file)| &mut file.warnings))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -935,23 +966,21 @@ pub fn render_maps(input: &ExportInput, options: &ExportOptions) -> Result<Vec<E
             let mut data = resize(data, (w, h), component_count, size);
 
             // Integer sRGB converts in `encode`; other color spaces convert here
-            let space = options.space_for_depth(planned_file.format, planned_file.bit_depth);
+            let space = options.space_for_map(map, planned_file.format, planned_file.bit_depth);
             let float = planned_file.format.holds_float(planned_file.bit_depth);
-            let rgb = channel_layout.len() >= 3 && channel_layout.iter().take(3).map(|(d, _)| *d).eq([Dest::R, Dest::G, Dest::B]);
+            let rgb = component_count >= 3;
             let mut warnings = planned_file.warnings;
             let color_map = map.is_color();
-            let convert = color_map && (space != ColorSpace::Srgb || float) && space != ColorSpace::LinearRec709;
+            let convert = (space != ColorSpace::Srgb || float) && space != ColorSpace::LinearRec709;
 
-            if convert && rgb {
+            if convert {
                 data.par_chunks_mut(component_count).for_each(|px| {
                     if let [r, g, b, ..] = px {
                         [*r, *g, *b] = space.from_linear_rec709([*r, *g, *b]);
                     }
                 });
-            } else if convert && !rgb {
-                warnings.push(format!("\"{}\" packs colour into one channel (L), so it is written in linear Rec.709, not {}", planned_file.name, space.name()));
             }
-            let srgb: Vec<bool> = channel_layout.iter().map(|(d, _)| *d != Dest::A && color_map && !float && space == ColorSpace::Srgb).collect();
+            let srgb: Vec<bool> = channel_layout.iter().map(|(d, _)| *d != Dest::A && !float && space == ColorSpace::Srgb).collect();
 
             // A colour space the user chose is written into the colour maps (data maps have none)
             let embed = (options.color_space.is_some() && color_map && rgb).then_some(space);
@@ -973,10 +1002,11 @@ fn tile_side(set: &TextureSet, tile: u32, block_resolution: u32) -> u32 {
     ((block_resolution as f32 * set.tile_scale(tile)).round() as u32).clamp(1, block_resolution.max(1))
 }
 
-fn scale_export_side(source_side: u32, block_resolution: u32, export_size: Option<u32>) -> u32 {
+/// Scale an image side relative to the source block, keeping a pixel for any nonempty source.
+pub fn scale_export_side(source_side: u32, block_resolution: u32, export_size: Option<u32>) -> u32 {
     let export_size = export_size.unwrap_or(block_resolution);
     let scaled = u64::from(source_side) * u64::from(export_size) / u64::from(block_resolution.max(1));
-    u32::try_from(scaled).unwrap_or(u32::MAX)
+    u32::try_from(scaled).unwrap_or(u32::MAX).max(u32::from(source_side > 0))
 }
 
 fn diffuse_blocks(data: &mut Vec<f32>, (width, height): (usize, usize), channels: usize, known: &[bool], block: usize) {
@@ -1147,7 +1177,7 @@ fn encode(
     embed: Option<ColorSpace>,
     warnings: &mut Vec<String>,
 ) -> Result<Vec<u8>> {
-    let Encoding { format, depth, dither } = encoding;
+    let Encoding { format, depth, .. } = encoding;
     let encoding_error = |error: &dyn std::fmt::Display| FormatError::Invalid(format!("{} encoding failed: {error}", format.extension()));
 
     // Embed ICC or EXR chromaticities only where the format supports them
@@ -1194,16 +1224,16 @@ fn encode(
 
     // Rec.709 luminance weights convert linear RGB to PGM's single gray channel
     const REC709_LUMINANCE_WEIGHTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
-    let gray: Vec<f32>;
     let gray_srgb: [bool; 1];
-    let (integer_data, srgb, component_count): (&[f32], &[bool], usize) = if format == FileFormat::Pgm && component_count > 1 {
+    let (integer_data, srgb, component_count): (Vec<f32>, &[bool], usize) = if format == FileFormat::Pgm && component_count > 1 {
         if component_count != 3 {
             warnings.push("PGM has no alpha channel; alpha was dropped".into());
         }
         if component_count >= 3 {
             warnings.push("PGM holds one gray channel; colour became its luminance".into());
         }
-        gray = data
+
+        let gray = data
             .chunks_exact(component_count)
             .map(|pixel| match pixel {
                 [l, _] => *l,
@@ -1214,49 +1244,40 @@ fn encode(
                 _ => 0.0,
             })
             .collect();
+        drop(data);
         gray_srgb = [srgb.first().copied().unwrap_or(false)];
-        (&gray, &gray_srgb, 1)
+        (gray, &gray_srgb, 1)
     } else {
-        (&data, srgb, component_count)
+        (data, srgb, component_count)
     };
 
-    // Apply the transfer function before remapping channels and quantizing samples
-    let encoded: Vec<f32> = integer_data
-        .iter()
-        .enumerate()
-        .map(|(i, v)| if srgb.get(i % component_count).copied().unwrap_or(false) { linear_to_srgb(*v) } else { v.clamp(0.0, 1.0) })
-        .collect();
-    drop(data);
-
-    let (encoded, component_count) = match (format, component_count) {
+    let channel_indices: Option<&[usize]> = match (format, component_count) {
         (FileFormat::Jpeg, 2 | 4) => {
             warnings.push("JPEG has no alpha channel; alpha was dropped".into());
-            (remap(&encoded, component_count, if component_count == 2 { &[0] } else { &[0, 1, 2] }), component_count - 1)
+            Some(if component_count == 2 { &[0] } else { &[0, 1, 2] })
         }
-        (FileFormat::Tiff, 2) => (remap(&encoded, 2, &[0, 0, 0, 1]), 4),
-        _ => (encoded, component_count),
+        (FileFormat::Tiff, 2) => Some(&[0, 0, 0, 1]),
+        _ => None,
     };
-    let (bytes, sample_type) = if depth == 16 {
-        let bytes = encoded.iter().flat_map(|value| ((value * f32::from(u16::MAX) + 0.5) as u16).to_ne_bytes()).collect();
-        (bytes, SampleType::U16)
+
+    let transferred = integer_data
+        .iter()
+        .enumerate()
+        .map(|(index, value)| if srgb.get(index % component_count).copied().unwrap_or(false) { linear_to_srgb(*value) } else { value.clamp(0.0, 1.0) });
+    let (bytes, component_count) = if let Some(indices) = channel_indices {
+        // Transfer luminance once before TIFF repeats it across RGB
+        let transferred: Vec<f32> = transferred.collect();
+        drop(integer_data);
+        let remapped = remap(&transferred, component_count, indices);
+        drop(transferred);
+        (quantize_integer(encoding, size.0, indices.len(), remapped.into_iter())?, indices.len())
     } else {
-        let width = size.0.max(1) as usize;
-        let threshold = |sample_index: usize| {
-            const BAYER_SIDE: usize = 8;
-            let pixel = sample_index / component_count.max(1);
-            let index = (pixel / width % BAYER_SIDE) * BAYER_SIDE + pixel % width % BAYER_SIDE;
-            let midpoint = (BAYER8.len() / 2) as u8;
-            (f32::from(BAYER8.get(index).copied().unwrap_or(midpoint)) + 0.5) / BAYER8.len() as f32
-        };
-        let max_sample = f32::from(u8::MAX);
-        let bytes = if dither {
-            encoded.iter().enumerate().map(|(index, value)| (value * max_sample + threshold(index)).floor().clamp(0.0, max_sample) as u8).collect()
-        } else {
-            encoded.iter().map(|value| (value * max_sample + 0.5) as u8).collect()
-        };
-        (bytes, SampleType::U8)
+        // Stream native-order samples directly into the integer buffer
+        let bytes = quantize_integer(encoding, size.0, component_count, transferred)?;
+        drop(integer_data);
+        (bytes, component_count)
     };
-    drop(encoded);
+    let sample_type = if depth == 16 { SampleType::U16 } else { SampleType::U8 };
 
     let codec_format = match format {
         FileFormat::Png => CodecFormat::Png,
@@ -1282,6 +1303,37 @@ fn encode(
     let profile = if format == FileFormat::Pgm { None } else { embed.and_then(crate::icc::profile) };
     let image = CodecImage::from_raw(size.0, size.1, layout, sample_type, bytes).map_err(|error| encoding_error(&error))?.with_icc(profile);
     write_raster(&image, codec_format).map_err(|error| encoding_error(&error))
+}
+
+fn quantize_integer(encoding: Encoding, width: u32, component_count: usize, samples: impl ExactSizeIterator<Item = f32>) -> Result<Vec<u8>> {
+    let Encoding { format, depth, dither } = encoding;
+    let byte_count = samples
+        .len()
+        .checked_mul(if depth == 16 { 2 } else { 1 })
+        .ok_or_else(|| FormatError::Invalid(format!("{} sample buffer size overflows", format.extension())))?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(byte_count).map_err(|error| FormatError::Invalid(format!("{} sample buffer allocation failed: {error}", format.extension())))?;
+
+    if depth == 16 {
+        bytes.extend(samples.flat_map(|value| ((value * f32::from(u16::MAX) + 0.5) as u16).to_ne_bytes()));
+    } else {
+        let width = width.max(1) as usize;
+        let threshold = |sample_index: usize| {
+            const BAYER_SIDE: usize = 8;
+            let pixel = sample_index / component_count.max(1);
+            let index = (pixel / width % BAYER_SIDE) * BAYER_SIDE + pixel % width % BAYER_SIDE;
+            let midpoint = (BAYER8.len() / 2) as u8;
+            (f32::from(BAYER8.get(index).copied().unwrap_or(midpoint)) + 0.5) / BAYER8.len() as f32
+        };
+        let max_sample = f32::from(u8::MAX);
+        if dither {
+            bytes.extend(samples.enumerate().map(|(index, value)| (value * max_sample + threshold(index)).floor().clamp(0.0, max_sample) as u8));
+        } else {
+            bytes.extend(samples.map(|value| (value * max_sample + 0.5) as u8));
+        }
+    }
+
+    Ok(bytes)
 }
 
 fn check_psd_size((width, height): (u32, u32), channels: usize, depth: u8) -> Result<()> {
@@ -1457,25 +1509,31 @@ fn write_exr((w, h): (u32, u32), n: usize, data: &[f32], half: bool, space: Opti
 /// names never repeat, so a repeat comes from a later set. The kept file's warnings say so; the
 /// left-out file's own warnings go with it.
 pub fn skip_repeated_names(files: &mut Vec<ExportedFile>) {
-    let mut first: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut kept: Vec<ExportedFile> = Vec::with_capacity(files.len());
-    for f in std::mem::take(files) {
-        match first.get(&f.name.to_ascii_lowercase()) {
-            Some(&i) => {
-                if let Some(k) = kept.get_mut(i) {
-                    k.warnings.push(format!(
+    *files = keep_first_names(std::mem::take(files), |file| &file.name, |file| &mut file.warnings);
+}
+
+fn keep_first_names<T>(files: Vec<T>, name: impl Fn(&T) -> &str, warnings: impl Fn(&mut T) -> &mut Vec<String>) -> Vec<T> {
+    let mut first = HashMap::new();
+    let mut kept = Vec::with_capacity(files.len());
+    for file in files {
+        let filename = name(&file);
+        match first.entry(filename.to_ascii_lowercase()) {
+            Entry::Occupied(previous) => {
+                if let Some(winner) = kept.get_mut(*previous.get()) {
+                    warnings(winner).push(format!(
                         "\"{}\" of a later texture set has the name of a file an earlier texture set exports, so it was not written; add $textureSet to the template's file names or rename a texture set",
-                        f.name
+                        filename
                     ));
                 }
             }
-            None => {
-                first.insert(f.name.to_ascii_lowercase(), kept.len());
-                kept.push(f);
+            Entry::Vacant(entry) => {
+                entry.insert(kept.len());
+                kept.push(file);
             }
         }
     }
-    *files = kept;
+
+    kept
 }
 
 /// Write exported files into `dir` (created if missing), each atomically (`name.tmp`, then
