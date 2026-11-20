@@ -20,6 +20,19 @@ pub use library_location::LibraryLocation;
 pub use project_config::ProjectConfig;
 pub use resource_usage::ResourceUsage;
 
+mod console_line;
+mod export_job;
+mod export_set_plan;
+mod file_type;
+mod map_export;
+mod set_export;
+pub use console_line::ConsoleLine;
+pub use export_job::ExportJob;
+pub use export_set_plan::ExportSetPlan;
+pub use file_type::FileType;
+pub use map_export::MapExport;
+pub use set_export::SetExport;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Mode {
     #[default]
@@ -319,6 +332,9 @@ impl Default for NewProject {
     }
 }
 
+/// `ExportUi::size` for "Maximum size for all Texture Sets".
+pub const SIZE_OF_LARGEST_SET: u32 = u32::MAX;
+
 /// The export dialog's settings (remembered between sessions).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExportUi {
@@ -328,10 +344,13 @@ pub struct ExportUi {
     pub format: String,
     /// Bit depth override (0 = the preset's).
     pub bit_depth: u8,
-    /// none | dilation | dilationDefault | infinite
+    /// Dither the 8-bit files of the file type override.
+    #[serde(default)]
+    pub dithering: bool,
+    /// none | dilation | dilationDefault | diffusion | infinite
     pub padding: String,
     pub dilation: u32,
-    /// Output size override (0 = each texture set's size).
+    /// Output size override (0 = each texture set's size, [`SIZE_OF_LARGEST_SET`] = the largest set's).
     pub size: u32,
     /// "" (project), openGl or directX.
     pub normal_format: String,
@@ -340,35 +359,81 @@ pub struct ExportUi {
     pub color_space: String,
     /// Texture sets excluded from export.
     pub skip: Vec<usize>,
+    /// Per texture set (by index) overrides of the settings above.
+    #[serde(default)]
+    pub sets: std::collections::BTreeMap<usize, SetExport>,
+    /// Whose `skip` and `sets` these are: the project name, then its texture set names in order.
+    /// Another project drops them; texture sets that moved take theirs along, removed ones lose them.
+    #[serde(default)]
+    pub owner: Vec<String>,
+    /// The session's project id `owner` was taken in (None after a restart: the name decides).
+    #[serde(skip)]
+    pub owner_id: Option<u64>,
     pub tab: u8,
+    /// SETTINGS tab: the texture set whose page shows (None: Global settings).
+    #[serde(skip)]
+    pub page: Option<usize>,
     /// Output templates tab: the selected user preset being edited (saved whenever it is valid).
     #[serde(skip)]
     pub draft: Option<texturecraft_engine::formats::ExportPreset>,
+    /// Output templates tab: for each map of `draft`, its index in the saved template (None: added
+    /// since), so the texture set overrides of a map follow it when the draft is saved.
+    #[serde(skip)]
+    pub draft_maps: Vec<Option<usize>>,
+    /// Output templates tab: the saved template `draft_maps` counts from.
+    #[serde(skip)]
+    pub draft_base: Option<texturecraft_engine::formats::ExportPreset>,
     /// Output templates tab: the new name while renaming the selected preset.
     #[serde(skip)]
     pub renaming: Option<String>,
+    /// Output templates tab: F2 asked to rename the selected preset.
+    #[serde(skip)]
+    pub rename_key: bool,
     /// Output templates tab: the question waiting for an answer (delete, or drop an unsaved edit).
     #[serde(skip)]
     pub ask: Option<crate::export_templates::Ask>,
+    /// The settings when the window opened: Cancel goes back to them.
+    #[serde(skip)]
+    pub opened_with: Option<Box<ExportUi>>,
+    /// The export running in the window.
+    #[serde(skip)]
+    pub job: Option<ExportJob>,
+    /// LIST OF EXPORTS: the console's lines and whether it is hidden.
+    #[serde(skip)]
+    pub console: Vec<ConsoleLine>,
+    #[serde(skip)]
+    pub console_hidden: bool,
 }
 
 impl Default for ExportUi {
     fn default() -> Self {
         ExportUi {
             dir: default_export_dir(),
-            preset: "Document channels + Normal + AO".into(),
+            preset: texturecraft_engine::formats::DEFAULT_PRESET.into(),
             format: String::new(),
             bit_depth: 0,
+            dithering: false,
             padding: "infinite".into(),
             dilation: 16,
             size: 0,
             normal_format: String::new(),
             color_space: String::new(),
             skip: Vec::new(),
+            sets: Default::default(),
+            owner: Vec::new(),
+            owner_id: None,
             tab: 0,
+            page: None,
             draft: None,
+            draft_maps: Vec::new(),
+            draft_base: None,
             renaming: None,
+            rename_key: false,
             ask: None,
+            opened_with: None,
+            job: None,
+            console: Vec::new(),
+            console_hidden: false,
         }
     }
 }

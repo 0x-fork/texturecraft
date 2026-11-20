@@ -40,6 +40,19 @@ result is `{files}`. A layer without an enabled mask is an error. The layer menu
 file runs it; Copy mask to clipboard puts the same mask on the system clipboard as an 8-bit
 grayscale image (the whole tile atlas for a UV-tiled set).
 
+`file.exportTextures`, `export.plan`, the automation `textures.export` method and the MCP
+`textures_export` tool accept `maps: [{map, enabled?, format?, bitDepth?, dithering?}]`.
+Each entry overrides that map's export settings. The `map` field is its index in the selected
+template. `enabled: false` suppresses that file while reserving its name. When several texture
+sets produce the same name (ignoring case), programmatic and browser exports keep the first file
+and warn about later duplicates. The desktop export window reports the collision before writing.
+
+`format` accepts the export window's names (`bmp`, `jpeg`, `jng`, `pgm`, `png`, `targa`, `tiff`,
+`hdr`, `exr`, `webp`, `psd`) and their extensions. `bitDepth: 32` selects floating point for
+TIFF, EXR and HDR. `dithering: true` dithers 8-bit integer output with an ordered pattern, and
+`export.plan` reports the effective setting and per-file dimensions (`size` and `sourceSize`, both in pixels). `padding: "diffusion"` dilates by
+`dilation` texels and fills the remaining space with a smooth blend of the island colours.
+
 `effect.set {effect, filter: "blur", radius: 5}` replaces a filter in place, preserving its
 stack position, blend, opacity and visibility. Replacement filters start from defaults plus
 the supplied parameters; naming the current filter instead edits it without resetting omitted
@@ -373,7 +386,7 @@ File access follows `--read-root` / `--write-root` as for MCP.
 | `resource.import` | `{path}` |
 | `material.save` | `{path, layer?, name?}` |
 | `material.load` | `{path}` |
-| `textures.export` | `{dir, preset?, ts?, format?, padding?, size?, bitDepth?, dilation?, normalFormat?}` |
+| `textures.export` | `{dir, preset?, ts?, format?, padding?, size?, bitDepth?, dithering?, dilation?, normalFormat?, maps?}` |
 | `render` | `{view?, width?, height?, yaw?, pitch?}` → `{width, height, png}` |
 
 Brush preset operations are engine commands. Send each through `command.run` with the shown
