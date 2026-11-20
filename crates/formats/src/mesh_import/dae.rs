@@ -74,7 +74,8 @@ fn read_inner(bytes: &[u8]) -> Result<RawMesh> {
             sink.part = node.name.clone();
             let uvs = mesh.uv_sets.first();
             for part in &mesh.parts {
-                let material = part.material.and_then(|m| scene.materials.get(m)).filter(|m| !m.name.is_empty()).map_or("Default", |m| m.name.as_str());
+                // An explicit empty name is a binding; only an absent material uses the default.
+                let material = part.material.and_then(|m| scene.materials.get(m)).map_or("Default", |m| m.name.as_str());
                 for face in part.faces() {
                     let mut corners = Vec::with_capacity(face.len());
                     for c in face {
