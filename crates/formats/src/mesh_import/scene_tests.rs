@@ -842,6 +842,16 @@ fn dae_attribute_and_text_entities_are_decoded() {
 }
 
 #[test]
+fn dae_empty_material_binding_stays_distinct_from_named_default() {
+    let dae = DAE.replace(r#"name="Red""#, r#"name="""#).replace(r#"name="Blue""#, r#"name="Default""#);
+    let m = import_mesh_bytes("scene.dae", dae.as_bytes()).unwrap().mesh;
+    assert_eq!(m.materials.len(), 2);
+    let material_for = |part: &str| m.submeshes.iter().find(|s| s.name == part).map(|s| m.materials[s.material].as_str());
+    assert_eq!(material_for("child"), Some(""));
+    assert_eq!(material_for("other"), Some("Default"));
+}
+
+#[test]
 fn glb_export_round_trips_with_textures() {
     let mesh = texturecraft_geom::primitives::material_ball();
     let png = |color: image::ColorType| {
