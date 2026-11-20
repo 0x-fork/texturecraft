@@ -77,10 +77,15 @@ pub const USER_SUFFIX: &str = " (your_assets)";
 /// The name the New project list shows for a template: "Default (OpenPBR)" for the default,
 /// the other built-ins with " (starter_assets)", the user's with " (your_assets)".
 pub fn template_label(name: &str, builtin: bool) -> String {
+    let (name, suffix) = template_label_parts(name, builtin);
+    format!("{name}{suffix}")
+}
+
+fn template_label_parts(name: &str, builtin: bool) -> (&str, &str) {
     match (builtin, name == DEFAULT_TEMPLATE) {
-        (true, true) => DEFAULT_LABEL.to_string(),
-        (true, false) => format!("{name}{BUILTIN_SUFFIX}"),
-        (false, _) => format!("{name}{USER_SUFFIX}"),
+        (true, true) => (DEFAULT_LABEL, ""),
+        (true, false) => (name, BUILTIN_SUFFIX),
+        (false, _) => (name, USER_SUFFIX),
     }
 }
 
@@ -127,8 +132,23 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn same(a: &str, b: &str) -> bool {
+fn same_template_key(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+fn matches_template_label(key: &str, name: &str, builtin: bool) -> bool {
+    let (name, suffix) = template_label_parts(name, builtin);
+    let name = name.trim_start();
+    let suffix = if name.is_empty() { suffix.trim_start() } else { suffix };
+
+    key.trim().split_at_checked(name.len()).is_some_and(|(prefix, ending)| prefix.eq_ignore_ascii_case(name) && ending.eq_ignore_ascii_case(suffix))
+}
+
+fn template_keys_overlap(name: &str, label: &str, other: &ProjectTemplate, builtin: bool) -> bool {
+    same_template_key(name, &other.name)
+        || same_template_key(label, &other.name)
+        || matches_template_label(name, &other.name, builtin)
+        || matches_template_label(label, &other.name, builtin)
 }
 
 /// Checks a template from untrusted input: name, resolution, channels (base color first in
@@ -138,26 +158,35 @@ fn validated(mut t: ProjectTemplate) -> std::result::Result<ProjectTemplate, Str
     if t.name.is_empty() || t.name.chars().count() > MAX_NAME {
         return Err(format!("a template name must be 1 to {MAX_NAME} characters"));
     }
+
     check_resolution(t.resolution).map_err(|e| e.to_string())?;
     if !t.channels.iter().any(|(c, _)| *c == Channel::BaseColor) {
         t.channels.push((Channel::BaseColor, ChannelFormat::default_for(Channel::BaseColor)));
     }
     t.channels.sort_by_key(|(c, _)| c.index());
     t.channels.dedup_by_key(|(c, _)| *c);
+
     let finite = t.ior.is_finite() && t.scatter_radius.is_finite() && t.scatter_color.iter().all(|v| v.is_finite());
     if !finite {
         return Err("template shader values must be finite".into());
     }
+
     Ok(t)
 }
 
 impl Session {
-    /// A built-in or user project template by name or by the label the New project list shows
-    /// (case-insensitive).
+    /// Resolve a canonical template name first, then an unambiguous New project display label.
+    /// Both lookups ignore ASCII case and surrounding whitespace.
     pub fn template(&self, name: &str) -> Option<ProjectTemplate> {
-        let builtin = builtin_templates();
-        let all = || builtin.iter().map(|t| (t, true)).chain(self.templates.list.iter().map(|t| (t, false)));
-        all().find(|(t, _)| same(&t.name, name)).or_else(|| all().find(|(t, builtin)| same(&template_label(&t.name, *builtin), name))).map(|(t, _)| t.clone())
+        let builtins = builtin_templates();
+        let templates = || builtins.iter().map(|template| (template, true)).chain(self.templates.list.iter().map(|template| (template, false)));
+        if let Some((template, _)) = templates().find(|(template, _)| same_template_key(&template.name, name)) {
+            return Some(template.clone());
+        }
+
+        let mut matches = templates().filter(|(template, builtin)| matches_template_label(name, &template.name, *builtin));
+        let (template, _) = matches.next()?;
+        matches.next().is_none().then(|| template.clone())
     }
 
     /// Start this (new, unpainted) project from template `t`: its channels on every texture set
@@ -196,7 +225,8 @@ impl Session {
             .unwrap_or_default();
         files.sort();
 
-        let mut lib = UserTemplates { list: Vec::new(), dir: Some(dir) };
+        let builtins = builtin_templates();
+        let mut library = UserTemplates { list: Vec::new(), dir: Some(dir) };
         let mut template_files = std::collections::BTreeMap::new();
         for path in files.into_iter().take(MAX_USER_TEMPLATES) {
             let read = || -> std::result::Result<ProjectTemplate, String> {
@@ -209,19 +239,28 @@ impl Session {
                 validated(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?)
             };
 
-            match read() {
-                Ok(t) if builtin_templates().iter().chain(&lib.list).any(|o| same(&o.name, &t.name)) => {
-                    warnings.push(format!("{}: template \"{}\" exists already", path.display(), t.name))
+            let template = match read() {
+                Ok(template) => template,
+                Err(error) => {
+                    warnings.push(format!("{}: {error}", path.display()));
+                    continue;
                 }
-                Ok(template) => {
-                    template_files.insert(template.name.to_ascii_lowercase(), path);
-                    lib.list.push(template);
-                }
-                Err(e) => warnings.push(format!("{}: {e}", path.display())),
+            };
+
+            // Reserve both keys so a later file cannot shadow an accepted template
+            let label = template_label(&template.name, false);
+            if builtins.iter().any(|other| template_keys_overlap(&template.name, &label, other, true))
+                || library.list.iter().any(|other| template_keys_overlap(&template.name, &label, other, false))
+            {
+                warnings.push(format!("{}: template \"{}\" conflicts with an existing name or display label", path.display(), template.name));
+                continue;
             }
+
+            template_files.insert(template.name.to_ascii_lowercase(), path);
+            library.list.push(template);
         }
 
-        self.templates = lib;
+        self.templates = library;
         self.template_files = template_files;
 
         warnings
@@ -243,15 +282,11 @@ fn list(s: &mut Session, _: &Value) -> Result<Value> {
     Ok(json!(builtin_templates().iter().map(|t| entry(t, true)).chain(s.templates.list.iter().map(|t| entry(t, false))).collect::<Vec<_>>()))
 }
 
-fn save(s: &mut Session, p: &Value) -> Result<Value> {
+fn save(session: &mut Session, params: &Value) -> Result<Value> {
     const CMD: &str = "project.template.save";
-    let name = strp(p, "name").unwrap_or_default();
-    if builtin_templates().iter().any(|t| same(&t.name, name) || same(&template_label(&t.name, true), name)) {
-        return Err(bad(CMD, format!("\"{}\" is a built-in template (read-only); choose another name", name.trim())));
-    }
-
-    let project = &s.doc.project;
-    let set = project.texture_set(s.ts())?;
+    let name = strp(params, "name").unwrap_or_default();
+    let project = &session.doc.project;
+    let set = project.texture_set(session.ts())?;
     let display = &project.display;
     let template = ProjectTemplate {
         name: name.to_string(),
@@ -265,18 +300,30 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
         scatter_radius: display.scatter_radius,
     };
 
-    let template = validated(template).map_err(|e| bad(CMD, e))?;
-    let existing = s.templates.list.iter().position(|entry| same(&entry.name, &template.name));
-    if existing.is_none() && s.templates.list.len() >= MAX_USER_TEMPLATES {
+    let template = validated(template).map_err(|error| bad(CMD, error))?;
+    let label = template_label(&template.name, false);
+    if builtin_templates().iter().any(|other| template_keys_overlap(&template.name, &label, other, true)) {
+        return Err(bad(CMD, format!("\"{}\" is a built-in template (read-only); choose another name", template.name)));
+    }
+
+    // Only a canonical name match replaces an existing user template
+    let existing = session.templates.list.iter().position(|entry| same_template_key(&entry.name, &template.name));
+    if let Some((_, other)) =
+        session.templates.list.iter().enumerate().find(|(index, other)| Some(*index) != existing && template_keys_overlap(&template.name, &label, other, false))
+    {
+        return Err(bad(CMD, format!("template \"{}\" conflicts with the name or display label of \"{}\"", template.name, other.name)));
+    }
+
+    if existing.is_none() && session.templates.list.len() >= MAX_USER_TEMPLATES {
         return Err(bad(CMD, format!("at most {MAX_USER_TEMPLATES} user templates")));
     }
 
-    let path = write(s, &template, strp(p, "path")).map_err(|e| bad(CMD, e))?;
+    let path = write(session, &template, strp(params, "path")).map_err(|error| bad(CMD, error))?;
     let reply = json!({ "name": template.name, "path": path });
     if let Some(index) = existing {
-        s.templates.list[index] = template;
+        session.templates.list[index] = template;
     } else {
-        s.templates.list.push(template);
+        session.templates.list.push(template);
     }
 
     Ok(reply)
@@ -376,7 +423,8 @@ mod tests {
             assert_eq!(s.doc.project.display.spec_gloss, want.spec_gloss);
             assert!(!s.modified && !s.can_undo());
         }
-        // The template's resolution applies when none is given.
+
+        // The template supplies the resolution when the command omits it
         execute(&mut s, "project.new", &json!({"template": "pbr - specular glossiness"})).unwrap();
         assert_eq!(s.doc.project.texture_sets[0].resolution, 2048);
         assert!(s.doc.project.display.spec_gloss);
@@ -402,7 +450,8 @@ mod tests {
         let set = &fresh.doc.project.texture_sets[0];
         assert!(set.has_channel(Channel::Emissive) && set.resolution == 256);
         assert_eq!(fresh.doc.project.normal_format, NormalFormat::DirectX);
-        // Templates survive opening another project.
+
+        // The library persists across project switches
         execute(&mut fresh, "project.new", &json!({})).unwrap();
         assert!(fresh.template("My glow").is_some());
         let _ = std::fs::remove_dir_all(&dir);
@@ -497,11 +546,87 @@ mod tests {
         assert_eq!(labels.last().map(String::as_str), Some("Mine (your_assets)"));
         assert!(labels.contains(&"Unlit - Emissive (starter_assets)".to_string()));
 
-        // A label finds its template, and a built-in's label is not free for a user template
+        // Display labels resolve here and the built-in label is reserved
         assert_eq!(s.template("default (openpbr)").unwrap().name, DEFAULT_TEMPLATE);
         assert_eq!(s.template("Mine (your_assets)").unwrap().name, "Mine");
         assert!(execute(&mut s, "project.template.save", &json!({"name": "Default (OpenPBR)"})).is_err());
         execute(&mut s, "project.new", &json!({"template": "Unlit - Emissive (starter_assets)"})).unwrap();
         assert_eq!(s.doc.project.texture_sets[0].channels, s.template("Unlit - Emissive").unwrap().channels);
+    }
+
+    fn assert_template_collision_is_rejected_on_save(existing_name: &str, conflicting_name: &str) {
+        let mut session = Session::new_project("Template", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let library = temporary.path().join("templates");
+        let existing_file = library.join("existing.json");
+        let conflicting_file = library.join("conflicting.json");
+        session.load_templates(library.clone());
+        execute(&mut session, "project.template.save", &json!({"name": existing_name, "path": existing_file})).unwrap();
+        let existing_bytes = std::fs::read(&existing_file).unwrap();
+        execute(&mut session, "textureSet.resolution", &json!({"resolution": 256})).unwrap();
+
+        let result = execute(&mut session, "project.template.save", &json!({"name": conflicting_name, "path": conflicting_file}));
+
+        assert!(result.unwrap_err().to_string().contains("conflicts"));
+        assert!(!conflicting_file.exists());
+        assert_eq!(std::fs::read(&existing_file).unwrap(), existing_bytes);
+        assert_eq!(session.templates.list.len(), 1);
+        assert_eq!(session.template(existing_name).unwrap().resolution, 128);
+        let label = template_label(existing_name, false);
+        execute(&mut session, "project.new", &json!({"mesh": "plane", "template": label})).unwrap();
+        assert_eq!(session.doc.project.texture_sets[0].resolution, 128);
+    }
+
+    #[test]
+    fn template_collision_rejects_saving_a_name_that_matches_a_label() {
+        assert_template_collision_is_rejected_on_save("Mine", "  mINE (YOUR_ASSETS)  ");
+    }
+
+    #[test]
+    fn template_collision_rejects_saving_a_label_that_matches_a_name() {
+        assert_template_collision_is_rejected_on_save("Mine (your_assets)", "  mINE  ");
+    }
+
+    #[test]
+    fn template_collision_skips_conflicting_library_files() {
+        let mut session = Session::new_project("Template", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
+        let library = tempfile::tempdir().unwrap();
+        for (file, name, resolution) in [
+            ("01.json", " default (openpbr) ", 256),
+            ("02.json", "Unlit - Emissive (STARTER_ASSETS)", 256),
+            ("03.json", "Mine é", 128),
+            ("04.json", " MINE é (YOUR_ASSETS) ", 256),
+            ("05.json", "Other (your_assets)", 128),
+            ("06.json", "OTHER", 256),
+            ("07.json", " mine é ", 256),
+        ] {
+            let template = ProjectTemplate { name: name.into(), resolution, ..ProjectTemplate::default() };
+            std::fs::write(library.path().join(file), serde_json::to_vec(&template).unwrap()).unwrap();
+        }
+
+        let warnings = session.load_templates(library.path().to_path_buf());
+
+        assert_eq!(warnings.len(), 5, "{warnings:?}");
+        for (warning, file) in warnings.iter().zip(["01.json", "02.json", "04.json", "06.json", "07.json"]) {
+            assert!(warning.contains(file), "{warning}");
+            assert!(library.path().join(file).is_file());
+        }
+        assert_eq!(session.templates.list.len(), 2);
+        assert_eq!(session.template("Default (OpenPBR)").unwrap().name, DEFAULT_TEMPLATE);
+        assert_eq!(session.template("Unlit - Emissive (starter_assets)").unwrap().name, "Unlit - Emissive");
+        for (name, label) in [("Mine é", "  MINE é (YOUR_ASSETS)  "), ("Other (your_assets)", "Other (your_assets) (your_assets)")] {
+            assert_eq!(session.template(name).unwrap().resolution, 128);
+            assert_eq!(session.template(label).unwrap().resolution, 128);
+        }
+    }
+
+    #[test]
+    fn template_collision_leaves_canonical_lookup_available_for_an_ambiguous_label() {
+        let mut session = Session::new_project("Template", texturecraft_geom::primitives::plane(1.0, 1), "builtin:plane", None, 128).unwrap();
+        execute(&mut session, "project.template.save", &json!({"name": "Mine"})).unwrap();
+        session.templates.list.push(ProjectTemplate { name: "mINE".into(), resolution: 256, ..ProjectTemplate::default() });
+
+        assert_eq!(session.template("Mine").unwrap().resolution, 128);
+        assert!(session.template("Mine (your_assets)").is_none());
     }
 }
