@@ -484,6 +484,9 @@ pub struct Session {
     pub brush_presets: crate::brush_preset_cmds::UserBrushes,
     /// The user's project templates (kept when another project opens).
     pub templates: crate::template_cmds::UserTemplates,
+    /// Backing files in the native template library, keyed by ASCII case-insensitive name.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) template_files: BTreeMap<String, std::path::PathBuf>,
 }
 
 impl Session {
@@ -544,6 +547,8 @@ impl Session {
             export_presets: Default::default(),
             brush_presets: Default::default(),
             templates: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            template_files: Default::default(),
         })
     }
 
@@ -567,6 +572,11 @@ impl Session {
         next.export_presets = std::mem::take(&mut self.export_presets);
         next.brush_presets = std::mem::take(&mut self.brush_presets);
         next.templates = std::mem::take(&mut self.templates);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            next.template_files = std::mem::take(&mut self.template_files);
+        }
+
         crate::tool_settings::ToolSettings::of(&self.tool).apply(&mut next.tool);
         *self = next;
     }

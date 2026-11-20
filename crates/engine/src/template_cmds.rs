@@ -1,7 +1,10 @@
 //! Project templates ("Template" in the New project dialog): preset channel lists,
 //! normal format, resolution and shader settings a new project starts from. Built-in templates
 //! are read-only; the user's are saved from the current project and, on the desktop, mirrored
-//! as `<name>.json` files in a library folder (see [`Session::load_templates`]).
+//! as JSON files in a library folder (see [`Session::load_templates`]).
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -97,7 +100,7 @@ pub fn builtin_templates() -> Vec<ProjectTemplate> {
 #[derive(Clone, Debug, Default)]
 pub struct UserTemplates {
     pub list: Vec<ProjectTemplate>,
-    /// Folder mirroring `list` as `<name>.json` files (desktop); None keeps them in memory.
+    /// Folder for persistent desktop templates. Without it, pathless saves stay in memory.
     pub dir: Option<std::path::PathBuf>,
 }
 
@@ -186,31 +189,41 @@ impl Session {
     /// Use `dir` as the user template library: read its `*.json` templates (replacing the list)
     /// and mirror later saves there. Returns a warning per file that was skipped.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_templates(&mut self, dir: std::path::PathBuf) -> Vec<String> {
+    pub fn load_templates(&mut self, dir: PathBuf) -> Vec<String> {
         let mut warnings = Vec::new();
-        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-            .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"))).collect())
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|entry| entry.path()).filter(|path| is_template_file(path)).collect())
             .unwrap_or_default();
         files.sort();
+
         let mut lib = UserTemplates { list: Vec::new(), dir: Some(dir) };
+        let mut template_files = std::collections::BTreeMap::new();
         for path in files.into_iter().take(MAX_USER_TEMPLATES) {
             let read = || -> std::result::Result<ProjectTemplate, String> {
                 let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
                 if len > MAX_FILE_BYTES {
                     return Err(format!("larger than {MAX_FILE_BYTES} bytes"));
                 }
+
                 let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
                 validated(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?)
             };
+
             match read() {
                 Ok(t) if builtin_templates().iter().chain(&lib.list).any(|o| same(&o.name, &t.name)) => {
                     warnings.push(format!("{}: template \"{}\" exists already", path.display(), t.name))
                 }
-                Ok(t) => lib.list.push(t),
+                Ok(template) => {
+                    template_files.insert(template.name.to_ascii_lowercase(), path);
+                    lib.list.push(template);
+                }
                 Err(e) => warnings.push(format!("{}: {e}", path.display())),
             }
         }
+
         self.templates = lib;
+        self.template_files = template_files;
+
         warnings
     }
 }
@@ -239,60 +252,91 @@ fn save(s: &mut Session, p: &Value) -> Result<Value> {
 
     let project = &s.doc.project;
     let set = project.texture_set(s.ts())?;
-    let d = &project.display;
-    let t = ProjectTemplate {
+    let display = &project.display;
+    let template = ProjectTemplate {
         name: name.to_string(),
         resolution: set.resolution,
         normal_format: project.normal_format,
         channels: set.channels.clone(),
-        spec_gloss: d.spec_gloss,
-        parallax: d.parallax,
-        ior: d.ior,
-        scatter_color: d.scatter_color,
-        scatter_radius: d.scatter_radius,
+        spec_gloss: display.spec_gloss,
+        parallax: display.parallax,
+        ior: display.ior,
+        scatter_color: display.scatter_color,
+        scatter_radius: display.scatter_radius,
     };
-    let t = validated(t).map_err(|e| bad(CMD, e))?;
-    let lib = &mut s.templates;
-    let existing = lib.list.iter().position(|template| same(&template.name, &t.name));
-    if existing.is_none() && lib.list.len() >= MAX_USER_TEMPLATES {
+
+    let template = validated(template).map_err(|e| bad(CMD, e))?;
+    let existing = s.templates.list.iter().position(|entry| same(&entry.name, &template.name));
+    if existing.is_none() && s.templates.list.len() >= MAX_USER_TEMPLATES {
         return Err(bad(CMD, format!("at most {MAX_USER_TEMPLATES} user templates")));
     }
 
-    let path = write(lib, &t, strp(p, "path")).map_err(|e| bad(CMD, e))?;
-    let reply = json!({ "name": t.name, "path": path });
+    let path = write(s, &template, strp(p, "path")).map_err(|e| bad(CMD, e))?;
+    let reply = json!({ "name": template.name, "path": path });
     if let Some(index) = existing {
-        lib.list[index] = t;
+        s.templates.list[index] = template;
     } else {
-        lib.list.push(t);
+        s.templates.list.push(template);
     }
 
     Ok(reply)
 }
 
-/// Write the chosen file, or mirror a template to the configured library by default.
 #[cfg(not(target_arch = "wasm32"))]
-fn write(lib: &UserTemplates, t: &ProjectTemplate, chosen_path: Option<&str>) -> std::result::Result<Option<String>, String> {
+fn is_template_file(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn same_directory(parent: &Path, directory: &Path) -> bool {
+    // Resolve aliases on the folder without following a link at the template file
+    parent == directory
+        || std::fs::canonicalize(parent.join(".")).is_ok_and(|parent| std::fs::canonicalize(directory.join(".")).is_ok_and(|directory| parent == directory))
+}
+
+/// Write the chosen file, or reuse the configured library's backing file on replacement.
+#[cfg(not(target_arch = "wasm32"))]
+fn write(session: &mut Session, template: &ProjectTemplate, chosen_path: Option<&str>) -> std::result::Result<Option<String>, String> {
+    let directory = session.templates.dir.as_deref();
+    let template_key = template.name.to_ascii_lowercase();
     let path = if let Some(path) = chosen_path {
-        std::path::PathBuf::from(path)
-    } else if let Some(dir) = &lib.dir {
-        dir.join(format!("{}.json", texturecraft_formats::export::sanitize_file_stem(&t.name)))
+        PathBuf::from(path)
+    } else if let Some(directory) = directory {
+        session
+            .template_files
+            .get(&template_key)
+            .filter(|file| file.parent() == Some(directory))
+            .cloned()
+            .unwrap_or_else(|| directory.join(format!("{}.json", texturecraft_formats::export::sanitize_file_stem(&template.name))))
     } else {
         return Ok(None);
     };
 
-    if let Some(dir) = &lib.dir
-        && path.parent() == Some(dir.as_path())
+    if let Some(directory) = directory
+        && path.parent() == Some(directory)
     {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(directory).map_err(|e| format!("cannot create {}: {e}", directory.display()))?;
     }
 
-    let json = serde_json::to_string_pretty(t).map_err(|e| e.to_string())?;
+    let json = serde_json::to_string_pretty(template).map_err(|e| e.to_string())?;
     texturecraft_formats::write_atomic(&path, json.as_bytes()).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+
+    // Only files the library can reload become backing files
+    if let Some(directory) = directory
+        && is_template_file(&path)
+        && let Some(file_name) = path.file_name()
+        && path.parent().is_some_and(|parent| same_directory(parent, directory))
+    {
+        let backing_file = directory.join(file_name);
+        session.template_files.retain(|name, file| name == &template_key || *file != backing_file);
+        session.template_files.insert(template_key, backing_file);
+    }
+
     Ok(Some(path.display().to_string()))
 }
 
 #[cfg(target_arch = "wasm32")]
-fn write(_: &UserTemplates, _: &ProjectTemplate, chosen_path: Option<&str>) -> std::result::Result<Option<String>, String> {
+fn write(_: &mut Session, _: &ProjectTemplate, chosen_path: Option<&str>) -> std::result::Result<Option<String>, String> {
     if chosen_path.is_some() {
         return Err("saving to a path is only available on the desktop".into());
     }
@@ -377,6 +421,50 @@ mod tests {
         assert!(destination.is_file());
         assert!(session.load_templates(library).is_empty());
         assert_eq!(session.template("First").unwrap().resolution, 128);
+    }
+
+    #[test]
+    fn replacing_a_template_reuses_its_library_file() {
+        let mut session = Session::new_project("Template", texturecraft_geom::primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let library = temporary.path().join("templates");
+        let backing_file = library.join("A.json");
+        session.load_templates(library.clone());
+        execute(&mut session, "project.template.save", &json!({"name": "Starter", "path": backing_file})).unwrap();
+
+        execute(&mut session, "textureSet.resolution", &json!({"resolution": 256})).unwrap();
+        let saved = execute(&mut session, "project.template.save", &json!({"name": "Starter"})).unwrap();
+        assert_eq!(saved["path"], backing_file.display().to_string());
+        assert!(!library.join("Starter.json").exists());
+        assert!(session.load_templates(library.clone()).is_empty());
+        assert_eq!(session.template("Starter").unwrap().resolution, 256);
+
+        execute(&mut session, "project.new", &json!({"resolution": 512})).unwrap();
+        let saved = execute(&mut session, "project.template.save", &json!({"name": " starter "})).unwrap();
+        assert_eq!(saved["path"], backing_file.display().to_string());
+        assert!(session.load_templates(library).is_empty());
+        assert_eq!(session.template("Starter").unwrap().resolution, 512);
+    }
+
+    #[test]
+    fn exporting_a_template_leaves_its_library_file_as_the_default() {
+        let mut session = Session::new_project("Template", texturecraft_geom::primitives::material_ball(), "builtin:material_ball", None, 128).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let library = temporary.path().join("templates");
+        let backing_file = library.join("A.json");
+        let exported_file = temporary.path().join("Starter.json");
+        session.load_templates(library.clone());
+        execute(&mut session, "project.template.save", &json!({"name": "Starter", "path": backing_file})).unwrap();
+        execute(&mut session, "project.template.save", &json!({"name": "Starter", "path": exported_file})).unwrap();
+        let exported_bytes = std::fs::read(&exported_file).unwrap();
+
+        execute(&mut session, "textureSet.resolution", &json!({"resolution": 256})).unwrap();
+        let saved = execute(&mut session, "project.template.save", &json!({"name": "Starter"})).unwrap();
+
+        assert_eq!(saved["path"], backing_file.display().to_string());
+        assert_eq!(std::fs::read(&exported_file).unwrap(), exported_bytes);
+        assert!(session.load_templates(library).is_empty());
+        assert_eq!(session.template("Starter").unwrap().resolution, 256);
     }
 
     #[test]
