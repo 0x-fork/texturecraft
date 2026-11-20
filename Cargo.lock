@@ -953,6 +953,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-psd"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=b130ac1fa44f923c3024884ab8ceb5ccdb88f15f#b130ac1fa44f923c3024884ab8ceb5ccdb88f15f"
+dependencies = [
+ "encoding_rs",
+ "flate2",
+ "rayon",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-quit"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=390fe98b0dd3fb84db7c3af7cbd958db4e8cc585#390fe98b0dd3fb84db7c3af7cbd958db4e8cc585"
@@ -4685,6 +4696,7 @@ dependencies = [
  "craft-materialx",
  "craft-mcmat",
  "craft-mesh",
+ "craft-psd",
  "craft-tcraft",
  "craft-usd",
  "craft-zip 0.1.0 (git+https://github.com/storytold/craft-libs?rev=5631e99fe126cffb74c673eb458db04299f2bb9b)",

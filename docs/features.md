@@ -164,13 +164,19 @@ Everything TextureCraft does today, by area. What's still missing is in [`ROADMA
 - **Export presets** for glTF PBR Metal Roughness, Unreal Engine (packed), Unity HDRP (mask map),
   Unity Standard, Blender (Principled BSDF), Godot 4 (ORM), OpenPBR (with the coat, fuzz,
   anisotropy, transmission and subsurface maps), separate maps, mesh maps and document channels, in
-  PNG, JPEG, TGA, TIFF, BMP, WEBP, EXR or HDR at 8, 16 or 32 bits, with UV padding, size
-  override and OpenGL or DirectX normals.
+  PNG, JPEG, JNG, PGM, TGA, TIFF, BMP, WEBP, PSD, EXR or HDR at 8 bits (optionally dithered), 16
+  bits or 32-bit float (TIFF, EXR, HDR; 16-bit half float for EXR), with UV padding (dilation,
+  infinite, or dilation + diffusion), size override and OpenGL or DirectX normals.
 - **Output template editor:** build your own presets with per-channel packing, converted maps and per-channel inversion,
-  and share them as JSON.
+  and share them as JSON. Right-click a preset to rename, duplicate or remove it; F2 renames.
 - **Export panel** on the right bar: *Export Mesh...* asks for the mesh export options, then for
   the file; *Export Textures...* opens the Export textures window (Settings, Output templates and
-  List of exports, *Include all*, *Save settings* and the number of textures the export writes).
+  List of exports, *Include all*, *Save settings* and the number of textures the export writes;
+  *Cancel* goes back to the settings the window opened with, *Maximum size for all Texture Sets*
+  exports every set at the largest set's size; a click on a texture set overrides its template,
+  file type, size or padding, and each output map's file type and bit depth, or leaves a map out;
+  Export shows the progress, a console of its steps and the written files, and can be canceled
+  between texture sets).
 - **Mesh export** to OBJ with an MTL material library and its maps (PBR extension keys for
   roughness, metallic, normal and coat; UV-tiled sets keep their UDIM UVs and export their maps
   through Export textures), textured GLB (with clear coat and sheen) and USD (with clear coat).
