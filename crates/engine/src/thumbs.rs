@@ -283,6 +283,9 @@ impl ThumbService {
 
         if let Some(snapshot) = &self.snapshot {
             self.cache.retain(|target, _| snapshot.has(*target));
+
+            // Late requests still need a picture from this generation
+            self.queue.extend(self.wanted.iter().copied().filter(|target| snapshot.has(*target)));
         } else {
             self.cache.clear();
         }
@@ -547,6 +550,26 @@ mod tests {
         service.poll(&session);
 
         assert_eq!(jobs.try_recv().map(|job| job.target).ok(), Some(target), "the late request is dispatched, not dropped");
+    }
+
+    #[test]
+    fn a_late_request_survives_replacing_its_snapshot() {
+        let mut session = test_session().unwrap();
+        let layer = session.selected_layer().unwrap();
+        let target = ThumbTarget::Content { layer, channel: Channel::BaseColor };
+        let (mut service, jobs, _results) = held_worker();
+        service.begin_frame(&session, 0.0);
+        service.poll(&session);
+        service.get(&session, target);
+        crate::execute(&mut session, "layer.rename", &serde_json::json!({"layer": layer.0, "name": "Changed"})).unwrap();
+
+        service.begin_frame(&session, DEBOUNCE * 2.0);
+        service.poll(&session);
+
+        let job = jobs.try_recv().unwrap();
+
+        assert_eq!(job.target, target);
+        assert_eq!(job.snapshot.project.layer(layer).unwrap().name, "Changed");
     }
 
     #[test]

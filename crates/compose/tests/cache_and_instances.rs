@@ -663,6 +663,7 @@ fn kept_filter_fields_are_not_used_after_an_edit_or_under_a_live_stroke() {
     // Keep fields for the remaining tiles
     cache.ahead = rest.to_vec();
     let mut out = run(&fixture, 0, first, Some(&mut cache));
+
     assert!(cache.holds_fields());
 
     // Changing the hot mask must invalidate the retained fields

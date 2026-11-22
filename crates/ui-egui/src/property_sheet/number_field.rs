@@ -59,7 +59,7 @@ impl PropertySheet<'_> {
             let left = control.left() + index as f32 * (width + FIELD_GAP);
             let rect = Rect::from_min_size(pos2(left, control.top()), vec2(width, control.height()));
             if let Some(merge) = self.number_field(rect, label, field) {
-                edited = Some((index, merge));
+                edited = Some((index, edited.is_none_or(|(_, previous_merge)| previous_merge) && merge));
             }
         }
 
@@ -86,6 +86,7 @@ impl PropertySheet<'_> {
         painter.rect(rect, CornerRadius::same(CONTROL_RADIUS), fill, Stroke::new(1.0, border), StrokeKind::Inside);
         let glyph = if *linked { ic::LINK_SIMPLE_HORIZONTAL } else { ic::LINK_SIMPLE_HORIZONTAL_BREAK };
         painter.text(rect.center(), Align2::CENTER_CENTER, glyph, FontId::proportional(ICON_SIZE), tokens.text);
+        self.paint_control_focus(&response);
         response.clicked()
     }
 
@@ -127,7 +128,7 @@ impl PropertySheet<'_> {
                 return None;
             }
 
-            // Leaving the field as it opened changes nothing: no undo step, no rounding to the shown decimals, no overwriting a value changed meanwhile
+            // An unchanged draft must preserve full precision and any intervening edit
             if untouched || text == shown_number(field.value, decimals) {
                 return None;
             }
@@ -157,6 +158,7 @@ impl PropertySheet<'_> {
             painter.rect_stroke(rect, CornerRadius::same(CONTROL_RADIUS), Stroke::new(1.0, tokens.button_border), StrokeKind::Inside);
         }
 
+        self.paint_control_focus(&response);
         if response.clicked() {
             self.start_typing(typing_id, shown_number(field.value, decimals));
             return None;
@@ -165,8 +167,13 @@ impl PropertySheet<'_> {
         if response.dragged() {
             crate::pointer_lock::ask_for_hold(self.ui.ctx());
         }
-        let delta = response.drag_delta().x;
-        let moved = response.dragged() && delta != 0.0;
+        let delta = if response.drag_stopped() {
+            let scaling = self.ui.ctx().layer_transform_from_global(response.layer_id).map_or(1.0, |transform| transform.scaling);
+            self.ui.input(|input| input.pointer.delta().x) * scaling
+        } else {
+            response.drag_delta().x
+        };
+        let moved = delta != 0.0;
         if moved {
             field.value += delta * field.speed;
         }

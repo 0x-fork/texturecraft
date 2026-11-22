@@ -683,7 +683,8 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         let set = project.locate(source).and_then(|(set, _, _)| project.texture_sets.get(set)).map(|set| set.name.as_str()).unwrap_or("?");
         project.layers.get(&source).map_or_else(|| tr("missing source").to_string(), |source_layer| format!("{} · {set}", source_layer.name))
     });
-    // Only what the row draws of the mask (whether it is on, its background, its effect count): no clone per row per frame
+
+    // Read just the visible mask summary to avoid cloning every row
     let mask =
         project.layers.get(&project.mask_owner(layer.id)).and_then(|owner| owner.mask.as_ref()).map(|mask| (mask.enabled, mask.background, mask.effects.len()));
     let blend = project.content_layer(layer.id).and_then(|content| content.blend(channel));
@@ -1864,7 +1865,8 @@ pub(crate) fn properties_title(app: &TextureCraftApp) -> String {
     let what = match (app.session.selected_layer().and_then(|id| project.layers.get(&id)), app.session.target) {
         // Polygon fill keeps its own properties wherever it can fill
         _ if tool == Tool::PolygonFill && tool_usable => tr(tool.label()).to_string(),
-        // The effect's type, not its own name (every filter reads "Filter")
+
+        // Filters share a title even when the effect is renamed
         (Some(_), StackTarget::Effect(effect)) => project.effect(effect).map(|(_, found)| tr(effect_type_label(&found.kind)).to_string()).unwrap_or_default(),
         (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => tr("Fill").to_string(),
         (Some(layer), StackTarget::Content) if layer.is_group() => tr("Folder").to_string(),
@@ -1891,13 +1893,19 @@ pub(crate) fn properties(app: &mut TextureCraftApp, ui: &mut Ui) {
     if let Some(tabs) = properties_fill_tabs(app) {
         crate::property_sheet::section_tabs(ui, scope, 0, &tabs);
     }
-    let area = egui::ScrollArea::vertical().id_salt(("props", properties_place(app))).auto_shrink([false, false]);
-    crate::property_sheet::in_scope(ui, scope, |ui| properties_scrolled(app, ui, area, PastEnd::Always));
+
+    let selection = properties_selection(app);
+    crate::property_sheet::in_scope(ui, scope, |ui| {
+        let area = egui::ScrollArea::vertical().id_salt("props").auto_shrink([false, false]);
+        let area = app.properties_scroll.prepare(area, ui.scope_id(), selection);
+        let offset_points = properties_scrolled(app, ui, area, PastEnd::Always);
+        app.properties_scroll.remember(selection, offset_points);
+    });
 }
 
-/// What the docked Properties list keeps its own scroll place for: the selected layer and the part of it edited, none for the tool
-fn properties_place(app: &TextureCraftApp) -> Option<(LayerId, StackTarget)> {
-    // A short panel in between would clamp a shared place back to the top; a greyed tool shows the layer's own sheet
+/// The layer and target whose scroll offset is shown, or the polygon fill tool's own offset
+fn properties_selection(app: &TextureCraftApp) -> crate::property_sheet::PropertiesSelection {
+    // Disabled polygon fill shows the selected layer's settings
     if app.session.tool.tool == Tool::PolygonFill && app.session.tool_usable(Tool::PolygonFill) {
         return None;
     }
@@ -1905,20 +1913,22 @@ fn properties_place(app: &TextureCraftApp) -> Option<(LayerId, StackTarget)> {
     app.session.selected_layer().map(|layer| (layer, app.session.target))
 }
 
-/// The sections in `area`, leaving the solid bar's room even without it, so the bar coming in refits no row (flipped it every frame)
-pub(crate) fn properties_scrolled(app: &mut TextureCraftApp, ui: &mut Ui, area: egui::ScrollArea, past_end: PastEnd) {
+/// Draw the sections, reserve room for the scrollbar and return the clamped vertical offset
+pub(crate) fn properties_scrolled(app: &mut TextureCraftApp, ui: &mut Ui, area: egui::ScrollArea, past_end: PastEnd) -> f32 {
     let sheet_width = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0);
-    area.show(ui, |ui| {
+    let output = area.show(ui, |ui| {
         ui.set_max_width(sheet_width);
         crate::property_sheet::forget_sections(ui);
         properties_contents(app, ui);
 
-        // Blank space under the rows lets the last section's top reach the top of the list, as the reference panel scrolls
+        // Leave room to align the last section with the top of the list
         let scrolls = ui.min_rect().height() > ui.clip_rect().height();
         if past_end == PastEnd::Always || scrolls {
             ui.add_space(crate::property_sheet::room_past_end(ui));
         }
     });
+
+    output.state.clamped_offset().y
 }
 
 /// The tabs over the panel when it shows a fill layer's sections, which they jump between
@@ -1938,7 +1948,7 @@ pub(crate) fn properties_fill_tabs(app: &TextureCraftApp) -> Option<[(&'static s
 }
 
 /// Room around the Properties rows not yet laid out by the property sheet: the sheet's side padding, so both start under the panel's name
-const LEGACY_BODY_MARGIN: egui::Margin = egui::Margin::symmetric(crate::property_sheet::PAD as i8, 4);
+const LEGACY_BODY_MARGIN: egui::Margin = egui::Margin::symmetric(crate::property_sheet::SIDE_PADDING_POINTS as i8, 4);
 
 /// Lays out `body` with the other panels' margin
 fn legacy_body(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
@@ -1952,27 +1962,39 @@ pub(crate) fn properties_contents(app: &mut TextureCraftApp, ui: &mut Ui) {
         return;
     }
 
-    let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id).cloned());
+    let selected = app.session.selected_layer();
     let tool = app.session.tool.tool;
     let tool_usable = app.session.tool_usable(tool);
     let tokens = Tokens::get(ui.ctx());
 
-    match (&selected, app.session.target) {
-        // Polygon fill shows its own settings and says what it fills into, wherever it can fill
+    match (selected.and_then(|id| app.session.project().layers.get(&id)), app.session.target) {
+        // Polygon fill keeps its own settings on any target it can fill
         _ if tool == Tool::PolygonFill && tool_usable => legacy_body(ui, |ui| polygon_fill_properties(app, ui)),
-        (Some(layer), StackTarget::Effect(effect)) => effect_properties(app, ui, layer, effect),
-        (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => fill_properties(app, ui, layer),
+        (Some(layer), StackTarget::Effect(effect)) => {
+            let snapshot = layer.clone();
+            effect_properties(app, ui, &snapshot, effect);
+        }
+        (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => {
+            let snapshot = layer.clone();
+            fill_properties(app, ui, &snapshot);
+        }
         (Some(layer), StackTarget::Content) if layer.is_group() => legacy_body(ui, |ui| {
             ui.label(RichText::new(tr("A folder blends its children (pass-through). Set per-channel opacity in the layer rows.")).color(tokens.text_dim));
         }),
-        (Some(layer), StackTarget::Content) if layer.instance_source().is_some() => legacy_body(ui, |ui| instance_properties(app, ui, layer)),
-        (Some(layer), StackTarget::Mask) => legacy_body(ui, |ui| {
-            height_mask_section(app, ui, layer);
-            if tool_usable {
-                ui.separator();
-                tool_properties(app, ui);
-            }
-        }),
+        (Some(Layer { kind: LayerKind::Instance { source }, .. }), StackTarget::Content) => {
+            let source = *source;
+            legacy_body(ui, |ui| instance_properties(app, ui, source));
+        }
+        (Some(layer), StackTarget::Mask) => {
+            let layer_id = layer.id;
+            legacy_body(ui, |ui| {
+                height_mask_section(app, ui, layer_id);
+                if tool_usable {
+                    ui.separator();
+                    tool_properties(app, ui);
+                }
+            });
+        }
         (None, _) if !tool_usable => legacy_body(ui, |ui| {
             ui.label(RichText::new(tr("Select a layer to paint on")).color(tokens.text_dim));
         }),
@@ -1981,12 +2003,12 @@ pub(crate) fn properties_contents(app: &mut TextureCraftApp, ui: &mut Ui) {
 }
 
 /// An instance draws its source: point there for edits.
-fn instance_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
-    let tk = Tokens::get(ui.ctx());
-    let Some(src) = layer.instance_source() else { return };
-    let p = &app.session.doc.project;
-    let name = p.layers.get(&src).map_or_else(|| tr("a missing layer").to_string(), |l| format!("\"{}\"", l.name));
-    let set = p.locate(src).and_then(|(ts, _, _)| p.texture_sets.get(ts)).map(|t| t.name.clone()).unwrap_or_default();
+fn instance_properties(app: &mut TextureCraftApp, ui: &mut Ui, source: LayerId) {
+    let tokens = Tokens::get(ui.ctx());
+    let project = app.session.project();
+    let name = project.layers.get(&source).map_or_else(|| tr("a missing layer").to_string(), |layer| format!("\"{}\"", layer.name));
+    let set = project.locate(source).and_then(|(index, _, _)| project.texture_sets.get(index)).map(|set| set.name.as_str()).unwrap_or_default();
+
     ui.label(caption(tr("Instance")));
     ui.label(
         RichText::new(format!(
@@ -1994,33 +2016,35 @@ fn instance_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
             ic::LINK,
             trf("Draws {name} of texture set \"{set}\". Edits to the source show in every instance.", &[("name", &name), ("set", &set)])
         ))
-        .color(tk.text_dim),
+        .color(tokens.text_dim),
     );
+
     if ui.button(tr("Select source")).clicked() {
-        app.run("layer.select", json!({"layer": src.0}));
+        app.run("layer.select", json!({"layer": source.0}));
     }
 }
 
 /// Mask with height: the layer's height shapes its mask transitions.
-fn height_mask_section(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
-    let id = layer.id.0;
-    let hm = app.session.doc.project.content_layer(layer.id).map(|l| l.height_mask).unwrap_or_default();
+fn height_mask_section(app: &mut TextureCraftApp, ui: &mut Ui, layer: LayerId) {
+    let height_mask = app.session.project().content_layer(layer).map(|source| source.height_mask).unwrap_or_default();
+
     section(ui, "sec_height_mask", tr("Mask with height"), true, |ui| {
-        let mut on = hm.enabled;
+        let mut on = height_mask.enabled;
         if ui
             .checkbox(&mut on, tr("Combine with the layer's height"))
             .on_hover_text(tr("Partial mask values follow the layer's height: high parts show first"))
             .changed()
         {
-            app.run("layer.set", json!({"layer": id, "heightMask": {"enabled": on}}));
+            app.run("layer.set", json!({"layer": layer.0, "heightMask": {"enabled": on}}));
         }
-        ui.add_enabled_ui(hm.enabled, |ui| {
-            let (mut contrast, mut offset) = (hm.contrast, hm.offset);
+
+        ui.add_enabled_ui(height_mask.enabled, |ui| {
+            let (mut contrast, mut offset) = (height_mask.contrast, height_mask.offset);
             if let Some(merge) = slider_edit(ui, tr("Contrast"), &mut contrast, 0.0..=16.0, 2) {
-                app.run("layer.set", json!({"layer": id, "heightMask": {"contrast": contrast}, "merge": merge}));
+                app.run("layer.set", json!({"layer": layer.0, "heightMask": {"contrast": contrast}, "merge": merge}));
             }
             if let Some(merge) = slider_edit(ui, tr("Height offset"), &mut offset, -1.0..=1.0, 2) {
-                app.run("layer.set", json!({"layer": id, "heightMask": {"offset": offset}, "merge": merge}));
+                app.run("layer.set", json!({"layer": layer.0, "heightMask": {"offset": offset}, "merge": merge}));
             }
         });
     });
@@ -2053,6 +2077,7 @@ const BRUSH_PREVIEW_GAP: f32 = 4.0;
 
 fn tool_properties(app: &mut TextureCraftApp, ui: &mut Ui) {
     let tokens = Tokens::get(ui.ctx());
+
     // Brush preview: a stroke and a sphere with the tool's material
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), BRUSH_PREVIEW_HEIGHT), Sense::hover());
     let painter = ui.painter();

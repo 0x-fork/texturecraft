@@ -98,6 +98,7 @@ fn a_negative_projector_scale_keeps_its_mirror() {
     let layer = checker_fill(&mut s);
     set(&mut s, layer, json!({"projection": "spherical", "projectorScale": [-1.5, 0.0, 5000.0]}));
     let Projection::Spherical { projector, .. } = projection(&s, layer) else { panic!("a spherical projection") };
+
     assert_eq!(projector.scale, [-1.5, 0.001, 1000.0], "the mirror kept, each axis's size within the scale limits");
 
     set(&mut s, layer, json!({"projectorScale": -0.0001}));
@@ -123,6 +124,7 @@ fn match_per_uv_tile_repeats_the_source_once_per_tile() {
         (tile(0), tile(1))
     };
     let (left, right) = tiles(&mut s);
+
     assert_ne!(left, right, "a UV projection runs on into the next tile");
 
     set(&mut s, layer, json!({"projection": "uvTile"}));
@@ -196,10 +198,12 @@ fn backface_culling_keeps_a_planar_projection_off_faces_turned_away() {
     execute(&mut s, "layer.visible", &json!({"layer": layer.0, "visible": false})).unwrap();
     let empty = snapshot(&mut s);
     execute(&mut s, "layer.visible", &json!({"layer": layer.0, "visible": true})).unwrap();
+
     // Without depth culling the planar projection reaches the far side, so only backface culling can take it off
     set(&mut s, layer, json!({"projection": "planar", "axis": 2, "depthCulling": false}));
     let plain = snapshot(&mut s);
     let (far, near) = (facing_z(&s, -1.1, -0.05), facing_z(&s, 0.05, 1.1));
+
     assert!(!far.is_empty() && !near.is_empty());
     assert!(far.iter().any(|&i| plain[i] != empty[i]), "without culling the projection reaches the far side");
 
@@ -235,6 +239,7 @@ fn saved_decals_load_as_planar_projections_placed_on_the_surface() {
     saved["projection"] = json!({ "Decal": frame });
     let fill: Fill = serde_json::from_value(saved).unwrap();
     let Projection::Planar { placed: Some(placed), projector, .. } = fill.projection else { panic!("{:?}", fill.projection) };
+
     assert_eq!(placed, frame);
     assert_eq!(projector.crop, ShapeCrop::Cropped);
     assert_eq!(projector.backface, Backface { on: true, angle: 90.0, hardness: 0.5 });
@@ -281,6 +286,7 @@ fn warp_projection_bends_to_its_corners_reaches_its_depth_and_resets_its_frame()
     execute(&mut s, "layer.visible", &json!({"layer": layer.0, "visible": true})).unwrap();
     set(&mut s, layer, json!({"projection": "warp"}));
     let Projection::Warp { frame, corners, depth, .. } = projection(&s, layer) else { panic!("{:?}", projection(&s, layer)) };
+
     assert_eq!((corners, depth), (Projection::FRAME_CORNERS, Projection::WARP_DEPTH));
     assert_eq!((frame.normal, frame.up), ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), "seen from the front");
     assert!(frame.size.iter().all(|side| (side - 2.0).abs() < 1e-3) && frame.center.iter().all(|c| c.abs() < 1e-3), "around the unit sphere: {frame:?}");
@@ -341,6 +347,7 @@ fn depth_culling_keeps_planar_and_warp_projections_off_hidden_surfaces() {
     execute(&mut s, "layer.visible", &json!({"layer": layer.0, "visible": true})).unwrap();
     set(&mut s, layer, json!({"projection": "planar", "axis": 2}));
     let Projection::Planar { projector, .. } = projection(&s, layer) else { panic!("{:?}", projection(&s, layer)) };
+
     assert_eq!(projector.depth, DepthCulling::NEW, "a new planar projection culls by depth");
 
     let culled = snapshot(&mut s);
@@ -418,6 +425,7 @@ fn fill_symmetry_mirrors_or_turns_copies_of_a_3d_projection() {
     set(&mut s, layer, json!({"projection": "planar", "axis": 2}));
     let plain = snapshot(&mut s);
     let (far, near) = (facing_z(&s, -1.1, -0.3), facing_z(&s, 0.3, 1.1));
+
     assert_eq!(filled(&far, &plain, &empty), 0);
 
     set(&mut s, layer, json!({"symmetry": true, "symmetryType": "mirror", "symmetryAxis": 2}));
@@ -473,6 +481,7 @@ fn moving_an_axis_planar_places_it_as_its_frame_first() {
     execute(&mut s, "layer.decal.set", &json!({"layer": layer.0})).unwrap();
     let placed = projection(&s, layer);
     let Projection::Planar { placed: Some(frame), projector, .. } = &placed else { panic!("placed: {placed:?}") };
+
     assert_eq!((projector.rotation, projector.scale), ([0.0; 3], [1.0; 3]), "the turn is in the frame now");
 
     let after = snapshot(&mut s);
@@ -497,6 +506,38 @@ fn moving_an_axis_planar_places_it_as_its_frame_first() {
     set(&mut s, layer, json!({"projection": "spherical"}));
 
     assert!(execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "rotation": 30})).is_err(), "a spherical projection has no frame");
+}
+
+#[test]
+fn placing_a_cropped_axis_planar_preserves_coverage_through_save_and_reload() {
+    let mesh = primitives::builtin("sphere").unwrap();
+    let mut session = Session::new_project("Axis planar", mesh, "builtin:sphere", None, 128).unwrap();
+    let layer = checker_fill(&mut session);
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 128])).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let image = session.import_resource_bytes("translucent.png", png.into_inner()).unwrap();
+    execute(&mut session, "layer.fill.set", &json!({"layer": layer.0, "channel": "baseColor", "image": image})).unwrap();
+    set(&mut session, layer, json!({"projection": "planar", "axis": 2, "scale": 1.8, "shapeCrop": "cropped", "depthCulling": false}));
+    let before = snapshot(&mut session);
+
+    assert!(before.iter().any(|&red| red > 0.99), "the axis fill ignores source alpha in its crop");
+    assert!(before.iter().any(|&red| red < 0.6), "the shape still crops coverage");
+
+    execute(&mut session, "layer.decal.set", &json!({"layer": layer.0})).unwrap();
+    let placed = projection(&session, layer);
+    let after = snapshot(&mut session);
+
+    assert!(placed.placed().is_some());
+    let changed = before.iter().zip(&after).filter(|(before, after)| (*before - *after).abs() > 2.0 / 255.0).count();
+    assert!(changed * 200 < before.len(), "placement changed visible coverage at {changed} texels");
+
+    let bytes = session.to_project_bytes().unwrap();
+    let mut reopened = Session::from_project_bytes(&bytes).unwrap();
+
+    assert_eq!(projection(&reopened, layer), placed);
+    let reloaded = snapshot(&mut reopened);
+    let changed = reloaded.iter().zip(&after).filter(|(reloaded, after)| reloaded != after).count();
+    assert_eq!(changed, 0, "reload changed visible coverage");
 }
 
 /// An axis planar reading a procedural keeps its axis: a placed frame reads the pattern in its own uv, so placing it would move the pattern; a mask fill's pattern stays the same way
@@ -565,7 +606,7 @@ fn a_frame_takes_its_offset_rotation_and_scale_and_folds_its_projector_in_first(
     set(&mut s, layer, json!({"projection": "planar", "axis": 2}));
     execute(&mut s, "layer.decal.set", &json!({"layer": layer.0})).unwrap();
 
-    // Depth culling off: its depth map is drawn along the frame, so a folded turn re-draws it (a few silhouette texels differ)
+    // Disable depth culling here because rerasterizing a turned frame can change silhouette texels
     set(&mut s, layer, json!({"projectorRotation": [0, 0, 30], "projectorScale": 1.25, "depthCulling": false}));
     let turned = snapshot(&mut s);
     let steps = s.history_labels().len();
@@ -573,6 +614,7 @@ fn a_frame_takes_its_offset_rotation_and_scale_and_folds_its_projector_in_first(
     // Moving the frame as shown: the turn and scale are in the frame now, the image where it was
     execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "frameOffset": [0.0, 0.0, 0.0]})).unwrap();
     let Projection::Planar { placed: Some(frame), projector, .. } = projection(&s, layer) else { panic!("still placed") };
+
     assert_eq!((projector.rotation, projector.scale), ([0.0; 3], [1.0; 3]), "folded into the frame");
 
     let (lo, hi) = s.mesh.bounds();
@@ -601,12 +643,25 @@ fn a_frame_takes_its_offset_rotation_and_scale_and_folds_its_projector_in_first(
 
     assert_eq!(snapshot(&mut s), turned, "undo puts the turned projector back");
 
-    for bad in [json!({"frameScale": [1, 2]}), json!({"frameOffset": "x"}), json!({"frameScale": [0, -1, "deep"]})] {
+    let before_invalid_edit = projection(&s, layer);
+    let undo_steps = s.history_labels().len();
+    for bad in [
+        json!({"frameScale": [1, 2]}),
+        json!({"frameOffset": "x"}),
+        json!({"frameScale": [0, -1, "deep"]}),
+        json!({"offset": [0.2, "x", 0.1]}),
+        json!({"offset": 0.1}),
+        json!({"size": [0.1, 0.2, 0.3]}),
+        json!({"size": [0.1, "x"]}),
+    ] {
         let mut params = bad.clone();
         params["layer"] = json!(layer.0);
 
         assert!(execute(&mut s, "layer.decal.set", &params).is_err(), "{bad}");
     }
+
+    assert_eq!(projection(&s, layer), before_invalid_edit);
+    assert_eq!(s.history_labels().len(), undo_steps);
 
     // A collapsed or turned-over scale is clamped to the smallest frame, not refused
     execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "frameScale": [0, -1, 0]})).unwrap();
@@ -700,7 +755,45 @@ fn a_warps_depth_sets_its_projection_depth() {
 
     execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "depth": 0.5})).unwrap();
     let Projection::Warp { frame, depth, .. } = projection(&s, layer) else { panic!("a warp") };
+
     assert!((depth * frame.size[0].max(frame.size[1]) - 0.5).abs() < 1e-5, "reach {depth} × {:?}", frame.size);
+}
+
+#[test]
+fn a_zero_depth_warp_can_move_its_frame() {
+    let mut s = session();
+    let layer = checker_fill(&mut s);
+    set(&mut s, layer, json!({"projection": "warp", "projectionDepth": 0}));
+    let before = projection(&s, layer);
+
+    execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "frameOffset": [0.2, 0, 0], "frameRotation": [0, 10, 0]})).unwrap();
+
+    let Projection::Warp { frame, depth, .. } = projection(&s, layer) else { panic!("a warp") };
+    let original = before.frame().unwrap();
+
+    assert_ne!(frame.center, original.center);
+    assert_ne!(frame.normal, original.normal);
+    assert_eq!(depth, 0.0);
+}
+
+#[test]
+fn a_procedural_mask_keeps_array_placement_scale_separate_from_pattern_scale() {
+    use texturecraft_engine::core::{EffectKind, Source};
+    let mut s = session();
+    let layer = checker_fill(&mut s);
+    let added = execute(&mut s, "effect.add.fill", &json!({"layer": layer.0, "target": "mask", "procedural": "Checker", "scale": 4})).unwrap();
+    let effect = added["effect"].as_u64().unwrap();
+
+    execute(&mut s, "effect.set", &json!({"effect": effect, "scale": [2, 3]})).unwrap();
+    execute(&mut s, "effect.set", &json!({"effect": effect, "scale": 5})).unwrap();
+
+    let (_, effect) = s.doc.project.effect(LayerId(effect)).unwrap();
+    let EffectKind::Fill { source: Source::Procedural { pattern, .. }, projection: Projection::Uv { scale, .. }, .. } = &effect.kind else {
+        panic!("a procedural UV mask fill");
+    };
+
+    assert_eq!(*scale, [2.0, 3.0]);
+    assert_eq!(pattern.scale, 5.0);
 }
 
 /// `depth` at a warp's current reach changes nothing, so it adds no undo step (its frame's unused depth is left alone)
@@ -731,6 +824,7 @@ fn a_warps_frame_scale_keeps_its_projection_depth_in_range() {
 
     execute(&mut s, "layer.decal.set", &json!({"layer": layer.0, "frameScale": [0.0001, 0.0001, 10]})).unwrap();
     let Projection::Warp { depth, .. } = projection(&s, layer) else { panic!("a warp") };
+
     assert!(depth <= max_depth, "Projection Depth {depth} past {max_depth}");
 }
 
@@ -758,6 +852,7 @@ fn reset_fill_settings_keeps_the_projection_and_restores_its_defaults_in_one_und
         _ => panic!("a fill layer"),
     };
     let changed = fill(&s);
+
     assert!(!texturecraft_engine::fill_reset_cmds::at_defaults(&changed.projection, changed.sampling));
 
     execute(&mut s, "layer.fill.resetProjection", &json!({"layer": layer.0})).unwrap();
@@ -801,6 +896,7 @@ fn reset_fill_settings_keeps_a_warp_frame_and_restores_its_settings() {
         json!({"warpCorners": [[-0.6, 0.5], [0.5, 0.6], [0.4, -0.5], [-0.5, -0.4]], "projectionDepth": 0.5, "tiling": [2, 2], "rotation": 45, "shapeCrop": "extendsOutside"}),
     );
     let Projection::Warp { frame: moved, .. } = projection(&s, layer) else { panic!("a warp") };
+
     assert_ne!(moved, fitted, "the frame was moved");
 
     execute(&mut s, "layer.fill.resetProjection", &json!({"layer": layer.0})).unwrap();

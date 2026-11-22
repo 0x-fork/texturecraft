@@ -23,7 +23,7 @@ pub(crate) fn gray_slider(ui: &mut Ui, label: &str, value: &mut f32) -> Option<b
     ui.horizontal(|ui| {
         let mut edit = typed;
 
-        // The invert button's own width (its glyph and padding), so the bar leaves exactly its room and it ends on the value above
+        // Reserve the invert button's measured width to align the bar with its value
         let glyph = ui.painter().layout_no_wrap(ic::CIRCLE_HALF.to_owned(), egui::TextStyle::Button.resolve(ui.style()), egui::Color32::WHITE);
         let button_width = glyph.size().x + ui.spacing().button_padding.x * 2.0;
         let width = (ui.available_width() - button_width - ui.spacing().item_spacing.x).max(MIN_BAR_WIDTH);

@@ -109,6 +109,7 @@ pub(crate) fn toolbar_controls(app: &mut TextureCraftApp, ui: &mut Ui) {
         let clicked_at = ui.input(|input| input.pointer.interact_pos().filter(|_| input.pointer.any_click()));
         let click_outside = clicked_at
             .is_some_and(|at| ui.ctx().layer_id_at(at).is_none_or(|layer| layer != shown.response.layer_id && layer.order != egui::Order::Foreground));
+
         if click_outside || crate::popup_drag::drag_outside_popups(ui.ctx()) {
             open = false;
         }

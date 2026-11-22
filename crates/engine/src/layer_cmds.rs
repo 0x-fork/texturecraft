@@ -645,6 +645,7 @@ fn fill_source_from(
 
     if let Some(name) = strp(params, "procedural") {
         let kind = ProceduralKind::parse(name).ok_or_else(|| bad(FILL_SET, format!("unknown procedural `{name}`")))?;
+
         // A pattern of the same kind keeps what `params` do not give; another kind starts from its defaults
         let current = fill_mut(session, target)?.sources.get(&channel).cloned();
         return Ok(Some(procedural_from(params, kind, current.as_ref(), [low, high])?));

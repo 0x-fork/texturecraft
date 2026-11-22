@@ -78,6 +78,7 @@ impl PropertySheet<'_> {
 
         let color = self.reset_glyph_color(changed, response.hovered(), self.tokens.text_strong);
         self.ui.painter().text(glyph.center(), Align2::CENTER_CENTER, ic::CLOCK_COUNTER_CLOCKWISE, FontId::proportional(RESET_ICON_SIZE), color);
+        self.paint_control_focus(&response);
         changed && response.clicked()
     }
 
@@ -128,7 +129,7 @@ impl PropertySheet<'_> {
         let rect = self.take(SECTION_CAPTION_LINE);
         self.sections.push((title.to_owned(), rect.top()));
         if super::section_tabs::take_jump(self.ui, title) {
-            // Scroll by the distance itself: a top-aligned scroll_to_rect stops short by the scroll area's item spacing, which the sheet cannot see
+            // Scroll by distance because top alignment includes the scroll area's item spacing
             let hairline = rect.top() - SECTION_RULE_TO_CAPTION;
             let to_top = self.ui.clip_rect().top() - hairline;
             self.ui.scroll_with_delta(egui::vec2(0.0, to_top));

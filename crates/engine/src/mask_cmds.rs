@@ -595,7 +595,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
         _ => None,
     };
 
-    // `input` names a generator input that `inputImage`, `inputValue` or `inputAnchor` replaces, or `inputBaked` puts back
+    // The input key identifies the generator slot to replace or restore
     let input = match session.doc.project.effect(effect) {
         Some((owner, Effect { kind: EffectKind::Generator(_), .. })) => generator_input_param(session, owner, params)?,
         _ => None,
@@ -687,16 +687,9 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
                     *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 }
 
-                // While the fill reads a pattern, `scale` is the pattern's and leaves the projection alone
-                let mut placement = params.clone();
-                if matches!(source, Source::Procedural { .. })
-                    && let Some(fields) = placement.as_object_mut()
-                {
-                    fields.remove("scale");
-                }
-
-                // Preserve projection fields that the edit does not supply
-                *projection = projection_from(&placement, CMD, Some(&*projection), || crate::warp_cmds::fitted_frame(&mesh))?;
+                // A scalar changes pattern frequency while an array places the projection
+                let pattern_scale = matches!(source, Source::Procedural { .. }) && params.get("scale").is_some_and(Value::is_number);
+                *projection = projection_from_fields(params, CMD, Some(&*projection), !pattern_scale, || crate::warp_cmds::fitted_frame(&mesh))?;
             }
             EffectKind::ColorSelection { colors, tolerance } => crate::color_selection_cmds::apply_params(params, colors, tolerance)?,
             EffectKind::Compare { tolerance, .. } => {
@@ -726,7 +719,9 @@ fn fill_pattern(command: &str, params: &Value, current: &Source) -> Result<Optio
         }
         None => {
             let has_settings = crate::procedural_params::has_pattern_settings(params);
-            let edits_pattern = has_settings || ["scale", "seed", "contrast", "balance", "invert"].iter().any(|key| params.get(key).is_some());
+            let edits_pattern = has_settings
+                || params.get("scale").is_some_and(Value::is_number)
+                || ["seed", "contrast", "balance", "invert"].iter().any(|key| params.get(key).is_some());
             match current {
                 Some(pattern) if edits_pattern => pattern.clone(),
                 None if has_settings => {

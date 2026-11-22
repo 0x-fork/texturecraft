@@ -101,7 +101,7 @@ impl PropertySheet<'_> {
         response.widget_info(|| WidgetInfo::slider(true, f64::from(*value), &label));
 
         let mut moved = false;
-        if (response.dragged() || response.clicked())
+        if (response.dragged() || response.drag_stopped() || response.clicked())
             && let Some(pointer) = response.interact_pointer_pos()
         {
             let picked = kept_in(minimum + (pointer.x - track.start) / length * span, range);
@@ -129,6 +129,7 @@ impl PropertySheet<'_> {
         }
         let outline = if response.hovered() || response.dragged() { tokens.accent } else { tokens.text };
         painter.circle(pos2(knob_x, track.center_y), KNOB_RADIUS, tokens.panel, Stroke::new(KNOB_STROKE, outline));
+        self.paint_control_focus(&response);
         edit
     }
 
@@ -202,6 +203,7 @@ impl PropertySheet<'_> {
             if response.hovered() {
                 self.value_line(rect.left(), right, center_y, tokens.field_border);
             }
+            self.paint_control_focus(&response);
             if response.clicked() {
                 self.start_typing(field_id, seeded());
             }
@@ -222,7 +224,7 @@ impl PropertySheet<'_> {
             return None;
         }
 
-        // Leaving the field as it opened changes nothing: no undo step, no rounding to the shown decimals, no overwriting a value changed meanwhile
+        // An unchanged draft must preserve full precision and any intervening edit
         if untouched || typed_text == seeded() {
             return None;
         }

@@ -47,9 +47,11 @@ fn restarted_rearranged() -> Harness<'static, TextureCraftApp> {
     first.state_mut().ui.dock = Dock::from_value(serde_json::from_str(&swapped).unwrap());
     first.run_steps(STARTUP_FRAMES);
     first.state_mut().save(&mut storage);
+    let expected_layout = first.state().ui.dock.clone();
+    drop(first);
 
     let restarted = app(&storage);
-    assert_eq!(restarted.state().ui.dock, first.state().ui.dock, "the rearranged layout comes back");
+    assert_eq!(restarted.state().ui.dock, expected_layout, "the rearranged layout comes back");
     restarted
 }
 
@@ -103,7 +105,7 @@ fn open_tool_color(harness: &mut Harness<'_, TextureCraftApp>) {
 
 #[test]
 fn a_stroke_on_the_model_closes_the_tool_colour_popup_in_the_default_and_a_restored_rearranged_layout() {
-    for (mut harness, layout) in [(app(&MemoryStorage::default()), "default"), (restarted_rearranged(), "restored rearranged")] {
+    let check_stroke = |mut harness: Harness<'_, TextureCraftApp>, layout: &str| {
         open_tool_color(&mut harness);
         let history = harness.state().session.history_labels().len();
 
@@ -111,7 +113,10 @@ fn a_stroke_on_the_model_closes_the_tool_colour_popup_in_the_default_and_a_resto
 
         assert!(!egui::Popup::is_any_open(&harness.ctx), "{layout}: the stroke closes the popup");
         assert!(harness.state().session.history_labels().len() > history, "{layout}: the stroke still paints");
-    }
+    };
+
+    check_stroke(app(&MemoryStorage::default()), "default");
+    check_stroke(restarted_rearranged(), "restored rearranged");
 }
 
 #[test]
@@ -122,6 +127,29 @@ fn an_alt_orbit_keeps_the_tool_colour_popup_open() {
     stroke_on_model(&mut harness, Modifiers::ALT);
 
     assert!(egui::Popup::is_any_open(&harness.ctx), "an Alt+drag orbits the camera and keeps the popup, like the colour picker");
+}
+
+#[test]
+fn outside_drag_dismissal_handles_motion_batched_with_release() {
+    for (modifiers, stays_open) in [(Modifiers::ALT, true), (Modifiers::NONE, false)] {
+        let mut harness = app(&MemoryStorage::default());
+        open_tool_color(&mut harness);
+        let origin = harness.state().viewport_rect.center();
+        harness.event(Event::ModifiersChanged(modifiers));
+        harness.hover_at(origin);
+        press(&mut harness, origin, true, modifiers);
+        assert!(egui::Popup::is_any_open(&harness.ctx), "the press is still a potential click");
+
+        let end = origin + STROKE;
+        harness
+            .input_mut()
+            .events
+            .extend([Event::PointerMoved(end), Event::PointerButton { pos: end, button: PointerButton::Primary, pressed: false, modifiers }]);
+        harness.run_steps(1);
+
+        assert!(harness.ctx.input(|input| input.pointer.button_released(PointerButton::Primary) && !input.pointer.any_click()));
+        assert_eq!(egui::Popup::is_any_open(&harness.ctx), stays_open);
+    }
 }
 
 #[test]

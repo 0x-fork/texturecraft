@@ -110,3 +110,33 @@ fn a_layout_saved_narrower_draws_properties_at_its_minimum_width() {
 
     assert!((width - at_minimum).abs() < 0.5, "a narrow saved column opens at the minimum: header {width}, {at_minimum} at the minimum");
 }
+
+#[test]
+fn visiting_and_deleting_layers_does_not_accumulate_scroll_areas() {
+    let mut harness = app();
+    let count = |harness: &Harness<'_, TextureCraftApp>| harness.ctx.data(|data| data.count::<egui::scroll_area::State>());
+    let initial = count(&harness);
+
+    let mut layers = Vec::new();
+    for index in 0..12 {
+        let session = &mut harness.state_mut().session;
+        let layer = texturecraft_engine::execute(session, "layer.add.group", &serde_json::json!({"name": format!("Folder {index}")})).unwrap()["layer"]
+            .as_u64()
+            .unwrap();
+        texturecraft_engine::execute(session, "layer.select", &serde_json::json!({"layer": layer})).unwrap();
+        harness.run_steps(1);
+        layers.push(layer);
+    }
+    let after_visiting = count(&harness);
+
+    let session = &mut harness.state_mut().session;
+    texturecraft_engine::execute(session, "layer.remove", &serde_json::json!({"layers": layers})).unwrap();
+    harness.run_steps(SETTLE_FRAMES);
+
+    let after_removal = count(&harness);
+    eprintln!("scroll states after visiting {after_visiting}, after removal {after_removal}, initially {initial}");
+    assert!(
+        after_visiting <= initial && after_removal <= initial,
+        "scroll areas after visiting {after_visiting}, after removal {after_removal}, initially {initial}"
+    );
+}

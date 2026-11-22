@@ -28,7 +28,7 @@ const PREVIEW_SIZE: f32 = 96.0;
 /// The popup's content, applying brush changes through the engine and display preferences in place
 pub(super) fn show(app: &mut TextureCraftApp, ui: &mut Ui) {
     ui.set_width(POPUP_WIDTH);
-    let (minimum, maximum) = app.session.mesh.bounds();
+    let (minimum, maximum) = app.viewport_mesh_bounds.get(&app.session.mesh);
     let half_extent = (maximum - minimum) * 0.5;
     let display = &mut app.ui.symmetry;
     let mut edited = app.session.tool.brush.symmetry;

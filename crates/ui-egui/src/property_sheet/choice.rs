@@ -1,4 +1,6 @@
-use egui::{Align2, Color32, CornerRadius, FontId, Frame, Margin, Painter, Rect, RectAlign, Response, Role, Sense, Shadow, Stroke, WidgetInfo, pos2, vec2};
+use egui::{
+    Align2, Color32, CornerRadius, FontId, Frame, Margin, Painter, Rect, RectAlign, Response, Role, Sense, Shadow, Stroke, StrokeKind, WidgetInfo, pos2, vec2,
+};
 use egui_phosphor::regular as ic;
 
 use super::{CONTROL_HEIGHT, CONTROL_RADIUS, ICON_SIZE, PropertySheet, RowLead, SMALL_TEXT_SIZE, TEXT_SIZE};
@@ -38,6 +40,9 @@ const LIST_SHADOW: Shadow = Shadow { offset: [2, 3], blur: 0, spread: 0, color: 
 /// Height of one option in an open list
 const OPTION_HEIGHT: f32 = 26.0;
 
+/// Width of an option's keyboard focus outline in points
+const OPTION_FOCUS_WIDTH: f32 = 2.0;
+
 /// How far an option's words sit above its centre, to look centred beside their capitals
 const OPTION_TEXT_LIFT: f32 = 1.0;
 
@@ -55,20 +60,9 @@ const EYE_MIN_LIST_WIDTH: f32 = 80.0;
 
 /// The lettering of a set-once choice, cut with "…" to fit `room`
 pub(super) fn truncated(painter: &Painter, text: &str, room: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
-    let font = semibold(TEXT_SIZE);
-    let full = painter.layout_no_wrap(text.to_owned(), font.clone(), color);
-    if full.size().x <= room {
-        return full;
-    }
-
-    let mut cut: String = text.to_owned();
-    while cut.pop().is_some() {
-        let candidate = painter.layout_no_wrap(format!("{}…", cut.trim_end()), font.clone(), color);
-        if candidate.size().x <= room {
-            return candidate;
-        }
-    }
-    painter.layout_no_wrap("…".to_owned(), font, color)
+    let mut job = egui::text::LayoutJob::simple_singleline(text.to_owned(), semibold(TEXT_SIZE), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
+    painter.layout_job(job)
 }
 
 /// The chosen option's accent bar, inset from the option's left, top and bottom
@@ -160,6 +154,7 @@ impl PropertySheet<'_> {
         let galley = truncated(painter, value, rect.right() - CARET_ROOM - text_x, tokens.text);
         painter.galley(pos2(text_x, rect.center().y - galley.size().y / 2.0), galley, tokens.text);
         painter.text(pos2(rect.right() - CARET_INSET, rect.center().y), Align2::CENTER_CENTER, ic::CARET_DOWN, FontId::proportional(ICON_SIZE), tokens.text);
+        self.paint_control_focus(&response);
         response
     }
 
@@ -226,8 +221,11 @@ impl PropertySheet<'_> {
                         );
                         painter.rect_filled(bar, CornerRadius::same(CHOSEN_BAR_RADIUS), tokens.accent);
                     }
+                    if response.has_focus() {
+                        painter.rect_stroke(rect, CornerRadius::same(CONTROL_RADIUS), Stroke::new(OPTION_FOCUS_WIDTH, tokens.text_strong), StrokeKind::Inside);
+                    }
 
-                    // The rows sit inside the list's border: measured from the button's edge, text and picture keep the button's x
+                    // Align the option text and picture with the button despite the list border
                     let button_left = rect.left() - LIST_BORDER;
                     let center_y = rect.top() + OPTION_HEIGHT / 2.0 - OPTION_TEXT_LIFT;
                     let mut text_x = button_left + VALUE_INSET;
@@ -244,8 +242,13 @@ impl PropertySheet<'_> {
                     if response.hovered() && width >= EYE_MIN_LIST_WIDTH {
                         painter.text(pos2(rect.right() - EYE_INSET, center_y), Align2::CENTER_CENTER, ic::EYE, FontId::proportional(EYE_SIZE), tokens.accent);
                     }
-                    if response.clicked() && !chosen {
-                        picked = Some(option);
+                    if response.clicked() {
+                        if !chosen {
+                            picked = Some(option);
+                        }
+
+                        button.request_focus();
+                        ui.close();
                     }
                 }
             }

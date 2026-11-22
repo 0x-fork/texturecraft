@@ -436,6 +436,7 @@ mod tests {
         }
         let moved = window_frame(&mut harness, moves);
         let put_back = moved.iter().any(|command| matches!(command, egui::ViewportCommand::CursorPosition(to) if to.distance(pad) <= PUT_BACK_REACH));
+
         assert!(locked || put_back, "the window puts the pointer back where the press began, so it never leaves: {moved:?}");
         let seen = harness.ctx.input(|input| input.pointer.latest_pos());
         assert!(seen.is_some_and(|seen| seen.distance(pad + DRAG_STEP) <= PUT_BACK_REACH), "the app reads the whole move: {seen:?}");

@@ -827,6 +827,7 @@ fn mask_fill_image_snapshot() {
     harness.run_steps(4);
 
     let EffectKind::Fill { source, .. } = &harness.state().session.doc.project.effect(LayerId(effect)).unwrap().1.kind else { panic!("fill effect") };
+
     assert_eq!(*source, Source::image(name));
     assert!(harness.query_by_label("UV projection").is_some(), "image projection is editable");
 
@@ -1029,13 +1030,14 @@ fn fill_properties_snapshots() {
     .unwrap();
     let mut harness =
         Harness::builder().with_size(egui::vec2(1600.0, 1500.0)).with_pixels_per_point(2.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
     for (brightness, name) in [(Brightness::MediumDark, "medium"), (Brightness::Dark, "dark"), (Brightness::Light, "light")] {
         harness.state_mut().ui.prefs.brightness = brightness;
         save(&mut harness, &output_dir, &format!("fill-uv-{name}"));
     }
     harness.state_mut().ui.prefs.brightness = Brightness::MediumDark;
 
-    // A UV pad drag right, held mid-way: the ring stays in the middle, the filled dot and the checker go right; then a dot past the edge
+    // Check the fixed ring and moving dot both inside and beyond the preview
     execute(&mut harness.state_mut().session, "layer.fill.projection", &json!({"layer": layer, "offset": [0.0, 0.0]})).unwrap();
     harness.run_steps(2);
     let pad = harness.get_by_label("Move on model").rect().center();
@@ -1159,6 +1161,7 @@ fn fill_symmetry_snapshots() {
     execute(&mut session, "layer.fill.projection", &json!({"layer": layer, "projection": "planar"})).unwrap();
     let mut harness =
         Harness::builder().with_size(egui::vec2(1600.0, 1500.0)).with_pixels_per_point(2.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(4);
     harness.get_by_role_and_label(egui::Role::Tab, "Symmetry").click();
     let cases = [

@@ -62,6 +62,7 @@ impl PropertySheet<'_> {
         let reset_rect = Rect::from_center_size(pos2(self.right - BAND_RESET_INSET, rect.center().y), vec2(BAND_RESET_TARGET, BAND_RESET_TARGET));
         let mut reset_clicked = false;
         let mut reset_hovered = false;
+        let mut focus_rect = response.has_focus().then_some(band);
         if let Some(changed) = reset {
             // At the defaults it is inert: a click there folds the band like the rest of it
             let sense = if changed { Sense::click() } else { Sense::hover() };
@@ -75,6 +76,9 @@ impl PropertySheet<'_> {
             reset_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, changed, crate::i18n::tr("Restore defaults")));
             reset_clicked = changed && reset_response.clicked();
             reset_hovered = reset_response.hovered();
+            if reset_response.has_focus() {
+                focus_rect = Some(reset_rect);
+            }
         }
         if response.clicked() && !reset_clicked {
             open = !open;
@@ -102,6 +106,10 @@ impl PropertySheet<'_> {
             }
         }
         self.caret(pos2(self.right - EDGE_GLYPH_INSET, center_y), open, tokens.text_dim);
+
+        if let Some(rect) = focus_rect {
+            super::switch_control::paint_focus_outline(painter, rect, tokens.text_strong);
+        }
 
         self.drawn(band.bottom());
         self.space(GROUP_GAP);

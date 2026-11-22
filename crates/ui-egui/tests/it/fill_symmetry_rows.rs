@@ -45,6 +45,7 @@ fn count_at(harness: &Harness<'_, TextureCraftApp>, count: f32) -> egui::Pos2 {
 #[test]
 fn the_symmetry_switch_shows_its_rows_and_each_row_changes_the_symmetry() {
     let (mut harness, layer) = app_with_fill("planar");
+
     assert!(harness.query_by_label("Mirror symmetry").is_none(), "off, the section is the caption alone");
 
     click_node(&mut harness, Role::CheckBox, "Symmetry");
@@ -81,6 +82,7 @@ fn the_symmetry_switch_shows_its_rows_and_each_row_changes_the_symmetry() {
 #[test]
 fn a_uv_fill_says_why_in_place_of_the_symmetry_switch() {
     let (mut harness, layer) = app_with_fill("uv");
+
     assert!(harness.query_by_role_and_label(Role::CheckBox, "Symmetry").is_none(), "no switch to click");
 
     click_label(&mut harness, "Not available with UV projection");
@@ -120,4 +122,48 @@ fn a_typed_count_reaches_past_the_track_to_the_engines_most() {
     harness.run_steps(SETTLE_FRAMES);
 
     assert_eq!(symmetry(&harness, layer).count, 40);
+}
+
+fn commit_value_by_clicking_track(harness: &mut Harness<'_, TextureCraftApp>, value_label: &str, value: &str, track_label: &str) {
+    click_node(harness, Role::Label, value_label);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.event(egui::Event::Text(value.into()));
+    harness.run_steps(SETTLE_FRAMES);
+
+    let track = harness.get_by_role_and_label(Role::Slider, track_label).rect();
+    let pos = along(track, 0.75);
+    let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    harness.input_mut().events.extend([egui::Event::PointerMoved(pos), button(true), button(false)]);
+    harness.step();
+}
+
+#[test]
+fn typing_one_radial_offset_and_clicking_the_other_keeps_both_edits() {
+    let (mut harness, layer) = app_with_radial();
+    harness.state_mut().run("layer.fill.projection", json!({"layer": layer, "symmetryAxis": 1}));
+    harness.run_steps(SETTLE_FRAMES);
+    let undo_before = undo_depth(&harness);
+
+    commit_value_by_clicking_track(&mut harness, "Axis position X value", "0.25", "Axis position Z");
+
+    let [x, y, z] = symmetry(&harness, layer).position;
+
+    assert_eq!(x, 0.25, "losing focus commits the typed X offset");
+    assert_eq!(y, 0.0, "the radial axis does not move along itself");
+    assert!(z > 0.0, "the same click edits the Z offset");
+    assert_eq!(undo_depth(&harness), undo_before + 1);
+}
+
+#[test]
+fn typing_count_and_clicking_angle_span_keeps_both_edits() {
+    let (mut harness, layer) = app_with_radial();
+    let undo_before = undo_depth(&harness);
+
+    commit_value_by_clicking_track(&mut harness, "Count value", "40", "Angle span");
+
+    let symmetry = symmetry(&harness, layer);
+
+    assert_eq!(symmetry.count, 40, "losing focus commits the typed count");
+    assert!(symmetry.span < 360.0, "the same click edits the angle span");
+    assert_eq!(undo_depth(&harness), undo_before + 1);
 }

@@ -142,6 +142,7 @@ fn a_ctrl_right_drag_out_of_the_2d_view_keeps_its_outline_at_the_anchor() {
     harness.event(Event::ModifiersChanged(ctrl));
     harness.event(Event::PointerButton { pos: center, button: egui::PointerButton::Secondary, pressed: true, modifiers: ctrl });
     harness.run_steps(2);
+
     // The outline stays anchored while the pointer is hidden inside the view
     harness.hover_at(center + egui::vec2(10.0, 0.0));
     harness.run_steps(3);

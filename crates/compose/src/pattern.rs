@@ -380,13 +380,21 @@ const TRIPLANAR_SKIP: f32 = 1.0 / 131_072.0;
 /// Normalized triplanar blend weights (YZ, XZ, XY planes) for normal `nrm`; planes too light
 /// to change a 0..1 value scaled by `gain` afterwards weigh 0 (see [`TRIPLANAR_SKIP`]).
 fn triplanar_weights(nrm: Vec3, sharpness: f32, gain: f32) -> Vec3 {
-    let weights = sharpen(nrm.abs(), sharpness);
-    let weights = weights / (weights.x + weights.y + weights.z).max(MIN_WEIGHT_SUM);
+    let weights = normalized_triplanar_weights(nrm, sharpness);
     let skip_threshold = TRIPLANAR_SKIP / gain.max(1.0);
-    let retained = Vec3::select(weights.cmplt(Vec3::splat(skip_threshold)), Vec3::ZERO, weights);
+    Vec3::select(weights.cmplt(Vec3::splat(skip_threshold)), Vec3::ZERO, weights)
+}
 
-    // Preserve the blend if thresholding would discard every plane
-    if retained == Vec3::ZERO { weights } else { retained }
+fn normalized_triplanar_weights(normal: Vec3, sharpness: f32) -> Vec3 {
+    let normal = normal.abs();
+    let strongest = normal.max_element();
+    if strongest == 0.0 || !normal.is_finite() {
+        return Vec3::ZERO;
+    }
+
+    // Keep the strongest weight at one so sharp diagonal blends cannot underflow
+    let weights = sharpen(normal / strongest, sharpness);
+    weights / weights.element_sum()
 }
 
 fn shape(pattern: &Procedural, value: f32) -> f32 {
@@ -400,7 +408,7 @@ fn place(point: Vec2, tiling: Vec2, rotation: f32, offset: Vec2) -> Vec2 {
 }
 
 /// [`place`] with its turn's sine and cosine worked out once, for a projection that places several points
-fn placement(tiling: Vec2, rotation: f32, offset: Vec2) -> impl Fn(Vec2) -> Vec2 {
+pub(crate) fn placement(tiling: Vec2, rotation: f32, offset: Vec2) -> impl Fn(Vec2) -> Vec2 {
     let (sin, cos) = rotation.to_radians().sin_cos();
     move |point| Vec2::new(point.x * cos - point.y * sin, point.x * sin + point.y * cos) * tiling + offset
 }
@@ -431,9 +439,6 @@ const SPHERE_PATTERN_TILES: Vec2 = Vec2::new(4.0, 2.0);
 
 /// How many pattern tiles a procedural lays round a cylindrical projection's axis
 const CYLINDER_PATTERN_TILES: f32 = 4.0;
-
-/// Smallest sum of tri-planar blend weights, so a zero normal never divides by zero
-const MIN_WEIGHT_SUM: f32 = 1e-6;
 
 /// Smallest frame side or depth (world units), so a flat frame never divides by zero
 const MIN_FRAME_EXTENT: f32 = 1e-6;
@@ -544,6 +549,7 @@ pub fn procedural_in(pattern: &Procedural, projection: &Projection, coords: &Coo
             let planes = [(weights.x, Vec2::new(point.z, point.y)), (weights.y, Vec2::new(point.x, point.z)), (weights.z, Vec2::new(point.x, point.y))];
             planes.into_iter().filter(|(weight, _)| *weight > 0.0).map(|(weight, plane)| flat(place_plane(plane)) * weight).sum()
         }
+
         // The coordinates are already in the placed or warped frame (see [`placed_uv`] and [`crate::warp::warp_uv`])
         Projection::Planar { uv, placed: Some(_), .. } | Projection::Warp { uv, .. } => flat(place_frame_uv(coords.uv, uv) * pattern_scale),
         Projection::Planar { scale, axis, offset, uv, projector, .. } => {
@@ -621,8 +627,7 @@ pub fn image_samples(projection: &Projection, coords: &Coords) -> [(Vec2, f32); 
             let place_plane = uv_placement(uv);
 
             // Float images can exceed 1, so even a tiny plane weight can carry visible detail
-            let weights = coords.nrm.abs().powf(sharpness.max(1.0));
-            let weights = weights / (weights.x + weights.y + weights.z).max(MIN_WEIGHT_SUM);
+            let weights = normalized_triplanar_weights(coords.nrm, *sharpness);
             [
                 (place_plane(Vec2::new(point.z, -point.y)), weights.x),
                 (place_plane(Vec2::new(point.x, point.z)), weights.y),
@@ -801,6 +806,7 @@ mod tests {
             for down in [0.0, 0.1, 0.37, 1.0] {
                 let uv = Vec2::new(across as f32 / 1000.0, down);
                 let coords = Coords { uv, pos: Vec3::ZERO, nrm: Vec3::Z };
+
                 assert_eq!(image_samples(&decal, &coords)[0].0, uv, "image at {uv}");
 
                 let expected = shape(&pattern, raw(pattern.kind, (uv * pattern.scale).extend(0.0), pattern.seed));
@@ -839,6 +845,7 @@ mod tests {
         };
         for rotation in [37.0, 90.0, 180.0] {
             let center = sample(rotation, [1.0; 2], [0.0; 2], FRAME_UV_CENTER);
+
             assert!((center - FRAME_UV_CENTER).length() < 1e-5, "{rotation}°: the centre stays put, not swung round the top left: {center}");
         }
         let corner = sample(90.0, [1.0; 2], [0.0; 2], Vec2::ZERO);
@@ -891,6 +898,7 @@ mod tests {
                         nrm: Vec3::new(0.3, 0.9, 0.1).normalize(),
                     };
                     let value = procedural(&pattern, projection, &coords);
+
                     assert!((0.0..=1.0).contains(&value), "{kind:?} {projection:?} {value}");
                 }
             }
@@ -939,11 +947,23 @@ mod tests {
         let oblique = triplanar_weights(Vec3::ONE.normalize(), 8.0, 16.0);
         assert!((oblique - Vec3::splat(1.0 / 3.0)).abs().max_element() < 1e-6, "{oblique}");
 
-        // Tiny weights must survive together when their sum exceeds a u16 step
         for sharpness in [47.0, 64.0] {
             let diagonal = triplanar_weights(Vec3::ONE.normalize(), sharpness, 1.0);
-            assert!(diagonal.min_element() > 0.0, "sharpness {sharpness}: {diagonal}");
+            assert!(diagonal.abs_diff_eq(Vec3::splat(1.0 / 3.0), 1e-6), "sharpness {sharpness}: {diagonal}");
         }
+    }
+
+    #[test]
+    fn triplanar_image_hardness_preserves_diagonal_coverage() {
+        let coords = Coords { uv: Vec2::ZERO, pos: Vec3::ZERO, nrm: Vec3::new(1.0, 0.95, 0.90).normalize() };
+        let projection =
+            |sharpness| Projection::Triplanar { scale: 1.0, sharpness, offset: [0.0; 3], uv: UvTransform::default(), projector: Projector::default() };
+
+        let soft = image_samples(&projection(1.0), &coords).map(|(_, weight)| weight);
+        let hard = image_samples(&projection(64.0), &coords).map(|(_, weight)| weight);
+
+        assert!((hard.into_iter().sum::<f32>() - 1.0).abs() < 1e-6, "{hard:?}");
+        assert!(hard[0] > soft[0] && hard[1] < soft[1] && hard[2] < soft[2], "{soft:?} {hard:?}");
     }
 
     #[test]

@@ -130,7 +130,7 @@ fn projection_rows(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, fil
 
     let picture = |painter: &Painter, rect: Rect, kind: ProjectionKind| projection_picture(painter, rect, kind, &tokens);
 
-    // A projection with a gizmo in the 3D view ends its row in the eye that shows or hides it (a view setting saved with the project)
+    // The eye controls the project's viewport gizmo visibility
     let gizmos = app.session.doc.project.display.projection_gizmos;
     let tip = if gizmos { tr("Hide projection gizmos") } else { tr("Show projection gizmos") };
     let name = |kind: ProjectionKind| tr(kind.label()).to_owned();
@@ -146,31 +146,28 @@ fn projection_rows(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, fil
         app.run("display.set", json!({"projectionGizmos": !gizmos}));
     }
 
-    // Per UV tile, the source fills each tile once: nothing to place
-    if kind == ProjectionKind::UvTile {
-        return;
-    }
-
-    let size = mesh_size(app, sheet.ui.ctx());
-    let length = tile_length(&fill.projection, size);
-    let physical = length.is_some() && fill.sampling.scale == ScaleMode::PhysicalSize;
-    if length.is_some() {
-        let modes = [tr("Tiling"), tr("Physical size")];
-        if let Some(index) = sheet.switch(tr("Scale"), &modes, usize::from(physical))
-            && let Some(mode) = ScaleMode::ALL.get(index)
-        {
-            run(app, json!({"scaleMode": mode.id()}));
+    // Per-tile fills still sample images without a placement to edit
+    if kind != ProjectionKind::UvTile {
+        let size = mesh_size(app, sheet.ui.ctx());
+        let length = tile_length(&fill.projection, size);
+        let physical = length.is_some() && fill.sampling.scale == ScaleMode::PhysicalSize;
+        if length.is_some() {
+            let modes = [tr("Tiling"), tr("Physical size")];
+            if let Some(index) = sheet.switch(tr("Scale"), &modes, usize::from(physical))
+                && let Some(mode) = ScaleMode::ALL.get(index)
+            {
+                run(app, json!({"scaleMode": mode.id()}));
+            }
         }
-    }
 
-    // Move on model: hold the preview square and drag to slide the projection
-    let target = match base.get("effect").and_then(Value::as_u64) {
-        Some(effect) => MoveOnModel { layer: reader, effect: Some(LayerId(effect)) },
-        None => MoveOnModel::layer(reader),
-    };
-    placement_rows(app, sheet, fill, base, length.filter(|_| physical), size, target);
-    frame_rows(app, sheet, fill, base);
-    culling_rows(app, sheet, fill, base);
+        let target = match base.get("effect").and_then(Value::as_u64) {
+            Some(effect) => MoveOnModel { layer: reader, effect: Some(LayerId(effect)) },
+            None => MoveOnModel::layer(reader),
+        };
+        placement_rows(app, sheet, fill, base, length.filter(|_| physical), size, target);
+        frame_rows(app, sheet, fill, base);
+        culling_rows(app, sheet, fill, base);
+    }
 
     let crop = projector_of(&fill.projection).map(|projector| projector.crop);
     let shows_wrap = kind != ProjectionKind::Triplanar;
@@ -335,7 +332,7 @@ fn placement_rows(
     let mut linked = sheet.ui.data(|data| data.get_temp::<bool>(link_id)).unwrap_or(tiling[0] == tiling[1]);
     let was_linked = linked;
     let mut values = match length {
-        Some(length) => length.map(|units| (units * CM_PER_UNIT).round()),
+        Some(length) => length.map(|units| units * CM_PER_UNIT),
         None => tiling,
     };
     let shown = values;
@@ -389,7 +386,10 @@ fn placement_rows(
         && values != shown
     {
         let tiling = match length {
-            Some(_) => tiling_for_length(&fill.projection, size, values.map(|cm| cm / CM_PER_UNIT)).unwrap_or(tiling),
+            Some(_) => tiling_for_length(&fill.projection, size, values.map(|cm| cm / CM_PER_UNIT)).map_or(tiling, |converted| {
+                // Keep the stored tiling for axes that did not change
+                std::array::from_fn(|axis| if values[axis] == shown[axis] { tiling[axis] } else { converted[axis] })
+            }),
             None => values,
         };
         run_projection(app, base, json!({"tiling": tiling, "merge": merge}));

@@ -60,6 +60,7 @@ impl PropertySheet<'_> {
             painter.galley(pos2(x, button.center().y - galley.size().y / 2.0), galley, color);
         }
         painter.galley(pos2(x + icon_width + BUTTON_ICON_GAP, button.center().y - text_galley.size().y / 2.0), text_galley, color);
+        self.paint_control_focus(&response);
         self.drawn(button.bottom());
         response
     }

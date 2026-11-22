@@ -9,9 +9,9 @@
 
 use egui::{Color32, ColorImage, Painter, Pos2, Rect, Shape, Stroke, TextureOptions, pos2, vec2};
 use texturecraft_engine::compose::frame_placement::{folded, upright_turn};
-use texturecraft_engine::compose::pattern::{Coords, decal_axes, image_samples};
-use texturecraft_engine::compose::projector_cover::projector_cover;
-use texturecraft_engine::core::{Projection, Projector, ShapeCrop};
+use texturecraft_engine::compose::pattern::{Coords, decal_axes, image_samples, place_frame_uv};
+use texturecraft_engine::compose::projector_cover::{placed_cover, projector_cover};
+use texturecraft_engine::core::{Projection, Projector};
 use texturecraft_engine::geom::glam::{Vec2, Vec3, Vec4};
 
 use rayon::prelude::*;
@@ -146,6 +146,8 @@ const MIN_SIZE: f32 = 1e-4;
 /// A ray this close to parallel to a face or the cylinder's axis never meets it
 const PARALLEL_TOLERANCE: f32 = 1e-6;
 
+type PreviewTextures = egui::cache::FramePublisher<egui::Id, RenderedPreview>;
+
 /// Draw the preview of `projection` on a mesh within `bounds` into `rect`, rendered once per projection, size and theme, with a quarter of the rays while a drag is held (None for projections without one: UV, warp); each `owner` (the docked panel's square, the popup's) keeps its own picture
 pub(crate) fn projection_preview(painter: &Painter, rect: Rect, projection: &Projection, bounds: (Vec3, Vec3), tokens: &Tokens, owner: egui::Id) -> Option<()> {
     let shown = shown_projection(projection, bounds)?;
@@ -156,15 +158,14 @@ pub(crate) fn projection_preview(painter: &Painter, rect: Rect, projection: &Pro
     let (resting, half) = resting_fit(&shown, shape);
     let key = format!("{side}{half}{shown:?}{:?}{:?}{:?}", tokens.field, tokens.text, tokens.accent);
     let held = ctx.input(|input| input.pointer.any_down());
-    let id = slot(owner);
     #[cfg(test)]
     ctx.data_mut(|data| data.insert_temp(egui::Id::unique(LAST_OWNER), owner));
 
-    // The picture, the key and the rays per pixel it was rendered with; a drag's lighter picture is redone in full once the pointer is let go
-    let cached = ctx.data(|data| data.get_temp::<RenderedPreview>(id));
+    // Upgrade a drag's lower-resolution sampling when the pointer is released
+    let cached = cached_preview(ctx, owner);
     let up_to_date = cached.as_ref().is_some_and(|cached| cached.key == key && (held || cached.supersample == SUPERSAMPLE));
-    let texture = match cached {
-        Some(cached) if up_to_date => cached.texture,
+    let rendered = match cached {
+        Some(cached) if up_to_date => cached,
         cached => {
             let supersample = if held { DRAG_SUPERSAMPLE } else { SUPERSAMPLE };
             let image = render(&shown, side, half, supersample, tokens);
@@ -175,11 +176,12 @@ pub(crate) fn projection_preview(painter: &Painter, rect: Rect, projection: &Pro
                 }
                 None => ctx.load_texture("projection-preview", image, TextureOptions::LINEAR),
             };
-            ctx.data_mut(|data| data.insert_temp(id, RenderedPreview { key, supersample, texture: texture.clone() }));
-            texture
+            RenderedPreview { key, supersample, texture }
         }
     };
-    painter.image(texture.id(), rect, FULL_UV, Color32::WHITE);
+    painter.image(rendered.texture.id(), rect, FULL_UV, Color32::WHITE);
+    ctx.memory_mut(|memory| memory.caches.cache::<PreviewTextures>().set(owner, rendered));
+
     if let Some(outline) = &outline {
         let painter = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
         let screen = Screen { view: View::new(), rect, half };
@@ -192,9 +194,8 @@ pub(crate) fn projection_preview(painter: &Painter, rect: Rect, projection: &Pro
     Some(())
 }
 
-/// Where `owner`'s preview square keeps its picture
-fn slot(owner: egui::Id) -> egui::Id {
-    egui::Id::unique(("projection_preview", owner))
+fn cached_preview(ctx: &egui::Context, owner: egui::Id) -> Option<RenderedPreview> {
+    ctx.memory_mut(|memory| memory.caches.cache::<PreviewTextures>().get(&owner).cloned())
 }
 
 /// Where tests find the owner of the square drawn last
@@ -205,7 +206,7 @@ const LAST_OWNER: &str = "projection_preview_last_owner";
 #[cfg(test)]
 fn last_rendered(ctx: &egui::Context) -> Option<RenderedPreview> {
     let owner = ctx.data(|data| data.get_temp::<egui::Id>(egui::Id::unique(LAST_OWNER)))?;
-    ctx.data(|data| data.get_temp::<RenderedPreview>(slot(owner)))
+    cached_preview(ctx, owner)
 }
 
 /// What the preview square last rendered (tests: a drag re-renders it)
@@ -220,24 +221,46 @@ pub(crate) fn shown_supersample(ctx: &egui::Context) -> Option<usize> {
     last_rendered(ctx).map(|rendered| rendered.supersample)
 }
 
-/// The projection the preview renders: a planar placed on the model shows straight onto the sphere's front as big against the sphere as its frame is against the mesh, stretched, turned round its normal and slid across its plane as the frame is, cropped to its rectangle
+/// Map a placed planar to the front of the preview sphere while preserving its crop and image mapping.
 fn shown_projection(projection: &Projection, bounds: (Vec3, Vec3)) -> Option<Projection> {
     match projection {
         Projection::Planar { placed: Some(_), uv, .. } => {
-            let landed = folded(projection)?;
+            let radius = ((bounds.1 - bounds.0) * 0.5).max_element().max(MIN_SIZE);
+            let Some(landed) = folded(projection) else {
+                let mut shown = projection.clone();
+                let Projection::Planar { placed: Some(frame), .. } = &mut shown else { return None };
+                let world_to_preview = SPHERE_RADIUS / radius;
+
+                // Keep the original projector transform when a fold would change culling
+                frame.center = ((Vec3::from(frame.center) - (bounds.0 + bounds.1) * 0.5) * world_to_preview).to_array();
+                frame.size = frame.size.map(|side| side * world_to_preview);
+                frame.offset = frame.offset.map(|offset| offset * world_to_preview);
+                frame.depth *= world_to_preview;
+                decal_axes(frame)?;
+                return Some(shown);
+            };
+
             let Projection::Planar { placed: Some(frame), projector, .. } = &landed else { return None };
 
-            // The sphere stands for the model: its radius is the model's largest half size
-            let radius = ((bounds.1 - bounds.0) * 0.5).max_element().max(MIN_SIZE);
-            let half = frame.size.map(|side| (SPHERE_RADIUS * side / (2.0 * radius)).max(MIN_SIZE));
+            // Normalize frame lengths by the model's largest half size
+            let frame_half = frame.size.map(|side| (SPHERE_RADIUS * side / (2.0 * radius)).max(MIN_SIZE));
             let turn = upright_turn(frame).unwrap_or(0.0);
 
-            // Slid across its own plane away from the mesh's centre: off the sphere's middle by as much
             let (origin, across, up, _) = decal_axes(frame)?;
             let from_center = (origin - (bounds.0 + bounds.1) * 0.5) / radius * SPHERE_RADIUS;
-            let offset = [-from_center.dot(across) / half[0], -from_center.dot(up) / half[1], 0.0];
-            let projector = Projector { rotation: [0.0, 0.0, turn], scale: [half[0], half[1], 1.0], crop: ShapeCrop::Cropped, ..*projector };
-            offset.iter().all(|value| value.is_finite()).then_some(Projection::Planar { scale: 1.0, axis: 2, offset, uv: *uv, projector, placed: None })
+            let offset = [-from_center.dot(across) / frame_half[0], -from_center.dot(up) / frame_half[1], 0.0];
+
+            // A single reflection reverses the turn around the image centre
+            let [flip_u, flip_v] = frame.flip.map(|flip| if flip { -1.0 } else { 1.0 });
+            let image_origin = Vec2::new(f32::from(u8::from(frame.flip[0])), f32::from(u8::from(frame.flip[1])));
+            let uv = texturecraft_engine::core::UvTransform {
+                tiling: [uv.tiling[0] * flip_u, uv.tiling[1] * flip_v],
+                rotation: uv.rotation * flip_u * flip_v,
+                offset: place_frame_uv(image_origin, uv).to_array(),
+            };
+
+            let projector = Projector { rotation: [0.0, 0.0, turn], scale: [frame_half[0], frame_half[1], 1.0], ..*projector };
+            offset.iter().all(|value| value.is_finite()).then_some(Projection::Planar { scale: 1.0, axis: 2, offset, uv, projector, placed: None })
         }
         Projection::Planar { .. } | Projection::Spherical { .. } | Projection::Cylindrical { .. } | Projection::Triplanar { .. } => Some(projection.clone()),
         Projection::Warp { .. } | Projection::Uv { .. } | Projection::UvTile => None,
@@ -303,12 +326,13 @@ fn draw_outline(painter: &Painter, screen: &Screen, shape: PreviewShape, outline
             }
         }
         for (hidden, points) in runs {
-            for stroke in outline_strokes(hidden, tokens) {
-                if hidden {
-                    painter.extend(Shape::dashed_line(&points, stroke, HIDDEN_DASH, HIDDEN_DASH));
-                } else {
-                    painter.add(Shape::line(points.clone(), stroke));
-                }
+            let strokes = outline_strokes(hidden, tokens);
+            if hidden {
+                crate::viewport::paint_dashed_outline(painter, &points, HIDDEN_DASH, HIDDEN_DASH, strokes);
+            } else {
+                let [under, over] = strokes;
+                painter.add(Shape::line(points.clone(), under));
+                painter.add(Shape::line(points, over));
             }
         }
     }
@@ -368,6 +392,9 @@ fn shape_for(projection: &Projection) -> PreviewShape {
     }
 }
 
+/// Output rows per batch to bound ray storage while leaving enough rays for parallel work
+const PREVIEW_BATCH_ROWS: usize = 64;
+
 /// `side²` pixels of the checker on the projection's shape over the `field` background, the view `half` mesh radii across each way from the middle, `supersample²` rays per pixel cast on every core
 fn render(projection: &Projection, side: usize, half: f32, supersample: usize, tokens: &Tokens) -> ColorImage {
     let shape = shape_for(projection);
@@ -381,40 +408,47 @@ fn render(projection: &Projection, side: usize, half: f32, supersample: usize, t
     let supersample = supersample.max(1);
     let rays = side * supersample;
 
-    // Pack lit RGB and coverage into one vector per ray
-    let samples: Vec<Vec4> = (0..rays * rays)
-        .into_par_iter()
-        .map(|ray| {
-            let (x, y) = (ray % rays, ray / rays);
-            let across = ((x as f32 + 0.5) / rays as f32 * 2.0 - 1.0) * half;
-            let down = ((y as f32 + 0.5) / rays as f32 * 2.0 - 1.0) * half;
-            let origin = right * across - up * down + eye * CAMERA_DISTANCE;
-            let Some(hit) = intersect(shape, origin, forward) else { return Vec4::new(0.0, 0.0, 0.0, MISSED_RAY_COVERAGE) };
-            let shade = AMBIENT + (1.0 - AMBIENT) * hit.nrm.dot(light).max(0.0);
-            let (color, cover) = surface(projection, &hit, shades);
-            (color * shade).extend(cover)
-        })
-        .collect();
+    let cast_ray = |ray: usize| {
+        let (x, y) = (ray % rays, ray / rays);
+        let across = ((x as f32 + 0.5) / rays as f32 * 2.0 - 1.0) * half;
+        let down = ((y as f32 + 0.5) / rays as f32 * 2.0 - 1.0) * half;
+        let origin = right * across - up * down + eye * CAMERA_DISTANCE;
+        let Some(hit) = intersect(shape, origin, forward) else { return Vec4::new(0.0, 0.0, 0.0, MISSED_RAY_COVERAGE) };
+        let shade = AMBIENT + (1.0 - AMBIENT) * hit.nrm.dot(light).max(0.0);
+        let (color, cover) = surface(projection, &hit, shades);
+        (color * shade).extend(cover)
+    };
 
     let edge = linear(tokens.accent);
     let mut image = ColorImage::new([side, side], vec![field; side * side]);
-    image.pixels.par_iter_mut().enumerate().for_each(|(pixel, out)| {
-        let (x, y) = (pixel % side, pixel / side);
-        let mut sum = Vec3::ZERO;
-        for sub in 0..supersample * supersample {
-            let (rx, ry) = (x * supersample + sub % supersample, y * supersample + sub / supersample);
-            let sample = samples[ry * rays + rx];
-            let color = if sample.w == MISSED_RAY_COVERAGE {
-                background
-            } else if on_edge(&samples, rays, rx, ry, sample.w) {
-                edge.lerp(sample.truncate(), EDGE_BLEND)
-            } else {
-                sample.truncate()
-            };
-            sum += color;
-        }
-        *out = from_linear(sum / (supersample * supersample) as f32);
-    });
+    let batch_ray_rows = (PREVIEW_BATCH_ROWS * supersample + 2).min(rays);
+    let mut samples = Vec::with_capacity(batch_ray_rows * rays);
+    for (batch, pixels) in image.pixels.chunks_mut((side * PREVIEW_BATCH_ROWS).max(1)).enumerate() {
+        let first_pixel_row = batch * PREVIEW_BATCH_ROWS;
+
+        // Include the adjacent ray on both sides so coverage edges agree across batches
+        let first_ray_row = (first_pixel_row * supersample).saturating_sub(1);
+        let past_ray_row = ((first_pixel_row + pixels.len() / side) * supersample + 1).min(rays);
+        (first_ray_row * rays..past_ray_row * rays).into_par_iter().map(cast_ray).collect_into_vec(&mut samples);
+
+        pixels.par_iter_mut().enumerate().for_each(|(pixel, out)| {
+            let (x, y) = (pixel % side, first_pixel_row + pixel / side);
+            let mut sum = Vec3::ZERO;
+            for sub in 0..supersample * supersample {
+                let (rx, ry) = (x * supersample + sub % supersample, y * supersample + sub / supersample - first_ray_row);
+                let sample = samples[ry * rays + rx];
+                let color = if sample.w == MISSED_RAY_COVERAGE {
+                    background
+                } else if on_edge(&samples, rays, rx, ry, sample.w) {
+                    edge.lerp(sample.truncate(), EDGE_BLEND)
+                } else {
+                    sample.truncate()
+                };
+                sum += color;
+            }
+            *out = from_linear(sum / (supersample * supersample) as f32);
+        });
+    }
     image
 }
 
@@ -432,9 +466,19 @@ fn on_edge(samples: &[Vec4], rays: usize, x: usize, y: usize, cover: f32) -> boo
 
 /// The unlit colour at a hit and how much of the projection reaches it, from the dark and light checker and the uncovered shape `shades` in linear light
 fn surface(projection: &Projection, hit: &Coords, shades: [Vec3; 3]) -> (Vec3, f32) {
-    let cover = projector_cover(projection, hit).clamp(0.0, 1.0);
+    let mut coords = Coords { uv: hit.uv, pos: hit.pos, nrm: hit.nrm };
+    let cover = match projection {
+        Projection::Planar { placed: Some(frame), projector, .. } => {
+            let Some((uv, cover)) = placed_cover(frame, projector, hit.pos, hit.nrm) else { return (shades[2], 0.0) };
+            coords.uv = uv;
+            cover
+        }
+        _ => projector_cover(projection, hit),
+    }
+    .clamp(0.0, 1.0);
+
     let mut light = 0.0;
-    for (uv, weight) in image_samples(projection, hit) {
+    for (uv, weight) in image_samples(projection, &coords) {
         let cell = (uv * CHECKER_CELLS).floor();
         let even = (cell.x + cell.y).rem_euclid(2.0) < 0.5;
         light += weight * f32::from(u8::from(even));
@@ -545,7 +589,7 @@ fn from_linear(color: Vec3) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use texturecraft_engine::core::{Projector, UvTransform};
+    use texturecraft_engine::core::{Projector, ShapeCrop, UvTransform};
 
     fn tokens() -> Tokens {
         Tokens::for_brightness(crate::theme::Brightness::MediumDark)
@@ -569,6 +613,7 @@ mod tests {
         let tokens = tokens();
         for projection in [spherical(1.0), cylindrical(Projector::default()), Projection::triplanar()] {
             let image = render(&projection, 32, VIEW_HALF, SUPERSAMPLE, &tokens);
+
             assert_eq!(image.pixels[0], tokens.field, "{projection:?}: the corner is background");
             assert_ne!(image.pixels[16 * 32 + 16], tokens.field, "{projection:?}: the middle shows the shape");
         }
@@ -577,6 +622,7 @@ mod tests {
     #[test]
     fn the_preview_follows_the_fill_settings() {
         let tokens = tokens();
+
         assert_ne!(
             render(&spherical(1.0), 32, VIEW_HALF, SUPERSAMPLE, &tokens).pixels,
             render(&spherical(3.0), 32, VIEW_HALF, SUPERSAMPLE, &tokens).pixels,
@@ -601,9 +647,89 @@ mod tests {
 
     const BOUNDS: (Vec3, Vec3) = (Vec3::NEG_ONE, Vec3::ONE);
 
+    #[test]
+    fn outline_occlusion_uses_the_same_camera_as_the_preview() {
+        let view = View::new();
+        let screen = Screen { view, rect: Rect::from_min_size(Pos2::ZERO, vec2(96.0, 96.0)), half: VIEW_HALF };
+        let far = CAMERA_DISTANCE + CYLINDER_HALF_HEIGHT * 2.0;
+
+        assert!(screen.hidden(PreviewShape::Cylinder, -view.eye * far));
+        assert!(!screen.hidden(PreviewShape::Cylinder, view.eye * far));
+        assert!(!screen.hidden(PreviewShape::Cylinder, -view.eye * far + view.right * (CYLINDER_RADIUS * 2.0)));
+    }
+
+    #[test]
+    fn placed_preview_preserves_crop_and_the_frames_image_coordinates() {
+        let frame = texturecraft_engine::core::Decal {
+            center: [0.0; 3],
+            normal: [0.0, 0.0, 1.0],
+            up: [0.0, 1.0, 0.0],
+            size: [1.0; 2],
+            rotation: 0.0,
+            offset: [0.0; 2],
+            depth: 1.0,
+            symmetry: None,
+            flip: [false; 2],
+        };
+        let uv = UvTransform { tiling: [1.7, 2.4], rotation: 33.0, offset: [0.1, -0.2] };
+        let projector = Projector::default();
+        let outside = Coords { pos: Vec3::new(SPHERE_RADIUS * 0.75, 0.0, 0.0), uv: Vec2::ZERO, nrm: Vec3::Z };
+
+        for crop in [ShapeCrop::ExtendsOutside, ShapeCrop::Cropped] {
+            for flip in [[false, false], [true, false], [false, true], [true, true]] {
+                let frame = texturecraft_engine::core::Decal { flip, ..frame };
+                let projector = Projector { crop, ..projector };
+                let source = Projection::Planar { scale: 1.0, axis: 2, offset: [0.0; 3], uv, projector, placed: Some(frame) };
+                let shown = shown_projection(&source, BOUNDS).unwrap();
+
+                assert_eq!(projector_cover(&shown, &outside), f32::from(u8::from(crop == ShapeCrop::ExtendsOutside)));
+                for point in [Vec3::ZERO, Vec3::new(0.2, 0.1, 0.0), Vec3::new(-0.15, 0.21, 0.0)] {
+                    let (frame_uv, _) = texturecraft_engine::compose::projector_cover::placed_cover(&frame, &projector, point, Vec3::Z).unwrap();
+                    let expected = image_samples(&source, &Coords { uv: frame_uv, pos: point, nrm: Vec3::Z })[0].0;
+                    let actual = image_samples(&shown, &Coords { uv: Vec2::ZERO, pos: point * SPHERE_RADIUS, nrm: Vec3::Z })[0].0;
+
+                    assert!(actual.distance(expected) < 1e-5, "{crop:?} {flip:?} at {point}: expected {expected}, got {actual}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_uneven_placed_projector_keeps_its_backface_culling_in_the_preview() {
+        let center = Vec3::new(2.0, 3.0, 4.0);
+        let frame = texturecraft_engine::core::Decal {
+            center: center.to_array(),
+            normal: Vec3::Z.to_array(),
+            up: Vec3::Y.to_array(),
+            size: [1.0; 2],
+            rotation: 0.0,
+            offset: [0.0; 2],
+            depth: 1.0,
+            symmetry: None,
+            flip: [false; 2],
+        };
+        let projector = Projector {
+            scale: [2.0, 1.0, 1.0],
+            backface: texturecraft_engine::core::Backface { on: true, angle: 90.0, hardness: 1.0 },
+            crop: ShapeCrop::Cropped,
+            ..Default::default()
+        };
+        let source = Projection::Planar { scale: 1.0, axis: 2, offset: [0.0; 3], uv: UvTransform::default(), projector, placed: Some(frame) };
+        let bounds = (center - Vec3::splat(2.0), center + Vec3::splat(2.0));
+
+        assert!(folded(&source).is_none(), "folding this projector would change how it culls");
+
+        let shown = shown_projection(&source, bounds).expect("a valid placed projector has a 3D preview");
+        let coverage = |pos, nrm| surface(&shown, &Coords { pos, nrm, uv: Vec2::ZERO }, [Vec3::ZERO, Vec3::ONE, Vec3::splat(0.5)]).1;
+
+        assert!(coverage(Vec3::ZERO, Vec3::Z) > 0.0, "the image-facing side is covered");
+        assert_eq!(coverage(Vec3::ZERO, Vec3::NEG_Z), 0.0, "the back is culled");
+        assert_eq!(coverage(Vec3::Y * SPHERE_RADIUS, Vec3::Z), 0.0, "the original frame still crops the image");
+    }
+
     fn shown(projection: &Projection) -> Vec<Color32> {
         let shown = shown_projection(projection, BOUNDS).unwrap();
-        let half = view_half(ProjectorOutline::of(&shown, shape_for(&shown).half_size()).as_ref());
+        let (_, half) = resting_fit(&shown, shape_for(&shown));
         render(&shown, 32, half, SUPERSAMPLE, &tokens()).pixels
     }
 
@@ -614,6 +740,7 @@ mod tests {
         let bigger = Projector { scale: [1.15; 3], ..Projector::default() };
         let Projection::Spherical { uv, .. } = spherical(1.0) else { panic!("spherical() makes a spherical projection") };
         let sphere = |projector: Projector, offset: [f32; 3]| Projection::Spherical { scale: 1.0, uv, offset, projector };
+
         assert_ne!(shown(&sphere(bigger, [0.0; 3])), base, "a bigger sphere zooms the view out");
         assert_ne!(shown(&sphere(Projector { rotation: [0.0, 0.0, 40.0], ..Projector::default() }, [0.0; 3])), base, "a turned sphere turns its checker");
         assert_ne!(shown(&sphere(Projector::default(), [0.3, 0.0, 0.0])), base, "an offset moves it");
@@ -690,6 +817,7 @@ mod tests {
         let Projection::Spherical { scale, uv, projector, .. } = sized(1.0) else { panic!("sized() makes a spherical projection") };
         for offset in [[0.0, 0.0, 0.0], [0.3, 0.0, 0.0], [1.5, 0.8, 0.0]] {
             let slid = Projection::Spherical { scale, uv, offset, projector };
+
             assert_eq!(fitted_half(&slid), fitted_half(&sized(1.0)), "Offset {offset:?} keeps the view");
 
             let (resting, half) = resting_fit(&slid, PreviewShape::Sphere);
@@ -707,6 +835,7 @@ mod tests {
     fn a_huge_sphere_keeps_the_shape_in_the_square() {
         let tokens = tokens();
         let image = render(&sized(3.0), 32, fitted_half(&sized(3.0)), SUPERSAMPLE, &tokens);
+
         assert_eq!(image.pixels[0], tokens.field, "the corner is background");
         assert_eq!(image.pixels[16 * 32 + 4], tokens.field, "the shape is half its size: its side is background");
         assert_ne!(image.pixels[16 * 32 + 16], tokens.field, "the shape is in the middle");
@@ -718,6 +847,7 @@ mod tests {
         let screen = Screen { view: View::new(), rect: Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0)), half: 1.2 };
         let outline = ProjectorOutline::of(&sized(1.0), PreviewShape::Sphere.half_size()).unwrap();
         let hidden = |line: &Vec<Vec3>| line.iter().filter(|point| screen.hidden(PreviewShape::Sphere, **point)).count();
+
         assert_eq!(hidden(&outline.lines[0]), 0, "the rim is all seen");
 
         let equator = hidden(&outline.lines[1]);
@@ -756,7 +886,7 @@ mod tests {
             }),
         ];
 
-        // One square per picture: the preview keeps one rendered texture. The medium theme at every size, the others at two
+        // Cover every size in the medium theme and two sizes in the other themes
         let themes = [(Brightness::MediumDark, "", &SIZES[..]), (Brightness::Dark, "-dark", &[1.0, 3.0][..]), (Brightness::Light, "-light", &[1.0, 3.0][..])];
         for ((brightness, theme, sizes), (name, make)) in themes.into_iter().flat_map(|theme| kinds.map(|kind| (theme, kind))) {
             for &scale in sizes {
@@ -824,7 +954,7 @@ mod tests {
         let ctx = egui::Context::default();
         let tokens = tokens();
         let (docked, popup) = (egui::Id::unique("docked"), egui::Id::unique("popup"));
-        let rendered = |owner| ctx.data(|data| data.get_temp::<RenderedPreview>(slot(owner))).expect("a picture");
+        let rendered = |owner| cached_preview(&ctx, owner).expect("a picture");
         let mut shown = Vec::new();
         for _ in 0..2 {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
@@ -836,9 +966,35 @@ mod tests {
         }
 
         let [docked_picture, popup_picture] = [rendered(docked), rendered(popup)];
+
         assert_ne!(docked_picture.texture.id(), popup_picture.texture.id(), "each square draws its own texture");
         assert!(docked_picture.key.starts_with("64") && popup_picture.key.starts_with("96"), "each picture is rendered at its own side");
         assert_eq!(shown[0], shown[1], "the next frame keeps both pictures");
+    }
+
+    #[test]
+    fn hidden_and_replaced_projection_previews_release_their_textures() {
+        let ctx = egui::Context::default();
+        let tokens = tokens();
+        let bounds = Rect::from_min_size(pos2(0.0, 0.0), vec2(64.0, 64.0));
+        let popup = egui::Id::unique("popup");
+        let active_previews = || ctx.tex_manager().read().allocated().filter(|(_, texture)| texture.name == "projection-preview").count();
+        let mut counts = Vec::new();
+
+        for index in 0..12 {
+            let owner = egui::Id::unique(("selection", index));
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                projection_preview(ui.painter(), bounds, &spherical(1.0), BOUNDS, &tokens, owner);
+                projection_preview(ui.painter(), bounds, &spherical(2.0), BOUNDS, &tokens, popup);
+            });
+            output.textures_delta.clear();
+            counts.push(active_previews());
+        }
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+
+        assert!(counts.iter().all(|&count| count == 2), "views retained after each frame: {counts:?}");
+        assert_eq!(active_previews(), 0);
     }
 
     /// Render times of the preview square (prints ms per render at its largest side; run with --ignored --nocapture)

@@ -87,6 +87,7 @@ fn filter_library_adds_every_filter_and_edits_its_parameters() {
 
         execute(&mut s, "effect.remove", &json!({"effect": eid.0})).unwrap();
     }
+
     // A gradient map recolors the content; effect.set edits it and inspect shows it
     let gm =
         id(execute(&mut s, "effect.add.filter", &json!({"filter": "gradientMap", "target": "content", "colors": [[0, 0, 1], [0, 0, 1]]})).unwrap(), "effect");
@@ -103,6 +104,7 @@ fn filter_library_adds_every_filter_and_edits_its_parameters() {
     assert!(inspect.contains("GradientMap"), "inspect shows filter parameters");
 
     execute(&mut s, "effect.remove", &json!({"effect": gm.0})).unwrap();
+
     // Posterize on the mask; its steps are clamped
     let post = id(execute(&mut s, "effect.add.filter", &json!({"filter": "posterize", "levels": 3})).unwrap(), "effect");
     execute(&mut s, "effect.set", &json!({"effect": post.0, "levels": 500})).unwrap();

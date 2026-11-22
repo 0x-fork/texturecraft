@@ -59,6 +59,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
         Some(PropertiesPopup::Open { .. }) => {
             let shown = ctx.memory(|memory| memory.area_rect(area_id()));
             let outside = pressed_at.is_some_and(|at| shown.is_some_and(|rect| !rect.contains(at)));
+
             // A press in one of the popup's own dropdowns lands outside its area
             if outside && !egui::Popup::is_any_open(ctx) {
                 app.properties_popup = Some(PropertiesPopup::Closing);
@@ -68,6 +69,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ctx: &egui::Context) {
     }
 
     let Some(PropertiesPopup::Open { at, bounds }) = app.properties_popup else { return };
+
     let tokens = Tokens::get(ctx);
     egui::Area::new(area_id()).order(egui::Order::Foreground).fixed_pos(at).constrain_to(bounds.shrink(PROPERTIES_POPUP_VIEW_MARGIN)).show(ctx, |ui| {
         egui::Frame::popup(ui.style()).fill(tokens.panel).inner_margin(egui::Margin::ZERO).show(ui, |ui| {

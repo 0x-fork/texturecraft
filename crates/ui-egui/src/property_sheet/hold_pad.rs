@@ -29,6 +29,8 @@ impl PropertySheet<'_> {
         if lit {
             painter.rect_stroke(picture, 0, Stroke::new(1.0, tokens.accent), StrokeKind::Inside);
         }
+
+        self.paint_control_focus(&response);
         response
     }
 }

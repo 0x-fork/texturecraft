@@ -54,6 +54,7 @@ fn filtering_decides_how_a_shrunk_image_reads() {
     let mut s = session();
     let layer = checker_fill(&mut s, 7.3);
     let (lo, hi) = spread(&mut s);
+
     assert!(hi - lo < 0.2, "a new fill reads with Bilinear | HQ: an even gray, got {lo}..{hi}");
 
     filtering(&mut s, layer, "bilinearSharp");
@@ -87,6 +88,7 @@ fn fills_saved_before_filtering_keep_their_look() {
     let mut s = session();
     let layer = checker_fill(&mut s, 1.0);
     let LayerKind::Fill(fill) = &s.doc.project.layer(layer).unwrap().kind else { panic!("a fill layer") };
+
     assert_eq!(fill.sampling.filtering, Filtering::BilinearHq);
 
     let mut saved = serde_json::to_value(fill).unwrap();
@@ -128,6 +130,7 @@ fn uv_wrap_repeats_the_tile_or_stops_at_its_edge() {
     set(&mut s, json!({"scale": [4, 2]})).unwrap();
     let near = |got: f32, want: f32| (got - want).abs() < 0.05;
     let repeat = shown(&mut s);
+
     assert!(near(repeat, 1.0), "Repeat covers the band: {repeat}");
 
     set(&mut s, json!({"wrap": "none"})).unwrap();
@@ -186,6 +189,7 @@ fn three_d_projections_take_uv_transformations() {
 
     set(&mut s, json!({"tiling": [2, 3], "rotation": 45, "uvOffset": [0.25, 0.5]})).unwrap();
     let Projection::Triplanar { uv, scale, .. } = projection(&s) else { panic!("tri-planar") };
+
     assert_eq!(uv, UvTransform { tiling: [2.0, 3.0], rotation: 45.0, offset: [0.25, 0.5] });
     assert_eq!(scale, 1.0, "the world scale is its own param");
     assert_ne!(snapshot(&mut s), plain, "the UV transformations move the pattern");
@@ -214,6 +218,7 @@ fn scale_mode_is_stored_without_changing_the_tiling() {
     let layer = checker_fill(&mut s, 2.0);
     execute(&mut s, "layer.fill.projection", &json!({"layer": layer.0, "scaleMode": "physicalSize"})).unwrap();
     let LayerKind::Fill(fill) = s.doc.project.layer(layer).unwrap().kind.clone() else { panic!("a fill layer") };
+
     assert_eq!(fill.sampling.scale, ScaleMode::PhysicalSize);
     assert!(matches!(fill.projection, Projection::Uv { scale: [2.0, 2.0], .. }), "{:?}", fill.projection);
 

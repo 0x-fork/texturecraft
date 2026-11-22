@@ -75,7 +75,7 @@ impl PropertySheet<'_> {
                 if linked {
                     size.values[1] = value;
                 }
-                edit.size = Some(merge);
+                edit.size = Some(edit.size.unwrap_or(true) && merge);
             }
             y += PART_LINE;
         }
@@ -96,7 +96,7 @@ impl PropertySheet<'_> {
                     let start = self.direction_glyph(x0, center_y, part);
                     let label = format_args!("{offset}{}", part_suffix(part));
                     if let Some(merge) = self.side_slider(label, start, track_end, value_right, center_y, &mut values[part], (&range, &typed), 2, true) {
-                        edit.lower = Some(merge);
+                        edit.lower = Some(edit.lower.unwrap_or(true) && merge);
                     }
                     y += PART_LINE;
                 }

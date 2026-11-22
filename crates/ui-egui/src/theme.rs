@@ -344,6 +344,7 @@ pub fn apply(ctx: &egui::Context, b: Brightness, accent: Accent) {
             (TextStyle::Monospace, FontId::new(11.5, FontFamily::Monospace)),
         ]
         .into();
+
         // A 2-4-6-8-12 spacing scale: 6 between items, 4 between rows, controls 24 high
         s.spacing.item_spacing = egui::vec2(6.0, 4.0);
         s.spacing.button_padding = egui::vec2(8.0, 3.0);
@@ -372,10 +373,12 @@ pub fn apply(ctx: &egui::Context, b: Brightness, accent: Accent) {
         let w = &mut v.widgets;
         craft_ui::theme::WidgetPalette { noninteractive: t.panel, inactive: t.button, hovered: t.row_hover, active: t.tool_active, open: t.row_hover }
             .apply_to(w, t.cr(), Stroke::new(1.0, t.text));
+
         // Hovered and pressed lettering, and `RichText::strong` (captions), in the strong colour
         w.hovered.fg_stroke.color = t.text_strong;
         w.active.fg_stroke.color = t.text_strong;
         w.noninteractive.bg_stroke = Stroke::new(1.0, t.separator);
+
         // Flat buttons: the outline is the face's own colour, so only text fields show it
         w.inactive.bg_stroke = Stroke::new(1.0, t.button);
         w.hovered.bg_stroke = Stroke::new(1.0, t.field_border);
@@ -429,7 +432,7 @@ mod tests {
 
     #[test]
     fn every_brightness_and_accent_reads() {
-        // Relative luminance (WCAG) and contrast ratio.
+        // Use WCAG relative luminance for the contrast ratio
         let lum = |c: Color32| {
             let ch = |v: u8| {
                 let v = f32::from(v) / 255.0;
@@ -444,6 +447,7 @@ mod tests {
         for b in Brightness::ALL {
             for a in Accent::ALL {
                 let t = Tokens::for_brightness(b).with_accent(a);
+
                 assert_eq!(t.dark, matches!(b, Brightness::Dark | Brightness::MediumDark));
                 assert!(contrast(t.text, t.panel) >= 7.0, "{b:?}: text on panel");
                 assert!(contrast(t.text_dim, t.panel) >= 4.5, "{b:?}: dim text on panel");
@@ -453,6 +457,7 @@ mod tests {
                 assert!(contrast(t.accent, t.panel) >= 2.5, "{b:?} {a:?}: accent on panel");
                 assert!(contrast(Color32::WHITE, t.accent_strong) >= 2.5, "{b:?} {a:?}: white on accent button");
                 assert!(contrast(t.viewport_text, t.viewport) >= 3.0, "{b:?}: lettering on the views");
+
                 // Slider rails show on the card
                 assert!(contrast(t.button_border, t.panel) >= 1.6, "{b:?}: rail on panel");
             }

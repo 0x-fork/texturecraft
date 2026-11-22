@@ -60,6 +60,7 @@ impl SetCache {
     pub(crate) fn new(mesh: &Mesh, ts: &TextureSet) -> SetCache {
         let (w, h) = ts.size();
         let gbuf = UvGBuffer::new(mesh, ts.material, w, h);
+
         // Padding stays inside each UV tile
         let dilation = DilationMap::in_blocks(&gbuf.coverage_mask(), w, h, Some(DISPLAY_PADDING), ts.block_resolution());
         let covered = covered_tiles(&gbuf);

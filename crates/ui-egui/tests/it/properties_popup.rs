@@ -209,6 +209,7 @@ fn its_jump_tabs_scroll_to_a_section_and_light_it_without_moving_the_docked_pane
 
     let docked = egui::Rect::from_min_max(docked_fill.min, docked_fill.max + vec2(DOCKED_STRIP_WIDTH, 0.0));
     let in_popup = |harness: &Harness<'_, TextureCraftApp>, label: &str| harness.query_all_by_label(label).any(|node| popup.contains_rect(node.rect()));
+
     assert!(tab_lit(&harness, popup, "Fill"), "it opens on Fill");
     assert!(in_popup(&harness, "UV projection"));
 

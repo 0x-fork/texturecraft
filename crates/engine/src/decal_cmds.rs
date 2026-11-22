@@ -12,7 +12,7 @@ use texturecraft_geom::glam::{Quat, Vec2, Vec3};
 
 use crate::commands::{CommandSpec, always, bad, boolp, channel_param, f32p, layer_param, strp, u64p, vec3};
 use crate::layer_cmds::{FULL_TURN_DEGREES, MAX_PROJECTION_DEPTH};
-use crate::tool_cmds::viewport_of;
+use crate::tool_cmds::{pair, viewport_of};
 use crate::{Result, Session, StackTarget, cmd};
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -76,22 +76,17 @@ const MIN_GIVEN_UP_CROSS_SQUARED: f32 = 1e-8;
 const MIN_CAMERA_UP_CROSS_SQUARED: f32 = 1e-4;
 
 /// The mesh's diagonal (decal sizes are relative to it).
-fn mesh_size(session: &Session) -> f32 {
-    let (lo, hi) = session.mesh.bounds();
-    (hi - lo).length().max(MIN_MESH_DIAGONAL)
+fn diagonal_of((minimum, maximum): (Vec3, Vec3)) -> f32 {
+    (maximum - minimum).length().max(MIN_MESH_DIAGONAL)
 }
 
 /// Width and height from a `size` param (a height keeping `aspect`, or `[w, h]`), within the decal size limits
-fn size_param(params: &Value, aspect: f32, mesh_diagonal: f32) -> Option<[f32; 2]> {
-    let value = params.get("size")?;
-    let size = match value.as_array() {
-        Some(pair) => [pair.first()?.as_f64()? as f32, pair.get(1)?.as_f64()? as f32],
-        None => {
-            let height = value.as_f64()? as f32;
-            [height * aspect, height]
-        }
-    };
-    size.iter().all(|side| side.is_finite()).then(|| size.map(|side| side.clamp(mesh_diagonal * MIN_SIZE, mesh_diagonal * MAX_SIZE)))
+fn size_param(command: &str, params: &Value, aspect: f32, mesh_diagonal: f32) -> Result<Option<[f32; 2]>> {
+    let Some(value) = params.get("size") else { return Ok(None) };
+    let size = if value.is_array() { pair(params, "size") } else { value.as_f64().map(|height| [height as f32 * aspect, height as f32]) };
+    let size = size.filter(|size| size.iter().all(|side| side.is_finite())).ok_or_else(|| bad(command, "`size` must be a finite height or [width, height]"))?;
+
+    Ok(Some(size.map(|side| side.clamp(mesh_diagonal * MIN_SIZE, mesh_diagonal * MAX_SIZE))))
 }
 
 /// The decal's up direction: `up` when given, else the camera's (decals are placed upright on
@@ -178,9 +173,10 @@ fn add(session: &mut Session, params: &Value) -> Result<Value> {
         return Err(bad(command, format!("the texture set has no {} channel", channel.label())));
     }
 
-    let mesh_diagonal = mesh_size(session);
+    let bounds = session.mesh.bounds();
+    let mesh_diagonal = diagonal_of(bounds);
     let default_height = mesh_diagonal * DEFAULT_HEIGHT;
-    let mut size = size_param(params, aspect, mesh_diagonal).unwrap_or([default_height * aspect, default_height]);
+    let mut size = size_param(command, params, aspect, mesh_diagonal)?.unwrap_or([default_height * aspect, default_height]);
     if boolp(params, "keepProportions") == Some(true) && params.get("size").is_some_and(Value::is_array) {
         size[1] = (size[0] / aspect).clamp(mesh_diagonal * MIN_SIZE, mesh_diagonal * MAX_SIZE);
     }
@@ -195,7 +191,7 @@ fn add(session: &mut Session, params: &Value) -> Result<Value> {
 
         // By default it reaches half its larger side into the surface
         depth: f32p(params, "depth").map_or(size[0].max(size[1]) * 0.5, |depth| depth.clamp(mesh_diagonal * MIN_SIZE, mesh_diagonal * MAX_SIZE)),
-        symmetry: symmetry_param(command, params, None, session.mesh.bounds())?,
+        symmetry: symmetry_param(command, params, None, bounds)?,
     };
 
     // A decal dropped on another texture set goes there and selects it, as a dropped material does
@@ -232,7 +228,7 @@ fn add(session: &mut Session, params: &Value) -> Result<Value> {
 }
 
 /// The projection of fill layer `id`, or of mask fill effect `effect` when given, with the frame it projects from: an axis planar is placed as the frame it already projects from (it reads images exactly as before), a turned or scaled projector is folded into its frame
-fn framed(session: &Session, command: &str, id: LayerId, effect: Option<LayerId>) -> Result<(Projection, Decal)> {
+fn framed(session: &Session, command: &str, id: LayerId, effect: Option<LayerId>, bounds: (Vec3, Vec3)) -> Result<(Projection, Decal)> {
     let projection = stored_projection(session, command, id, effect)?;
     if matches!(projection, Projection::Planar { placed: None, .. }) && placing_moves_pattern(stored_sources(session, id, effect).into_iter()) {
         return Err(bad(command, "an axis planar reading a procedural pattern keeps its axis: placing its frame would move the pattern"));
@@ -243,7 +239,7 @@ fn framed(session: &Session, command: &str, id: LayerId, effect: Option<LayerId>
         return Err(bad(command, UNFOLDABLE_CULLING));
     }
 
-    let projection = placed_from_axis(projection, session.mesh.bounds()).unwrap_or_else(|| projection.clone());
+    let projection = placed_from_axis(projection, bounds).unwrap_or_else(|| projection.clone());
 
     // The frame moves as it lands: a projector's own turn and scale go into it first
     let projection = folded(&projection).unwrap_or(projection);
@@ -254,7 +250,7 @@ fn framed(session: &Session, command: &str, id: LayerId, effect: Option<LayerId>
     Ok((projection, frame))
 }
 
-/// Whether `projection`'s backface culling keeps its facing once its projector's turn and scale are in its frame
+/// Whether folding the projector's transform into its frame preserves culling
 fn culling_keeps_facing(projection: &Projection) -> bool {
     match projection {
         Projection::Planar { projector, .. } | Projection::Warp { projector, .. } => culling_folds(projector),
@@ -262,9 +258,8 @@ fn culling_keeps_facing(projection: &Projection) -> bool {
     }
 }
 
-/// Why a projector whose backface culling cannot keep its facing in a frame is not moved, and the way out
-const UNFOLDABLE_CULLING: &str =
-    "backface culling under an uneven or mirrored projector scale cannot move into a frame: even out the projector scale or turn backface culling off";
+/// Explain why the projector transform cannot be folded into its frame
+const UNFOLDABLE_CULLING: &str = "the projector scale would change culling when moved into a frame. For uneven scale, even out the projector scale or turn backface culling off. For a mirrored projector, restore a positive scale or turn both backface and depth culling off";
 
 /// The projection fill layer `id`, or mask fill effect `effect` when given, holds
 fn stored_projection<'a>(session: &'a Session, command: &str, id: LayerId, effect: Option<LayerId>) -> Result<&'a Projection> {
@@ -313,7 +308,7 @@ fn placed_image(session: &Session, id: LayerId, effect: Option<LayerId>) -> Opti
 }
 
 /// `projection` with its frame where `frameOffset`, `frameRotation` and `frameScale` put it (None when none is given)
-fn placed_as_shown(session: &Session, command: &str, params: &Value, projection: &Projection) -> Result<Option<Projection>> {
+fn placed_as_shown(command: &str, params: &Value, projection: &Projection, bounds: (Vec3, Vec3)) -> Result<Option<Projection>> {
     let fields = ["frameOffset", "frameRotation", "frameScale"];
     if fields.iter().all(|key| params.get(*key).is_none()) {
         return Ok(None);
@@ -323,7 +318,6 @@ fn placed_as_shown(session: &Session, command: &str, params: &Value, projection:
         None => Ok(None),
         Some(_) => vec3(params, key).map(Some).ok_or_else(|| bad(command, format!("`{key}` must be [x, y, z]"))),
     };
-    let bounds = session.mesh.bounds();
     if !culling_keeps_facing(projection) {
         return Err(bad(command, UNFOLDABLE_CULLING));
     }
@@ -387,11 +381,12 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
         return Err(bad(command, format!("effect {} is not in layer {layer}", effect.0)));
     }
 
-    let (mut projection, mut decal) = framed(session, command, layer_id, effect)?;
+    let bounds = session.mesh.bounds();
+    let (mut projection, mut decal) = framed(session, command, layer_id, effect, bounds)?;
     let texture_set =
         session.doc.project.locate(layer_id).map(|(texture_set, _, _)| texture_set).ok_or_else(|| bad(command, "the decal has no texture set"))?;
-    let mesh_diagonal = mesh_size(session);
-    if let Some(moved) = placed_as_shown(session, command, params, &projection)? {
+    let mesh_diagonal = diagonal_of(bounds);
+    if let Some(moved) = placed_as_shown(command, params, &projection, bounds)? {
         projection = moved;
         decal = projection.frame().copied().ok_or_else(|| bad(command, "the projection lost its frame"))?;
 
@@ -419,7 +414,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
     let keep = boolp(params, "keepProportions") == Some(true);
     let ratio = decal.size[0] / decal.size[1].max(MIN_FRAME_SIDE);
     let aspect = if keep { image_aspect(session, layer_id, effect, strp(params, "image")).unwrap_or(ratio) } else { ratio };
-    if let Some(mut size) = size_param(params, aspect, mesh_diagonal).or_else(|| keep.then_some(decal.size)) {
+    if let Some(mut size) = size_param(command, params, aspect, mesh_diagonal)?.or_else(|| keep.then_some(decal.size)) {
         // A height sets the width through `aspect`; a pair or the current size sets the height from the width
         if keep && params.get("size").is_none_or(Value::is_array) {
             size[1] = (size[0] / aspect).clamp(mesh_diagonal * MIN_SIZE, mesh_diagonal * MAX_SIZE);
@@ -435,12 +430,11 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
     if let Some(rotation) = f32p(params, "rotation") {
         decal.rotation = rotation.rem_euclid(FULL_TURN_DEGREES);
     }
-    if let Some(offset) = params.get("offset").and_then(Value::as_array) {
-        let values: Vec<f32> = offset.iter().filter_map(Value::as_f64).map(|value| value as f32).filter(|value| value.is_finite()).collect();
-        let [right, up] = values.as_slice() else { return Err(bad(command, "`offset` must be [right, up]")) };
-
-        decal.offset = [right.clamp(-mesh_diagonal, mesh_diagonal), up.clamp(-mesh_diagonal, mesh_diagonal)];
+    if params.get("offset").is_some() {
+        let offset = pair(params, "offset").ok_or_else(|| bad(command, "`offset` must be [right, up]"))?;
+        decal.offset = offset.map(|component| component.clamp(-mesh_diagonal, mesh_diagonal));
     }
+
     let depth = f32p(params, "depth").map(|depth| depth.clamp(mesh_diagonal * MIN_SIZE, mesh_diagonal * MAX_SIZE));
 
     // A warp reaches by its Projection Depth (set below); its frame's own depth is unused, so it stays
@@ -449,7 +443,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
     {
         decal.depth = depth;
     }
-    decal.symmetry = symmetry_param(command, params, decal.symmetry, session.mesh.bounds())?;
+    decal.symmetry = symmetry_param(command, params, decal.symmetry, bounds)?;
 
     let image = strp(params, "image").map(str::to_string);
     if let Some(name) = &image

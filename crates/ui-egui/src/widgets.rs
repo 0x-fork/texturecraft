@@ -23,14 +23,32 @@ pub fn slider(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::RangeI
 
 /// For an editor `id` drawn every frame: `Some(merge)` when it `changed`, merge true for a press's later changes (one undo step per drag; typing never merges)
 pub(crate) fn press_edit(ui: &Ui, id: egui::Id, changed: bool) -> Option<bool> {
-    let held = ui.input(|input| input.pointer.any_down());
-    if !held {
-        // The press is over: the next one starts its own undo step
-        ui.data_mut(|data| data.remove_temp::<bool>(id));
-        return changed.then_some(false);
+    let (press, release_only) = ui.input(|input| {
+        let pointer = &input.pointer;
+        (pointer.press_start_time().map(f64::to_bits), pointer.any_released() && !pointer.any_pressed())
+    });
+    if press.is_none() && !changed {
+        return None;
     }
 
-    changed.then(|| ui.data_mut(|data| std::mem::replace(data.get_temp_mut_or_default::<bool>(id), true)))
+    ui.memory_mut(|memory| {
+        let edits = memory.caches.cache::<egui::cache::FramePublisher<egui::Id, u64>>();
+        let id = id.with("pointer edit");
+        let previous = edits.get(&id).copied();
+        let merge = match press {
+            Some(start) => {
+                let continuing = previous == Some(start);
+                if changed || continuing {
+                    edits.set(id, start);
+                }
+                continuing
+            }
+
+            // A final movement still belongs to the press that ended
+            None => release_only && previous.is_some(),
+        };
+        changed.then_some(merge)
+    })
 }
 
 /// [`slider`] for a value re-read from the document every frame: `Some(merge)` on every frame
@@ -122,7 +140,7 @@ fn slider_inner(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::Rang
     }
 
     let mut moved = false;
-    if (response.dragged() || response.clicked())
+    if (response.dragged() || response.drag_stopped() || response.clicked())
         && let Some(pointer) = response.interact_pointer_pos()
     {
         let fraction = ((pointer.x - rect.left() - SLIDER_TRACK_INSET) / (rect.width() - 2.0 * SLIDER_TRACK_INSET).max(1.0)).clamp(0.0, 1.0);
@@ -449,6 +467,7 @@ fn color_picker(ui: &mut Ui, id: egui::Id, c: &mut Color32, width: f32) -> bool 
     let tk = Tokens::get(ui.ctx());
     let mut srgb = [c.r(), c.g(), c.b()];
     let hsv_of = |srgb: [u8; 3]| hsv_from_rgb(srgb.map(|v| v as f32 / 255.0));
+
     // Remembered with the color it was for, so hue and saturation survive black, white and grays
     let (mut h, mut s, mut v) = ui.data(|d| d.get_temp::<(Color32, (f32, f32, f32))>(id)).filter(|(k, _)| k == c).map_or_else(|| hsv_of(srgb), |(_, hsv)| hsv);
     let mut typed = false;
@@ -465,6 +484,7 @@ fn color_picker(ui: &mut Ui, id: egui::Id, c: &mut Color32, width: f32) -> bool 
         (h, s, v) = hsv_of(srgb);
     }
     let border = Stroke::new(1.0, tk.field_border);
+
     // Saturation across, value up
     let (rect, resp) = ui.allocate_exact_size(vec2(width, width), Sense::click_and_drag());
     if let Some(p) = resp.interact_pointer_pos().filter(|_| resp.dragged() || resp.clicked()) {
@@ -526,19 +546,17 @@ fn gradient(painter: &egui::Painter, rect: egui::Rect, rgb: impl Fn(f32, f32) ->
     painter.add(mesh);
 }
 
-/// From a panel body's top to its empty note's lettering: the reference's gap under the header's name
-const EMPTY_NOTE_TOP: f32 = 9.0;
+/// Gap above empty panel text, in points
+const EMPTY_NOTE_TOP_GAP: f32 = 9.0;
 
-/// The line an empty panel shows instead of its contents ("No properties found"): under the header at its name's left edge, greyed as the disabled toolbar icons are
+/// Aligns an empty panel's note with its header
 pub(crate) fn empty_note(ui: &mut Ui, text: &str) {
     let tokens = Tokens::get(ui.ctx());
-    ui.add_enabled_ui(false, |ui| {
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let galley = ui.painter().layout_no_wrap(text.to_owned(), font, tokens.text);
-        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), EMPTY_NOTE_TOP + galley.size().y), Sense::hover());
-        response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, false, text));
-        let at = egui::pos2(rect.left() + crate::docking::HEADER_TITLE_LEFT, rect.top() + EMPTY_NOTE_TOP);
-        ui.painter().galley(at, galley, tokens.text);
+    let side_margin = crate::docking::HEADER_TITLE_LEFT as i8;
+
+    ui.add_space(EMPTY_NOTE_TOP_GAP);
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(side_margin, 0)).show(ui, |ui| {
+        ui.label(RichText::new(text).color(tokens.text_dim));
     });
 }
 

@@ -39,15 +39,14 @@ const PAIR_NAME_TO_PILL: f32 = 32.0;
 /// Width of a focused control's outline in points
 const FOCUS_OUTLINE_WIDTH: f32 = 2.0;
 
+pub(super) fn paint_focus_outline(painter: &Painter, rect: Rect, color: Color32) {
+    painter.rect_stroke(rect, CornerRadius::same(CONTROL_RADIUS), Stroke::new(FOCUS_OUTLINE_WIDTH, color), StrokeKind::Inside);
+}
+
 impl PropertySheet<'_> {
     pub(super) fn paint_control_focus(&self, response: &Response) {
         if response.has_focus() {
-            self.ui.painter().rect_stroke(
-                response.rect,
-                CornerRadius::same(CONTROL_RADIUS),
-                Stroke::new(FOCUS_OUTLINE_WIDTH, self.tokens.text_strong),
-                StrokeKind::Inside,
-            );
+            paint_focus_outline(self.ui.painter(), response.rect, self.tokens.text_strong);
         }
     }
 
