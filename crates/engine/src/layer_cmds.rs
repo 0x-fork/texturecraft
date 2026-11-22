@@ -569,10 +569,12 @@ fn fill_set(session: &mut Session, params: &Value) -> Result<Value> {
     if let Some(input) = strp(params, "input") {
         return input_set(session, params, input);
     }
+
     let target = fill_target(session, params, FILL_SET)?;
     if let FillTarget::Mask(effect) = target {
         return mask_fill_set(session, params, effect);
     }
+
     let channel = channel_param(FILL_SET, params, "channel")?.ok_or_else(|| bad(FILL_SET, "`channel` is required"))?;
 
     // `solo`: this channel on, every other one off

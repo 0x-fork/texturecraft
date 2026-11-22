@@ -13,14 +13,15 @@ use rayon::prelude::*;
 use texturecraft_core::{
     AnisotropicKuwahara, BakedMap, Bevel, BevelSmooth, BlendMode, BlockScales, Channel, ChannelKind, ColorMatch, CompareSource, ContentsOffset,
     CurvatureDetail, CurvatureMode, Effect, EffectKind, FLAT_CURVATURE, Fill, Filter, Filtering, Generator, GeneratorKind, HeightMask, HeightToNormal,
-    HighpassSpace, ImageInput, Layer, LayerId, LayerKind, Mask, MaskBackground, MaskOutline, MicroDetail, Mirror, NormalFormat, Project, Projection,
-    RepeatMode, Sampling, ShapeCrop, Source, SourceColorMode, SourceSlopeBlur, SourceWarp, StylizedShading, TargetColorMode, TextureSet, TileGrid,
-    TileTransform, blend1, blend3, lum, mix3, per_unit, posterize,
+    HighpassSpace, ImageInput, Layer, LayerId, LayerKind, Mask, MaskBackground, MaskOutline, MicroDetail, Mirror, NormalFormat, PreparedColorMatch,
+    PreparedGradient, Project, Projection, RepeatMode, Sampling, ShapeCrop, Source, SourceColorMode, SourceSlopeBlur, SourceWarp, StylizedShading,
+    TargetColorMode, TextureSet, TileGrid, TileTransform, blend1, blend3, lum, mix3, per_unit, posterize,
 };
 use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_geom::{Mesh, NO_TRI, Surface, UvGBuffer};
 use texturecraft_texel::{DilationMap, TILE, TILE_AREA, TileImage, from_u16, noise, to_u16, to_u16_signed};
 
+use crate::ProjectorDepthCache;
 use crate::below::{Band, BelowCache, Level, StackKey};
 use crate::curvature_sizes::CurvatureSizes;
 use crate::effect_histogram::EffectHistogram;
@@ -38,6 +39,7 @@ use crate::shape_distance::distance_filter;
 use crate::slope_texel::slope_texel;
 use crate::store::{BakedMaps, ImageRes, ImageStore, PixelStore, decode};
 use crate::warp_texel::{Input, MIN_READ_WEIGHT, Sample, warp_texel};
+use evaluation_inputs::EvaluationInputs;
 
 const NCH: usize = Channel::ALL.len();
 
@@ -276,6 +278,24 @@ struct EffectPlan<'a> {
     stylized: Option<StylizedShading>,
     /// The source a point filter's image input reads (Grayscale Conversion's Custom Input)
     input: Option<Source>,
+    /// Custom stops shared across tile plans and channels
+    gradient: Option<Arc<PreparedGradient>>,
+}
+
+impl EffectPlan<'_> {
+    fn point(&self, filter: &Filter, kind: ChannelKind, value: [f32; 3]) -> Option<[f32; 3]> {
+        match &self.gradient {
+            Some(gradient) => gradient.point(kind, value),
+            None => filter.point(kind, value),
+        }
+    }
+
+    fn ramp_at(&self, filter: &Filter, position: f32) -> Option<[f32; 3]> {
+        match &self.gradient {
+            Some(gradient) => gradient.at(position),
+            None => filter.ramp_at(position),
+        }
+    }
 }
 
 struct MaskPlan<'a> {
@@ -424,7 +444,7 @@ fn neighbourhood_filters(effects: &[Effect], res: u32) -> impl Iterator<Item = (
         EffectKind::Filter(Filter::Glow { radius, amount }) => Some((index, texels(*radius), Op::Glow(*amount))),
         EffectKind::Filter(Filter::Mosaic { size, alpha }) => Some((index, texels(*size), Op::Mosaic { alpha: *alpha })),
         EffectKind::Filter(Filter::Fxaa { alpha }) => Some((index, FXAA_SEARCH as f32 + 1.0, Op::Fxaa { alpha: *alpha })),
-        // The ellipse reaches up to twice the radius along a clear direction, and the direction is read around its reach
+        // Both the direction search and the ellipse can reach twice the radius
         EffectKind::Filter(Filter::AnisotropicKuwahara(kuwahara)) if kuwahara.radius > 0.0 => {
             Some((index, texels(kuwahara.radius.min(AnisotropicKuwahara::MAX_RADIUS)) * (2.0 + kuwahara.tensor_reach()) + 1.0, Op::Kuwahara(*kuwahara)))
         }
@@ -435,7 +455,7 @@ fn neighbourhood_filters(effects: &[Effect], res: u32) -> impl Iterator<Item = (
         EffectKind::Filter(Filter::ColorMatch(matcher)) => {
             Some((index, if matcher.source_mode == SourceColorMode::Average { WHOLE_SET } else { 1.0 }, Op::ColorMatch(*matcher)))
         }
-        // Independent of `res`, so every caller agrees on which effects are stages; the reach covers the cells, then the blur around them
+        // Use reference-resolution reach so all callers classify the same filters as stages
         EffectKind::Generator(generator) if generator.global.blur > 0.0 || generator.resolution.can_reduce() => {
             Some((index, texels(generator.global.blur_radius()) + generator.resolution.largest_cell(res) as f32, Op::Blur(None)))
         }
@@ -714,28 +734,43 @@ fn gather(
     data
 }
 
-/// The linear colors `source` gives over texel region `(x0, y0, w, h)` (its tiles `tiles`), row by row
-fn input_colors(inp: &Inputs, source: &Source, tiles: &[(u32, u32)], (x0, y0, w, h): (u32, u32, u32, u32)) -> Vec<[f32; 3]> {
-    let parts: Vec<Vec<(u32, u32, [f32; 3])>> = tiles
-        .par_iter()
-        .map(|&(tx, ty)| {
-            let preview_tile = inp.preview.and_then(|preview| preview.alpha.tile(tx, ty));
-            tile_texels(inp.gbuf, tx, ty)
-                .map(|(x, y, offset)| {
-                    let mut texel = Texel::new(inp, x, y, offset, stroke_at(preview_tile, offset));
-                    (x, y, texel.source(source, &Projection::default(), Sampling::default(), ChannelKind::Color))
-                })
-                .collect()
-        })
-        .collect();
-    let mut colors = vec![[0.0f32; 3]; (w * h) as usize];
-    for &(x, y, color) in parts.iter().flatten() {
-        if let (Some(dx), Some(dy)) = (x.checked_sub(x0), y.checked_sub(y0))
-            && let Some(slot) = colors.get_mut((dy * w + dx) as usize)
-        {
-            *slot = color;
-        }
+/// The linear colors a filter input gives over the tile-aligned texel region, row by row
+fn input_colors(
+    inputs: &EvaluationInputs,
+    source: &Source,
+    (layer, channels, below): (LayerId, &[Channel], &Fields),
+    (left, top, width, height): (u32, u32, u32, u32),
+) -> Vec<[f32; 3]> {
+    if width == 0 || height == 0 {
+        return Vec::new();
     }
+
+    let mut colors = vec![[0.0; 3]; (width * height) as usize];
+    let horizontal_tiles = left / TILE..(left + width).div_ceil(TILE);
+    colors.par_chunks_mut((TILE * width) as usize).enumerate().for_each(|(band, colors)| {
+        let tile_y = top / TILE + band as u32;
+        let band_top = tile_y * TILE;
+        for tile_x in horizontal_tiles.clone() {
+            let anchors = if matches!(source, Source::Anchor { .. }) { anchor_plan(inputs, layer, channels, tile_x, tile_y, Some(below)) } else { Vec::new() };
+            let preview_tile = inputs.preview.and_then(|preview| preview.alpha.tile(tile_x, tile_y));
+
+            for (x, y, offset) in tile_texels(inputs.gbuf, tile_x, tile_y) {
+                if x < left || x - left >= width {
+                    continue;
+                }
+
+                let index = ((y - band_top) * width + (x - left)) as usize;
+                let Some(pixel) = colors.get_mut(index) else { continue };
+                let mut texel = Texel::new(inputs, x, y, offset, stroke_at(preview_tile, offset));
+                if !anchors.is_empty() {
+                    texel.anchors_below(&anchors, layer);
+                }
+
+                *pixel = texel.source(source, &Projection::default(), Sampling::default(), ChannelKind::Color);
+            }
+        }
+    });
+
     colors
 }
 
@@ -748,46 +783,63 @@ fn color_match(data: &mut [f32], comps: usize, matcher: &ColorMatch, (sources, t
         return;
     }
 
-    // The mean of the covered colors (premultiplied, so a texel counts by its coverage)
-    let (sum, covered) = data
-        .par_chunks(4)
-        .fold(
-            || ([0.0f64; 3], 0.0f64),
-            |(mut sum, mut covered), px| {
-                if let [r, g, b, a] = *px
-                    && a > 0.0
-                    && a.is_finite()
-                {
-                    for (slot, v) in sum.iter_mut().zip([r, g, b]) {
-                        *slot += f64::from(v);
-                    }
-                    covered += f64::from(a);
-                }
-                (sum, covered)
-            },
-        )
-        .reduce(|| ([0.0; 3], 0.0), |(a, ca), (b, cb)| ([a[0] + b[0], a[1] + b[1], a[2] + b[2]], ca + cb));
-    let mean = if covered > 0.0 { sum.map(|v| (v / covered) as f32) } else { matcher.target_color };
-    data.par_chunks_mut(4).enumerate().for_each(|(i, px)| {
-        let [r, g, b, a] = *px else { return };
-        if a <= 0.0 || !a.is_finite() {
+    let source_color = if matcher.source_mode == SourceColorMode::Average { mean_region_color(data, matcher.target_color) } else { matcher.source_color };
+    let source_pixels = if matcher.source_mode == SourceColorMode::Input { sources.as_deref() } else { None };
+    let target_pixels = if matcher.target_mode == TargetColorMode::ImageInput { targets.as_deref() } else { None };
+
+    if source_pixels.is_none() && target_pixels.is_none() {
+        let prepared = PreparedColorMatch::new(*matcher, source_color, matcher.target_color);
+        match_pixels(data, opacity, |_, color| prepared.apply(color));
+    } else {
+        match_pixels(data, opacity, |index, color| {
+            let source = source_pixels.and_then(|pixels| pixels.get(index)).copied().unwrap_or(source_color);
+            let target = target_pixels.and_then(|pixels| pixels.get(index)).copied().unwrap_or(matcher.target_color);
+            matcher.apply(color, source, target)
+        });
+    }
+}
+
+fn match_pixels(data: &mut [f32], opacity: f32, remap: impl Fn(usize, [f32; 3]) -> [f32; 3] + Sync) {
+    data.par_chunks_mut(4).enumerate().for_each(|(index, pixel)| {
+        let [red, green, blue, alpha] = *pixel else { return };
+        if alpha <= 0.0 || !alpha.is_finite() {
             return;
         }
 
-        let source = match matcher.source_mode {
-            SourceColorMode::Average => mean,
-            SourceColorMode::Parameter => matcher.source_color,
-            SourceColorMode::Input => sources.as_ref().and_then(|colors| colors.get(i)).copied().unwrap_or(matcher.source_color),
-        };
-        let target = match matcher.target_mode {
-            TargetColorMode::Parameter => matcher.target_color,
-            TargetColorMode::ImageInput => targets.as_ref().and_then(|colors| colors.get(i)).copied().unwrap_or(matcher.target_color),
-        };
-        let moved = matcher.apply([r, g, b].map(|v| v / a), source, target);
-        for (slot, v) in px.iter_mut().zip(moved) {
-            *slot += (v * a - *slot) * opacity;
+        let moved = remap(index, [red, green, blue].map(|component| component / alpha));
+        for (slot, value) in pixel.iter_mut().zip(moved) {
+            *slot += (value * alpha - *slot) * opacity;
         }
     });
+}
+
+/// The mean of a premultiplied color region, or the fallback when no texel is covered
+fn mean_region_color(data: &[f32], fallback: [f32; 3]) -> [f32; 3] {
+    // Premultiplication weights the color by coverage
+    let (color_sum, coverage_sum) = data
+        .par_chunks(4)
+        .fold(
+            || ([0.0f64; 3], 0.0f64),
+            |(mut colors, mut coverage), pixel| {
+                if let [red, green, blue, alpha] = *pixel
+                    && alpha > 0.0
+                    && alpha.is_finite()
+                {
+                    for (sum, component) in colors.iter_mut().zip([red, green, blue]) {
+                        *sum += f64::from(component);
+                    }
+                    coverage += f64::from(alpha);
+                }
+
+                (colors, coverage)
+            },
+        )
+        .reduce(
+            || ([0.0; 3], 0.0),
+            |(left, left_coverage), (right, right_coverage)| ([left[0] + right[0], left[1] + right[1], left[2] + right[2]], left_coverage + right_coverage),
+        );
+
+    if coverage_sum > 0.0 { color_sum.map(|component| (component / coverage_sum) as f32) } else { fallback }
 }
 
 /// Height To Normal at texel `(x, y)` into `acc`: the 3×3 Sobel normal of the heights `height` reads, laid over normal `center` unless it overwrites it
@@ -906,7 +958,7 @@ fn kuwahara_texel(
             let falloff = (-KUWAHARA_FALLOFF * distance).exp();
             let heading = v.atan2(u);
             for (k, (sum, square)) in sums.iter_mut().zip(&mut squares).enumerate() {
-                // The middle texel belongs to every sector; the others to the sectors they face, fading towards their sides
+                // The center contributes to every sector while other weights taper at sector boundaries
                 let facing = (heading - k as f32 * std::f32::consts::TAU / AnisotropicKuwahara::SECTORS as f32).cos();
                 let weight = if distance <= 0.0 {
                     falloff
@@ -915,6 +967,7 @@ fn kuwahara_texel(
                 } else {
                     continue;
                 };
+
                 for (slot, value) in sum.iter_mut().zip(&px) {
                     *slot += weight * value;
                 }
@@ -924,7 +977,7 @@ fn kuwahara_texel(
         }
     }
 
-    // Calmer sectors weigh more, sharper the higher the Sharpness (in logs, so the powers can't overflow)
+    // Weight low-variance sectors more and use logarithms to avoid overflow
     let sharpness = kuwahara.sharpness_exponent();
     let logs: [Option<f32>; AnisotropicKuwahara::SECTORS] = std::array::from_fn(|sector| {
         let (sum, square) = (sums.get(sector)?, squares.get(sector)?);
@@ -1226,7 +1279,7 @@ fn anchor_plan<'a>(inp: &EvaluationInputs<'a>, id: LayerId, channels: &[Channel]
 }
 
 /// [`anchor_plan`], or the plain set stack when `lit` (a layer lit by its material reads the stack below it too)
-fn below_plan<'a>(inp: &Inputs<'a>, id: LayerId, channels: &[Channel], (tx, ty): (u32, u32), fields: Option<&'a Fields>, lit: bool) -> Vec<Node<'a>> {
+fn below_plan<'a>(inp: &EvaluationInputs<'a>, id: LayerId, channels: &[Channel], (tx, ty): (u32, u32), fields: Option<&'a Fields>, lit: bool) -> Vec<Node<'a>> {
     let anchors = anchor_plan(inp, id, channels, tx, ty, fields);
     if !anchors.is_empty() || !lit {
         return anchors;
@@ -1301,7 +1354,7 @@ fn field(
         margins[index] += margins[index + 1];
     }
 
-    // A wrapping filter reads across the set's edges, so it and every filter under it cover the whole set along an axis it crosses
+    // A wrapped dependency expands all lower stages across any crossed axis
     let own_wraps: Vec<bool> = filters.iter().map(|filter| wraps(effects, filter.0)).collect();
     let mut wrapping = own_wraps.clone();
     for index in (0..wrapping.len().saturating_sub(1)).rev() {
@@ -1459,7 +1512,14 @@ fn filter_region(
     };
 
     // The gray the filter's image input reads (its first; the filters that read one have one)
-    let input = filter_effect.zip(filter).and_then(|(effect, filter)| ImageInput::of(filter).first().map(|input| effect.input(input)));
+    let input = filter_effect.zip(filter).and_then(|(effect, filter)| {
+        // Color Match reads each input as linear color separately
+        if matches!(filter, Filter::ColorMatch(_)) {
+            return None;
+        }
+
+        ImageInput::of(filter).first().map(|input| effect.input(input))
+    });
 
     let lit_prefix =
         channel == Some(Channel::BaseColor) && effects.iter().filter(|effect| effect.visible).take(index).any(|effect| lights_material(&effect.kind));
@@ -1569,8 +1629,9 @@ fn filter_region(
     // Color Match's Input and Image Input colors over the region, when its modes read them
     let match_inputs = match (op, filter_effect) {
         (Op::ColorMatch(matcher), Some(effect)) if opacity > 0.0 => {
-            let read =
-                |on: bool, input: ImageInput| on.then(|| input_colors(inputs, &effect.input(&input), &region_tiles, (region_x, region_y, width, height)));
+            let read = |on: bool, input: ImageInput| {
+                on.then(|| input_colors(inputs, &effect.input(&input), (id, channels, below), (region_x, region_y, width, height)))
+            };
             [
                 read(matcher.source_mode == SourceColorMode::Input, ImageInput::SOURCE_INPUT),
                 read(matcher.target_mode == TargetColorMode::ImageInput, ImageInput::TARGET_INPUT),
@@ -1585,7 +1646,7 @@ fn filter_region(
         _ => 0.5,
     };
 
-    // A Highpass in sRGB filters its colors encoded (decoded again below); one with Apply To Alpha keeps the colors on the new coverage
+    // Filter High Pass in its working space and preserve color when only coverage changes
     let (space, highpass_alpha) = match (op, job) {
         (Op::HighPass { space, alpha }, Job::Content(channel)) if components == 4 => {
             (if channel.kind() == ChannelKind::Color { space } else { HighpassSpace::Working }, alpha)
@@ -1595,7 +1656,7 @@ fn filter_region(
     let covered = highpass_alpha.then(|| stack_values.clone());
     recode(&mut stack_values, components, |rgb| space.encode(rgb));
 
-    // A wrapped axis pads by the reach up to one period (past it the far side repeats), so a set pads to 3x its size at most
+    // Pad by at most one sampling period on either side because farther reads repeat
     let pad_x = if wrap && region_x == 0 && width == inputs.gbuf.width { reach.min(width) } else { 0 };
     let pad_y = if wrap && region_y == 0 && height == inputs.gbuf.height { reach.min(height) } else { 0 };
 
@@ -1690,7 +1751,7 @@ fn filter_region(
             && let Some(filter) = filter
         {
             let kind = channel.map_or(ChannelKind::Scalar, Channel::kind);
-            map_blurred(&mut filtered_values, &stack_values, components, filter, kind, opacity);
+            map_blurred(&mut filtered_values, &stack_values, components, filter, inputs.gradient(filter).as_deref(), kind, opacity);
         }
         if pad == (0, 0) { filtered_values } else { unpad(&filtered_values, components, unpadded, pad) }
     };
@@ -1993,17 +2054,22 @@ fn mask_outline(data: &mut [f32], cover: &[f32], comps: usize, (width, height, r
 }
 
 /// Run point filter `filter` on blurred texels `data` (premultiplied content or masks) and mix the result over the unblurred `orig` by `opacity`
-fn map_blurred(data: &mut [f32], orig: &[f32], comps: usize, filter: &Filter, kind: ChannelKind, opacity: f32) {
+fn map_blurred(data: &mut [f32], orig: &[f32], comps: usize, filter: &Filter, gradient: Option<&PreparedGradient>, kind: ChannelKind, opacity: f32) {
+    let point = |value| match gradient {
+        Some(gradient) => gradient.point(kind, value),
+        None => filter.point(kind, value),
+    };
     let straight = |value: f32, cover: f32| if cover > MIN_ALPHA { value / cover } else { 0.0 };
+
     data.par_chunks_mut(comps).zip(orig.par_chunks(comps)).for_each(|(pixel, original)| match (pixel, original) {
         ([value], [before]) => {
-            let mapped = filter.point(kind, [*value; 3]).map_or(*value, |gray| gray[0]);
+            let mapped = point([*value; 3]).map_or(*value, |gray| gray[0]);
             *value = before + (mapped - before) * opacity;
         }
         ([r, g, b, cover], [r0, g0, b0, cover0]) => {
             let before = [straight(*r0, *cover0), straight(*g0, *cover0), straight(*b0, *cover0)];
             let blurred = [straight(*r, *cover), straight(*g, *cover), straight(*b, *cover)];
-            let mixed = mix3(before, filter.point(kind, blurred).unwrap_or(before), opacity);
+            let mixed = mix3(before, point(blurred).unwrap_or(before), opacity);
             [*r, *g, *b, *cover] = [mixed[0] * cover0, mixed[1] * cover0, mixed[2] * cover0, *cover0];
         }
         _ => {}
@@ -2190,6 +2256,10 @@ fn effect_plans<'a>(
                 stylized,
                 input: match &effect.kind {
                     EffectKind::Filter(filter) if !filter.is_neighbourhood() => ImageInput::of(filter).first().map(|input| effect.input(input)),
+                    _ => None,
+                },
+                gradient: match &effect.kind {
+                    EffectKind::Filter(filter) => inp.gradient(filter),
                     _ => None,
                 },
             }
@@ -3154,7 +3224,7 @@ impl<'a, 'b> Texel<'a, 'b> {
                 }
                 EffectKind::Levels(levels) => value += (levels.apply(value) - value) * opacity,
                 EffectKind::Filter(filter @ Filter::GradientMap { debug: true, .. }) => {
-                    let ramp = filter.ramp_at(self.coords().uv.x.rem_euclid(1.0)).map_or(value, lum);
+                    let ramp = effect.ramp_at(filter, self.coords().uv.x.rem_euclid(1.0)).map_or(value, lum);
                     value += (ramp - value) * opacity;
                 }
                 EffectKind::Filter(Filter::GrayscaleConversion(conversion)) => {
@@ -3166,7 +3236,7 @@ impl<'a, 'b> Texel<'a, 'b> {
                 }
                 EffectKind::Filter(filter) => {
                     // A mask is gray (HSL only changes its lightness); neighbourhood filters come precomputed through `MaskPlan::start`
-                    let filtered = filter.point(ChannelKind::Scalar, [value; 3]).map_or(value, |gray| gray[0]);
+                    let filtered = effect.point(filter, ChannelKind::Scalar, [value; 3]).map_or(value, |gray| gray[0]);
                     value += (filtered - value) * opacity;
                 }
                 EffectKind::ColorSelection(selection) => {
@@ -3582,8 +3652,9 @@ impl<'a, 'b> Texel<'a, 'b> {
             },
             // A gradient's debug view shows its ramp left to right across each UV tile
             EffectKind::Filter(filter @ Filter::GradientMap { debug: true, .. }) => {
-                let ramp =
-                    filter.ramp_at(self.coords().uv.x.rem_euclid(1.0)).map(|color| if chan_plan.kind == ChannelKind::Color { color } else { [lum(color); 3] });
+                let ramp = effect
+                    .ramp_at(filter, self.coords().uv.x.rem_euclid(1.0))
+                    .map(|color| if chan_plan.kind == ChannelKind::Color { color } else { [lum(color); 3] });
                 (ramp.map_or(value, |ramp| mix3(value, ramp, opacity)), coverage)
             }
 
@@ -3603,7 +3674,7 @@ impl<'a, 'b> Texel<'a, 'b> {
             }
 
             // Neighbourhood filters come precomputed through `ChanPlan::start`
-            EffectKind::Filter(filter) => (filter.point(chan_plan.kind, value).map_or(value, |out| mix3(value, out, opacity)), coverage),
+            EffectKind::Filter(filter) => (effect.point(filter, chan_plan.kind, value).map_or(value, |out| mix3(value, out, opacity)), coverage),
             // Anchors are recorded by `eval`; mask-only effects leave content as it is
             EffectKind::Anchor | EffectKind::Fill { .. } | EffectKind::Generator(_) | EffectKind::ColorSelection(_) | EffectKind::Compare { .. } => {
                 (value, coverage)
@@ -5066,6 +5137,7 @@ mod tests {
         fixture.project.layer_mut(upper).unwrap().mask = Some(mask.clone());
         let texels: Vec<_> = (0..128).map(|x| (x, 63)).collect();
         let original = assert_sparse_mask_matches_image(&fixture, upper, &texels).unwrap();
+
         assert!(original.iter().any(|value| *value > 0.99) && original.iter().any(|value| *value < 0.01), "the anchor supplies the checker");
 
         for filter in [Filter::Blur { radius: 64.0, wrap: false }, Filter::DirectionalWarp { intensity: 256.0, angle: 90.0, scale: 4.0, seed: 3, divider: 1 }] {
@@ -5342,14 +5414,20 @@ mod tests {
         let mut f = fixture();
         let id = fill_layer(&mut f.project, [1.0; 3], 1.0);
         assert!(!stack_reads_neighbours(&f.project, 0));
+
         let mut mask = Mask::new(MaskBackground::White);
         let eid = f.project.alloc_id();
         mask.effects.push(Effect::new(eid, EffectKind::Filter(Filter::Blur { radius: 8.0, wrap: false })));
         f.project.layer_mut(id).unwrap().mask = Some(mask);
+
         assert!(stack_reads_neighbours(&f.project, 0));
+
         f.project.layer_mut(id).unwrap().mask = None;
+
         assert!(!stack_reads_neighbours(&f.project, 0));
+
         content_fx(&mut f, id, EffectKind::Filter(Filter::Mosaic { size: 8.0, alpha: true }));
+
         assert!(stack_reads_neighbours(&f.project, 0));
     }
 
@@ -5456,7 +5534,9 @@ soft {soft:?}"
         f.pixels.layer_mut(id, Channel::BaseColor, (64, 64)).set(3, 3, &[to_u16(0.5), 0, 0, to_u16(0.5)]);
         let posterize = content_fx(&mut f, id, EffectKind::Filter(Filter::Posterize { levels: 2.0, alpha: false }));
         assert!(close(run(&f, None).value(Channel::BaseColor, 3, 3), [0.75, 0.25, 0.25]), "the coverage stays as it is");
+
         f.project.effect_mut(posterize).unwrap().kind = EffectKind::Filter(Filter::Posterize { levels: 2.0, alpha: true });
+
         assert!(close(run(&f, None).value(Channel::BaseColor, 3, 3), [1.0, 0.0, 0.0]), "half coverage rounds up to whole");
     }
 
@@ -5485,6 +5565,7 @@ soft {soft:?}"
         let out = run(&f, None);
         assert!(close(out.value(Channel::BaseColor, 1, 1), [0.625, 0.375, 0.375]), "the cell's coverage: {:?}", out.value(Channel::BaseColor, 1, 1));
         assert!(close(out.value(Channel::BaseColor, 2, 2), [0.625, 0.375, 0.375]), "spread over the cell");
+
         f.project.effect_mut(fx).unwrap().kind = EffectKind::Filter(Filter::Mosaic { size: 128.0, alpha: false });
         let out = run(&f, None);
         assert!(close(out.value(Channel::BaseColor, 1, 1), [1.0, 0.0, 0.0]), "the texel keeps its whole coverage");
@@ -5501,6 +5582,7 @@ soft {soft:?}"
         let mut f = fixture();
         let id = painted(&mut f, |x, y| Some((if stairs(x, y) { [1.0; 3] } else { [0.0; 3] }, 1.0)));
         assert_eq!(mids(&run(&f, None)), 0);
+
         content_fx(&mut f, id, EffectKind::Filter(Filter::Fxaa { alpha: false }));
         let out = run(&f, None);
         assert!(mids(&out) > 16, "{} texels blended", mids(&out));
@@ -5511,8 +5593,11 @@ soft {soft:?}"
         let id = painted(&mut f, |x, y| stairs(x, y).then_some(([1.0; 3], 1.0)));
         let fx = content_fx(&mut f, id, EffectKind::Filter(Filter::Fxaa { alpha: false }));
         let plain = |out: &Composite| (0..64 * 64).all(|i| [0.5, 1.0].iter().any(|v| (out.value(Channel::BaseColor, i % 64, i / 64)[0] - v).abs() < 2e-4));
+
         assert!(plain(&run(&f, None)), "each texel keeps its coverage");
+
         f.project.effect_mut(fx).unwrap().kind = EffectKind::Filter(Filter::Fxaa { alpha: true });
+
         assert!(!plain(&run(&f, None)), "the coverage is smoothed");
     }
 
@@ -5523,6 +5608,7 @@ soft {soft:?}"
         let mut mask = Mask::new(MaskBackground::White);
         mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Filter(Filter::Hsl { hue: 0.3, saturation: 1.0, lightness: -0.5, perceptive: false })));
         f.project.layer_mut(id).unwrap().mask = Some(mask);
+
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.75; 3]));
     }
 
@@ -5572,11 +5658,13 @@ soft {soft:?}"
         // The checker tiles: its period P repeats across the whole row
         let hard = row(None);
         let period = (1..64).find(|&p| (0..64 - p).all(|x| (hard[x] - hard[x + p]).abs() < 1e-3)).unwrap();
+
         assert!(period <= 32, "{hard:?}");
 
         // Wrapped, the blur at the texture's edge sees the far side, so the result keeps tiling; clipped, the edge differs
         let wrapped = row(Some(true));
         assert!((0..64 - period).all(|x| (wrapped[x] - wrapped[x + period]).abs() < 0.02), "{wrapped:?}");
+
         let clipped = row(Some(false));
         assert!((clipped[0] - clipped[period]).abs() > 0.05, "{clipped:?}");
         assert!((12..52).all(|x| (clipped[x] - wrapped[x]).abs() < 0.02), "away from the edges, wrap changes nothing");
@@ -5600,6 +5688,7 @@ soft {soft:?}"
         };
         let hard = composite(None, &all_tiles(WIDTH, HEIGHT));
         let period = (1..WIDTH as usize).find(|&p| (0..WIDTH as usize - p).all(|x| (hard[x] - hard[x + p]).abs() < 1e-3)).unwrap();
+
         assert!(period <= WIDTH as usize / 2, "the checker tiles across the set: {hard:?}");
 
         let wrapping = [
@@ -5627,6 +5716,7 @@ soft {soft:?}"
         };
         let mut gradient = Filter::even_gradient(vec![[0.0; 3], [1.0; 3]]);
         let hard = row(Some(gradient.clone()));
+
         assert!(hard.iter().zip(row(None)).all(|(a, b)| (a - b).abs() < 1e-3), "a black to white ramp keeps a scalar as it is");
 
         // Blurred first, then looked up: the same as a blur of that size
@@ -5646,6 +5736,7 @@ soft {soft:?}"
         let below = fill_layer(&mut f.project, [0.0; 3], 0.0);
         let id = fill_layer(&mut f.project, [1.0, 0.0, 0.0], 0.2);
         assert_ne!(below, id);
+
         let hp = content_fx(&mut f, id, EffectKind::Filter(Filter::HighPass { radius: 64.0, space: HighpassSpace::SrgbFromLinear, alpha: false }));
         let out = run(&f, None);
         assert!(close(out.value(Channel::BaseColor, 30, 30), [texturecraft_texel::srgb_to_linear(0.5); 3]), "{:?}", out.value(Channel::BaseColor, 30, 30));
@@ -5699,12 +5790,15 @@ soft {soft:?}"
         let edges = content_fx(&mut f, id, EffectKind::Filter(Filter::EdgeDetect { width: 32.0 }));
         let out = run(&f, None);
         let vals: Vec<f32> = (0..64).flat_map(|y| (0..64).map(move |x| (x, y))).map(|(x, y)| out.value(Channel::Roughness, x, y)[0]).collect();
+
         assert!(vals.iter().all(|v| (0.0..=1.0).contains(v)));
         assert!(vals.iter().filter(|v| **v > 0.5).count() > 64 && vals.iter().filter(|v| **v < 0.01).count() > 64, "{vals:?}");
+
         f.project.layer_mut(id).unwrap().content_effects.retain(|e| e.id != edges);
         content_fx(&mut f, id, EffectKind::Filter(Filter::DirectionalWarp { intensity: 256.0, angle: 90.0, scale: 4.0, seed: 3, divider: 1 }));
         let warped = run(&f, None);
         let differs = (0..64).any(|y| (0..64).any(|x| (warped.value(Channel::Roughness, x, y)[0] - plain.value(Channel::Roughness, x, y)[0]).abs() > 0.2));
+
         assert!(differs, "the warp moves the checker");
 
         // Point filters
@@ -5751,6 +5845,7 @@ soft {soft:?}"
         let glow = Filter::HaloGlow { on_mask: true, precise: false, width: 1.0, spread: 0.0, opacity: 1.0, color: [1.0; 3] };
         let glowing = row_of(Some(glow));
         assert!(glowing.iter().zip(&plain).all(|(g, p)| *g >= p - 1e-4), "a glow only adds");
+
         let lit = (0..64 * 64).filter(|&i| dark(plain[i]) && glowing[i] > low + 0.1 * (high - low)).count();
         assert!(lit > 64, "{lit} dark texels lit");
 
@@ -5758,6 +5853,7 @@ soft {soft:?}"
         let shadow = Filter::DropShadow { angle: 90.0, distance: 0.1, size: 0.0, spread: 0.0, opacity: 0.5, color: [0.0; 3] };
         let shadowed = row_of(Some(shadow));
         assert!(shadowed.iter().zip(&plain).all(|(s, p)| *s >= p - 1e-4), "a shadow only goes under the shapes");
+
         let reach = 6;
         let at = |x: usize, y: usize| plain[y * 64 + x];
         let (mut below, mut above) = (Vec::new(), Vec::new());
@@ -5771,7 +5867,9 @@ soft {soft:?}"
                 }
             }
         }
+
         assert!(!below.is_empty() && !above.is_empty());
+
         let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
         assert!(mean(&below) > 0.2 * (high - low), "under: {below:?}");
         assert!(mean(&above) < 0.05 * (high - low), "above: {above:?}");
@@ -5836,8 +5934,10 @@ soft {soft:?}"
         // Facing the light adds illumination; facing away keeps ambient only
         let (toward, rough) = lit(if n.y > 0.0 { 90.0 } else { -90.0 });
         assert!(close(toward, [0.5; 3]) && close(rough, [0.3; 3]), "{toward:?} {rough:?}");
+
         let (away, _) = lit(if n.y > 0.0 { -90.0 } else { 90.0 });
         assert!(close(away, [0.2; 3]), "{away:?}");
+
         let f = Filter::BakedLighting { azimuth: 0.0, elevation: 0.0, light: 0.0, ambient: 1.0, occlusion: 0.5, stylized: None };
         assert_eq!(f.baked_light([0.0, 1.0, 0.0], 0.2), Some(0.6), "half the occlusion");
         assert_eq!(Filter::Invert.baked_light([0.0; 3], 1.0), None);
@@ -5886,7 +5986,42 @@ soft {soft:?}"
 
         // The roughness below (0.8) passes the first compare everywhere: the mask so far is white
         let white = *mask_so_far.last().unwrap();
+
         assert!(white > 0 && mask_so_far.iter().sum::<u32>() == white, "{mask_so_far:?}");
+    }
+
+    #[test]
+    fn color_match_reads_the_anchor_in_either_image_input() {
+        let mut fixture = fixture();
+        let original_color = [0.6, 0.19, 0.09];
+        let target_color = [0.1, 0.3, 0.8];
+        let lower = fill_layer(&mut fixture.project, original_color, 0.5);
+        let anchor = content_fx(&mut fixture, lower, EffectKind::Anchor);
+        let upper = fill_layer(&mut fixture.project, original_color, 0.5);
+        let source = Source::Anchor { anchor, channel: Channel::BaseColor, ramp: Vec::new() };
+
+        let matcher = ColorMatch { source_mode: SourceColorMode::Input, target_color, custom_variation: false, ..ColorMatch::LIBRARY };
+        let effect_id = content_fx(&mut fixture, upper, EffectKind::Filter(Filter::ColorMatch(matcher)));
+        let effect = fixture.project.effect_mut(effect_id).unwrap();
+        effect.inputs.insert(ImageInput::SOURCE_INPUT.id.to_owned(), source.clone());
+
+        let from_anchor = run(&fixture, None).value(Channel::BaseColor, 30, 30);
+
+        assert!(close(from_anchor, target_color), "{from_anchor:?}");
+
+        let effect = fixture.project.effect_mut(effect_id).unwrap();
+        effect.kind = EffectKind::Filter(Filter::ColorMatch(ColorMatch {
+            source_mode: SourceColorMode::Parameter,
+            source_color: original_color,
+            target_mode: TargetColorMode::ImageInput,
+            ..matcher
+        }));
+        effect.inputs.clear();
+        effect.inputs.insert(ImageInput::TARGET_INPUT.id.to_owned(), source);
+
+        let to_anchor = run(&fixture, None).value(Channel::BaseColor, 30, 30);
+
+        assert!(close(to_anchor, original_color), "{to_anchor:?}");
     }
 
     #[test]
@@ -5899,7 +6034,10 @@ soft {soft:?}"
         let inp = inputs(&f, &images, None);
         let channels = f.project.texture_set(0).unwrap().channel_list();
 
-        let shared = shared_histogram_fields(&inp, &channels, &all_tiles(64, 64));
+        let projectors = ProjectorDepthCache::default();
+        let inputs = EvaluationInputs::new(&inp, &projectors);
+
+        let shared = shared_histogram_fields(&inputs, &channels, &all_tiles(64, 64));
 
         assert!(shared.is_some_and(|fields| fields.contains_key(&FieldKey::Content(id, Channel::BaseColor))), "every sampled tile reads one field");
     }
@@ -6026,15 +6164,18 @@ soft {soft:?}"
         let source = Source::Anchor { anchor, channel: Channel::Height, ramp: Vec::new() };
         mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Fill { source, projection: Projection::default(), sampling: Default::default() }));
         f.project.layer_mut(top).unwrap().mask = Some(mask.clone());
+
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.7; 3]));
 
         // The field pre-pass reads anchors under blur, preserving flat height
         mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 32.0, wrap: false })));
         f.project.layer_mut(top).unwrap().mask = Some(mask);
+
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.7; 3]));
 
         // An anchor above its reader is not evaluated yet, so it reads the channel default
         f.project.move_layer(low, 1).unwrap();
+
         assert!(close(run(&f, None).value(Channel::BaseColor, 5, 5), [0.5; 3]));
     }
 
@@ -6070,11 +6211,13 @@ soft {soft:?}"
         mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 32.0, wrap: false })));
         fixture.project.layer_mut(low).unwrap().mask = Some(mask.clone());
         let color = run(&fixture, None).value(Channel::BaseColor, 5, 5);
+
         assert!(close(color, [0.4; 3]), "{color:?}");
 
         // An empty paint layer still records its mask anchor for the layer above
         fixture.project.layer_mut(low).unwrap().kind = LayerKind::Paint;
         let color = run(&fixture, None).value(Channel::BaseColor, 5, 5);
+
         assert!(close(color, [0.7; 3]), "{color:?}");
     }
 
@@ -6097,6 +6240,7 @@ soft {soft:?}"
         let reader = anchor_reader(&mut fixture, anchor);
         let texels: Vec<_> = (0..128).map(|x| (x, 63)).collect();
         let expected = assert_sparse_mask_matches_image(&fixture, reader, &texels).unwrap();
+
         assert!(expected.iter().any(|value| *value > 0.1 && *value < 0.9), "the anchor records a softened checker");
 
         mask.effects.push(Effect::new(fixture.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 128.0, wrap: false })));
@@ -6153,6 +6297,7 @@ soft {soft:?}"
 
         // A dim gray is valid for a dielectric only: the layer's metal makes it red in the filter's prepass and in the flattened layer
         assert!(close(blurred, PbrValidate::INVALID), "{blurred:?}");
+
         let (_, _, data) = flat.iter().find(|(channel, tile, _)| *channel == Channel::BaseColor && *tile == (0, 0)).unwrap();
         let texel = (30 * TILE as usize + 30) * 4;
         let flattened: [f32; 3] = std::array::from_fn(|i| from_u16(data[texel + i]));

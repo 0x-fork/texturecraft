@@ -57,6 +57,7 @@ pub(crate) fn roughness(s: &mut Session, (x, y): (u32, u32)) -> f32 {
 pub(crate) fn add_filter(s: &mut Session, params: Value) -> LayerId {
     let mut params = params;
     params["target"] = json!("content");
+
     LayerId(execute(s, "effect.add.filter", &params).unwrap()["effect"].as_u64().unwrap())
 }
 
@@ -78,6 +79,7 @@ pub(crate) fn filter_of(s: &Session, effect: LayerId) -> Filter {
 pub(crate) fn set(s: &mut Session, effect: LayerId, params: Value) {
     let mut params = params;
     params["effect"] = json!(effect.0);
+
     execute(s, "effect.set", &params).unwrap();
 }
 
@@ -86,6 +88,7 @@ pub(crate) fn refused(s: &mut Session, effect: LayerId, bad: &[Value]) {
     for bad in bad {
         let mut params = bad.clone();
         params["effect"] = json!(effect.0);
+
         assert!(execute(s, "effect.set", &params).is_err(), "{bad}");
     }
 }

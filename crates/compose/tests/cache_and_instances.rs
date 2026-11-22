@@ -980,6 +980,7 @@ fn filter_input_and_id_map_image_changes_invalidate_stack_key() {
     for name in ["input", "id"] {
         let original = stack_key(&fixture, &images);
         images.insert(name.into(), flat_image(0.9));
+
         assert!(stack_key(&fixture, &images) != original, "replacing the {name} image must invalidate the cache");
     }
 }
@@ -995,6 +996,7 @@ fn the_environment_keys_the_stack_only_while_environment_lighting_reads_it() {
     let unlit = stack_key(&fixture, &images);
 
     fixture.project.display.env_rotation += 90.0;
+
     assert_eq!(stack_key(&fixture, &images), unlit, "without Baked Lighting Environment the turn changes nothing");
 
     let lighting =
@@ -1008,6 +1010,7 @@ fn the_environment_keys_the_stack_only_while_environment_lighting_reads_it() {
     assert_eq!(lit.changed_tiles(&turned), None, "and recomposites every tile");
 
     images.insert("sky".into(), flat_image(0.9));
+
     assert!(stack_key(&fixture, &images) != turned, "replacing the environment image invalidates the cache");
 }
 

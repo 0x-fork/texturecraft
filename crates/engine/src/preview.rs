@@ -121,6 +121,10 @@ pub fn filter(id: &str, size: usize) -> Option<Vec<Option<Sample>>> {
 
     // The filters that shape a mask's edge read where values cross 0.5: they get black and white shapes, where the clouds would leave them black
     let shapes = matches!(kind, EffectKind::Filter(Filter::BevelSmooth(_) | Filter::DirectionalDistance(_)));
+    render_filter_preview(kind, size, res, shapes)
+}
+
+fn render_filter_preview(kind: EffectKind, size: usize, res: u32, shapes: bool) -> Option<Vec<Option<Sample>>> {
     let mesh = texturecraft_geom::primitives::plane(2.0, 2);
     let gbuf = texturecraft_geom::UvGBuffer::new(&mesh, 0, res, res);
     let mut p = Project::new("preview", "");
@@ -210,9 +214,11 @@ mod tests {
 
     #[test]
     fn the_edge_shaping_filters_show_their_shapes_not_black() {
-        let size = 32;
-        // A neutral filter shows the checker as it is; an edge filter must change it
-        let checker = filter("levels", size).unwrap();
+        const SIDE_PX: u32 = 32;
+        let size = SIDE_PX as usize;
+
+        // Use the same checker input with an inactive filter
+        let checker = render_filter_preview(EffectKind::Filter(Filter::InvertOff), size, SIDE_PX, true).unwrap();
         for id in ["bevelSmooth", "directionalDistance"] {
             let pixels = filter(id, size).unwrap();
             assert!(pixels != checker, "{id}: the preview shows the unchanged checker");

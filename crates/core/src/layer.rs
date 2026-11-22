@@ -8,39 +8,49 @@ use crate::curve_preset::CurvePreset;
 use crate::gradient_input::{GradientInput, ramp, shape_gray};
 use crate::{
     AnisotropicKuwahara, Backface, BakedMap, Bevel, BevelSmooth, BlendMode, Channel, ChannelKind, ColorMatch, CompareSource, ContentsOffset, DepthCulling,
-    DirectionalDistance, DirectionalLight, FillSymmetry, GrayscaleConversion, HeightToNormal, HighpassSpace, MaskOutline, Mirror, PbrValidate, Projector,
-    RandomizedSeed, ShapeCrop, SourceSlopeBlur, SourceWarp, StylizedLighting, SunAndSky, ThresholdMode, TileTransform, finite_unit, lum,
+    DirectionalDistance, DirectionalLight, GrayscaleConversion, HeightToNormal, HighpassSpace, MaskOutline, Mirror, PbrValidate, Projector, RandomizedSeed,
+    ShapeCrop, SourceSlopeBlur, SourceWarp, StylizedLighting, SunAndSky, ThresholdMode, TileTransform, finite_unit, lum,
 };
 
 mod curvature_detail;
 mod curvature_mode;
 mod decal_flip;
 mod decal_symmetry;
+mod filtering;
 mod generator_global;
 mod micro_detail;
 mod output_resolution;
 mod resolution_mode;
+mod sampling;
+mod scale_mode;
 mod tile_blending;
 mod tile_generator;
 mod tile_input_distribution;
 mod tile_shape;
 mod tile_size_mode;
 mod tile_symmetry;
+mod uv_transform;
+mod uv_wrap;
 
 pub use curvature_detail::CurvatureDetail;
 pub use curvature_mode::CurvatureMode;
 pub use decal_flip::DecalFlip;
 pub use decal_symmetry::DecalSymmetry;
+pub use filtering::Filtering;
 pub use generator_global::GeneratorGlobal;
 pub use micro_detail::MicroDetail;
 pub use output_resolution::OutputResolution;
 pub use resolution_mode::ResolutionMode;
+pub use sampling::Sampling;
+pub use scale_mode::ScaleMode;
 pub use tile_blending::TileBlending;
 pub use tile_generator::TileGenerator;
 pub use tile_input_distribution::TileInputDistribution;
 pub use tile_shape::TileShape;
 pub use tile_size_mode::TileSizeMode;
 pub use tile_symmetry::TileSymmetry;
+pub use uv_transform::UvTransform;
+pub use uv_wrap::UvWrap;
 
 /// Id of a layer or effect (one id space per project).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1425,6 +1435,7 @@ pub fn hsl_adjust(rgb: [f32; 3], hue: f32, saturation: f32, lightness: f32) -> [
     if s <= 0.0 {
         return [l; 3];
     }
+
     let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
     let p = 2.0 * l - q;
     [hue_to_rgb(p, q, h + 1.0 / 3.0), hue_to_rgb(p, q, h), hue_to_rgb(p, q, h - 1.0 / 3.0)]
@@ -1621,11 +1632,7 @@ impl Filter {
                     _ => per_unit(kind, v, |x| finite_unit(x + (shift(0, x) + shift(1, x) + shift(2, x)) / 3.0)),
                 }
             }
-            Filter::GradientMap { input, .. } => match kind {
-                ChannelKind::Color => self.ramp_at(input.shape(input.mode.gray(v)))?,
-                // A height reads the ramp at its 0..1 place, as projects saved before did
-                _ => per_unit(kind, v, |x| self.ramp_at(input.shape(x)).map_or(x, lum)),
-            },
+            Filter::GradientMap { input, .. } => input.map(kind, v, |position| self.ramp_at(position))?,
             Filter::GradientCurve { preset, invert, balance, contrast } => per_unit(kind, v, |x| preset.at(shape_gray(x, *balance, *contrast, *invert))),
             Filter::GradientDynamic { color, .. } => match kind {
                 ChannelKind::Color => color.map(finite_unit),
@@ -2366,6 +2373,7 @@ mod tests {
             let x = step as f32 / 1000.0;
             let color = [x, 0.5 * x, 1.0 - x];
             assert_eq!(gm.point(ChannelKind::Color, color), gradient(&colors, lum(color)), "color {color:?}");
+
             let height = 2.0 * x - 1.0;
             let saved_before = per_unit(ChannelKind::Signed, [height; 3], |t| gradient(&colors, t).map_or(t, lum));
             assert_eq!(gm.point(ChannelKind::Signed, [height; 3]), Some(saved_before), "height {height}");
@@ -2379,29 +2387,39 @@ mod tests {
         let cl = Filter::ContrastLuminosity { contrast: 1.0, luminosity: 0.0 };
         assert!(close(cl.point(c, [0.25, 0.5, 0.75]).unwrap(), [0.0, 0.5, 1.0]));
         assert!(close(Filter::ContrastLuminosity { contrast: 0.0, luminosity: 0.2 }.point(ChannelKind::Scalar, [0.5; 3]).unwrap(), [0.7; 3]));
+
         let gm = Filter::even_gradient(vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
         assert!(close(gm.point(c, [0.0; 3]).unwrap(), [1.0, 0.0, 0.0]));
         assert!(close(gm.point(c, [1.0; 3]).unwrap(), [0.0, 0.0, 1.0]));
         assert_eq!(Filter::even_gradient(vec![]).point(c, [0.3; 3]), None, "an empty gradient changes nothing");
+
         let gray_ramp = Filter::even_gradient(vec![[0.0; 3], [1.0; 3]]);
         assert!(close(gray_ramp.point(ChannelKind::Signed, [-0.6; 3]).unwrap(), [-0.6; 3]), "a height reads the ramp at its 0..1 place");
         assert!(close(Filter::Posterize { levels: 2.0, alpha: false }.point(c, [0.2, 0.6, 0.9]).unwrap(), [0.0, 1.0, 1.0]));
         assert!(close(Filter::Clamp { min: 0.8, max: 0.3 }.point(c, [0.1, 0.5, 0.9]).unwrap(), [0.3, 0.5, 0.8]), "swapped bounds never panic");
+
         let scan = |position, contrast| Filter::HistogramScan { position, contrast, invert_position: false }.point(c, [0.2, 0.5, 0.9]).unwrap();
+
         assert!(close(scan(0.5, 0.0), [0.2, 0.5, 0.9]), "a full-width ramp at the middle keeps the values");
         assert!(close(scan(0.4, 1.0), [0.0, 1.0, 1.0]), "full contrast is a step at the position");
         assert!(close(scan(0.5, 1.0), [0.0, 1.0, 1.0]), "the position itself goes to white");
         assert!(close(scan(0.7, 0.5), [0.0, 0.1, 0.9]));
+
         let range = |range, position| Filter::HistogramRange { range, position }.point(c, [0.2, 0.5, 0.9]).unwrap();
+
         assert!(close(range(1.0, 0.3), [0.2, 0.5, 0.9]) && close(range(0.0, 0.3), [0.3; 3]));
         assert!(close(range(0.5, 0.5), [0.35, 0.5, 0.7]));
+
         let shift = |offset| Filter::HistogramShift { offset }.point(c, [0.0, 0.5, 1.0]).unwrap();
+
         assert!(close(shift(0.0), [0.0, 0.5, 1.0]), "no offset keeps white white");
         assert!(close(shift(0.25), [0.25, 0.75, 0.25]) && close(shift(-0.25), [0.75, 0.25, 0.75]));
+
         let cb = Filter::ColorBalance { shadows: [0.2, 0.0, 0.0], midtones: [0.0; 3], highlights: [0.0, 0.0, 0.2] };
         assert!(cb.point(c, [0.05; 3]).unwrap()[0] > 0.2 && cb.point(c, [0.95; 3]).unwrap()[2] > 0.99);
         assert!(close(Filter::Invert.point(ChannelKind::Signed, [0.5; 3]).unwrap(), [-0.5; 3]));
         assert_eq!(Filter::Invert.point(ChannelKind::NormalMap, [0.5, 0.5, 1.0]), Some([0.5, 0.5, 1.0]));
+
         for f in [
             Filter::Blur { radius: 1.0, wrap: false },
             Filter::Warp { intensity: 1.0, scale: 1.0, seed: 0, divider: 1 },

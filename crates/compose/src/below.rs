@@ -206,9 +206,11 @@ impl StackKey {
         {
             return None;
         }
+
         if self.pixels.len() != other.pixels.len() {
             return None;
         }
+
         let size = self.set.size();
         let mut changed = BTreeSet::new();
         for ((left_id, left_channel, left_image), (right_id, right_channel, right_image)) in self.pixels.iter().zip(&other.pixels) {

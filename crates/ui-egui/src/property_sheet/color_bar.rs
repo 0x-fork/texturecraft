@@ -92,8 +92,8 @@ impl PropertySheet<'_> {
         let state_id = bar.with("picker");
         let mut state = picker_state(ctx, state_id);
         if !state.open {
-            open_picker(ctx, &mut state, linear);
-            ctx.data_mut(|data| data.insert_temp(state_id, state));
+            open_picker(ctx, state_id, &mut state, linear);
+            ctx.memory_mut(|memory| memory.caches.cache::<VisiblePickers>().set(state_id, state));
         }
     }
 

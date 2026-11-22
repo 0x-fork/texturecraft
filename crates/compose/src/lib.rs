@@ -33,6 +33,7 @@ pub mod pattern;
 mod pattern_context;
 pub mod projector_cover;
 pub mod projector_depth;
+mod projector_depth_cache;
 pub mod projector_view;
 mod shape_distance;
 mod slope_texel;
