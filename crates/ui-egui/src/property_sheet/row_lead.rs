@@ -28,7 +28,6 @@ impl<'a> RowLead<'a> {
     /// The row's name, as assistive tech reads it
     pub(crate) fn text(self) -> &'a str {
         match self {
-            RowLead::Label { text, .. } | RowLead::Loose(text) | RowLead::Picture { text, .. } | RowLead::Child(text) => text,
             RowLead::Label { text, .. } | RowLead::Loose(text) | RowLead::Picture { text, .. } | RowLead::Child(text) | RowLead::Tinted { text, .. } => text,
         }
     }

@@ -68,7 +68,6 @@ impl EnvImage {
         if width == 0 || height == 0 || rgba.len() as u64 != width as u64 * height as u64 {
             return None;
         }
-        let data = pixels.par_iter().map(|p| [lin(p[0]), lin(p[1]), lin(p[2])]).collect();
         let linear = |v: f32| environment_sky::environment_linear(v, srgb);
         let data = rgba.par_iter().map(|p| [linear(p[0]), linear(p[1]), linear(p[2])]).collect();
         let mut img = EnvImage { width, height, data };

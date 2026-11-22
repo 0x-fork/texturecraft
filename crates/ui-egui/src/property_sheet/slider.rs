@@ -1,13 +1,11 @@
 use std::ops::RangeInclusive;
 
-use egui::{Align2, Id, Rect, Sense, Stroke, WidgetInfo, pos2};
 use egui::{Align2, Color32, CornerRadius, FontId, Id, Rect, Response, Sense, Stroke, StrokeKind, WidgetInfo, pos2};
 use egui_phosphor::regular as ic;
 
 use super::number_field::shown_number;
 use super::track::Track;
 use super::value_text::ValueText;
-use super::{PropertySheet, ROW_HIT_HALF_HEIGHT, RowLead, TEXT_SIZE};
 use super::{CONTROL_RADIUS, ICON_SIZE, PropertySheet, ROW_HIT_HALF_HEIGHT, RowLead, SMALL_TEXT_SIZE, TEXT_SIZE};
 use crate::theme::semibold;
 

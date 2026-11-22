@@ -329,7 +329,6 @@ fn card_under_caption(ui: &mut egui::Ui, state: &mut (bool, std::cell::Cell<Opti
             if *instance {
                 sheet.source_card(&record, "Layer", "Set", false);
             } else {
-                sheet.slot(&record, "Layer", "Set", None, true, false);
                 sheet.slot_restorable(&record, "Layer", "Set", false);
             }
         });

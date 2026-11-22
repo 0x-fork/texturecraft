@@ -40,7 +40,6 @@ pub(crate) fn picker(app: &mut TextureCraftApp, pick: &egui::Response, effect: u
         items.sort_by_cached_key(|item| item.label.to_lowercase());
         vec![PickerTab { icon: ic::FUNNEL, name: tr("Filters"), groups: vec![PickerGroup { header: None, items }] }]
     };
-    let picked = resource_picker::show(&response, popup, &mut app.thumbs, current.as_ref(), current.is_some(), tabs);
     let picked = resource_picker::show(pick, popup, &mut app.thumbs, current.as_ref(), current.is_some(), tabs);
     if let Some(id) = picked.filter(|id| Some(*id) != current) {
         app.run("effect.set", json!({"effect": effect, "filter": id}));

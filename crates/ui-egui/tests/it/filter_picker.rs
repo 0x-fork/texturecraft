@@ -56,11 +56,9 @@ fn escape_closes_the_picker_without_changes() {
 
 /// Opens the wand's Add effect menu and clicks Filter
 fn add_filter_from_the_wand(harness: &mut Harness<'_, TextureCraftApp>) {
-    harness.get_by_role_and_label(Role::Button, "Add effect").click();
     let at = harness.get_by_role_and_label(Role::Button, "Add effect").rect().center();
     click_at(harness, at);
 
-    harness.get_by_role_and_label(Role::Button, "Filter").click();
     let at = harness.get_by_role_and_label(Role::Button, "Filter").rect().center();
     click_at(harness, at);
 }

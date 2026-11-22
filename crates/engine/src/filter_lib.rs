@@ -342,7 +342,6 @@ pub(crate) fn build_for(cmd: &str, id: &str, p: &Value) -> Result<EffectKind> {
         "bakedLighting" => library_baked_lighting(),
         "bakedLightingEnvironment" => LIBRARY_ENVIRONMENT_LIGHTING,
         "levels" => {
-            crate::mask_cmds::levels_from(cmd, p, &mut l)?;
             let mut levels = Levels::default();
             crate::mask_cmds::levels_from(cmd, p, &mut levels)?;
             return Ok(EffectKind::Levels(levels));

@@ -6,7 +6,6 @@ use egui_phosphor::regular as ic;
 use serde_json::{Value, json};
 use texturecraft_engine::compose::ThumbTarget;
 use texturecraft_engine::core::{
-    BakedMap, BlendMode, Channel, ChannelBlend, Effect, EffectKind, Filter, Layer, LayerId, LayerKind, LinkParam, Projection, Sampling, Source,
     BakedMap, BlendMode, Channel, ChannelBlend, Effect, EffectKind, Layer, LayerId, LayerKind, LinkParam, Projection, Sampling, Source,
 };
 use texturecraft_engine::paint::alpha_params::MAX_ALPHA_CONTRAST;
@@ -3138,7 +3137,6 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                 tool_properties(app, ui);
             }
         }),
-        EffectKind::Filter(filter) => legacy_body(ui, |ui| filter_properties(app, ui, id, filter)),
         EffectKind::Filter(filter) => crate::filter_properties::filter_properties(app, ui, effect_id, filter),
         EffectKind::ColorSelection(selection) => crate::color_selection_editor::color_selection_properties(app, ui, effect_id, selection),
         EffectKind::Compare { op, value, tolerance, left, right, channel, hardness } => {

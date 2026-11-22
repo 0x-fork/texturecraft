@@ -4,7 +4,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Backface, BakedMap, BlendMode, Channel, ChannelKind, CompareSource, ContentsOffset, DepthCulling, Projector, RandomizedSeed, ShapeCrop, lum};
 use crate::curve_preset::CurvePreset;
 use crate::gradient_input::{GradientInput, ramp, shape_gray};
 use crate::{
@@ -1321,7 +1320,6 @@ fn unit_divider() -> u16 {
     1
 }
 
-/// Whether a switch is on, its default where it defaults to on (not saved then)
 /// Serde default of a switch that was on in projects saved before it existed
 fn yes() -> bool {
     true
@@ -2057,7 +2055,6 @@ impl Layer {
             LayerKind::Fill(fill) => fill.sources.values().any(|source| source.reads_anchor(None)),
             _ => false,
         };
-        fill || self.mask.iter().flat_map(|mask| mask.effects.iter()).chain(self.content_effects.iter()).any(|effect| effect.kind.reads(None))
         fill || self.mask.iter().flat_map(|mask| mask.effects.iter()).chain(self.content_effects.iter()).any(|effect| effect.reads(None))
     }
 
@@ -2089,7 +2086,6 @@ pub struct Effect {
 impl Effect {
     pub fn new(id: LayerId, kind: EffectKind) -> Effect {
         // Generators and fills that build a mask usually add on top of the background
-        Effect { id, name: kind.name().to_string(), visible: true, kind, blend: BlendMode::Normal, opacity: 1.0, channel_blends: BTreeMap::new() }
         Effect {
             id,
             name: kind.name().to_string(),
@@ -2169,15 +2165,12 @@ mod tests {
     }
 
     #[test]
-    fn a_colour_selection_id_map_is_reported_as_used() {
     fn a_colour_selection_id_map_and_a_filter_image_input_are_reported_as_used() {
         let mut selection = crate::ColorSelection::new(Vec::new(), 0.0);
         selection.id_map = Some("id.png".into());
-        let effect = Effect::new(LayerId(1), EffectKind::ColorSelection(selection));
         let mut effect = Effect::new(LayerId(1), EffectKind::ColorSelection(selection));
         effect.inputs.insert("mask".into(), Source::image("input.png"));
 
-        assert_eq!(effect.kind.images_read().collect::<Vec<_>>(), vec!["id.png"]);
         assert_eq!(effect.images_read().collect::<Vec<_>>(), vec!["id.png", "input.png"]);
     }
 

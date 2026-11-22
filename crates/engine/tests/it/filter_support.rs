@@ -1,8 +1,5 @@
-//! What the filter tests share: their sessions and reading the composite
 //! What the filter tests share: their sessions, adding, setting and refusing a filter, and reading the composite
 
-use texturecraft_engine::Session;
-use texturecraft_engine::core::Channel;
 use serde_json::{Value, json};
 use texturecraft_engine::core::{Channel, EffectKind, Filter, LayerId};
 use texturecraft_engine::geom::glam::Vec2;

@@ -10,7 +10,6 @@ use texturecraft_compose::{
 use texturecraft_core::project::ENV_RESOURCE_PREFIX;
 use texturecraft_core::{
     BakedMap, BlendMode, Channel, ColorSelection, CompareOp, CompareSource, ContentsOffset, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind,
-    HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
     GrayscaleConversion, HeightMask, ImageInput, Layer, LayerId, LayerKind, Mask, MaskBackground, Procedural, ProceduralKind, Project, Projection, Source,
     TextureSet,
 };
@@ -673,7 +672,6 @@ fn kept_filter_fields_are_not_used_after_an_edit_or_under_a_live_stroke() {
     // Changing the hot mask must invalidate the retained fields
     let mask = fixture.project.layer_mut(top).unwrap().mask.as_mut().unwrap();
     let blur = mask.effects.iter_mut().find(|effect| matches!(effect.kind, EffectKind::Filter(Filter::Blur { .. }))).unwrap();
-    blur.kind = EffectKind::Filter(Filter::Blur { radius: 6.0 });
     blur.kind = EffectKind::Filter(Filter::Blur { radius: 6.0, wrap: false });
     let (images, baked) = (Default::default(), Default::default());
     cache.ahead = Vec::new();
@@ -961,7 +959,6 @@ fn flat_image(value: f32) -> std::sync::Arc<texturecraft_compose::ImageRes> {
 }
 
 #[test]
-fn id_map_image_changes_invalidate_stack_key() {
 fn filter_input_and_id_map_image_changes_invalidate_stack_key() {
     let mut fixture = fixture();
     heavy_stack(&mut fixture);
@@ -980,7 +977,6 @@ fn filter_input_and_id_map_image_changes_invalidate_stack_key() {
     images.insert("input".into(), flat_image(0.1));
     images.insert("id".into(), flat_image(0.1));
 
-    images.insert("id".into(), flat_image(0.9));
     for name in ["input", "id"] {
         let original = stack_key(&fixture, &images);
         images.insert(name.into(), flat_image(0.9));
@@ -988,7 +984,6 @@ fn filter_input_and_id_map_image_changes_invalidate_stack_key() {
     }
 }
 
-    assert!(stack_key(&fixture, &images) != original, "replacing the id image must invalidate the cache");
 #[test]
 fn the_environment_keys_the_stack_only_while_environment_lighting_reads_it() {
     let mut fixture = fixture();
@@ -1027,7 +1022,6 @@ enum BlurOn {
 fn folder_of_blurred_clouds(f: &mut Fixture, ts: usize, folder: Option<LayerId>, blur_on: BlurOn) -> (LayerId, LayerId) {
     let held = put(f, ts, folder, LayerKind::Group { children: vec![], collapsed: false, contents: Default::default(), randomized: Vec::new() }, None);
     let clouds = put(f, ts, Some(held), fill(&[(Channel::BaseColor, procedural(ProceduralKind::Clouds, 0.1, 0.9))]), None);
-    let blur = effect(f, EffectKind::Filter(Filter::Blur { radius: 8.0 }));
     let blur = effect(f, EffectKind::Filter(Filter::Blur { radius: 8.0, wrap: false }));
     match blur_on {
         BlurOn::Content => f.project.layer_mut(clouds).unwrap().content_effects.push(blur),

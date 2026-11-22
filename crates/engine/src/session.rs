@@ -766,9 +766,6 @@ impl Session {
             previous_document.resources.iter().any(|(name, previous)| !self.doc.resources.get(name).is_some_and(|current| Arc::ptr_eq(previous, current)));
         let added_resource_names: BTreeSet<&str> =
             self.doc.resources.keys().filter(|name| !previous_document.resources.contains_key(*name)).map(String::as_str).collect();
-        let uses_added_resource =
-            |texture_set_index: usize| {
-                                    effect.kind.images_read().any(is_added) || matches!(&effect.kind, EffectKind::Material(fill) if uses_link(fill))
         let uses_added_resource = |texture_set_index: usize| {
             use texturecraft_core::{EffectKind, Fill};
 

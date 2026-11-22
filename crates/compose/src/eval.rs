@@ -11,9 +11,6 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use texturecraft_core::{
-    BakedMap, BlendMode, BlockScales, Channel, ChannelKind, CompareSource, ContentsOffset, CurvatureDetail, CurvatureMode, Effect, EffectKind, Fill, Filter,
-    Filtering, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, MicroDetail, NormalFormat, Project, Projection, Sampling,
-    ShapeCrop, Source, TextureSet, TileGrid, blend1, blend3, lum, mix3, per_unit,
     AnisotropicKuwahara, BakedMap, Bevel, BevelSmooth, BlendMode, BlockScales, Channel, ChannelKind, ColorMatch, CompareSource, ContentsOffset,
     CurvatureDetail, CurvatureMode, Effect, EffectKind, FLAT_CURVATURE, Fill, Filter, Filtering, Generator, GeneratorKind, HeightMask, HeightToNormal,
     HighpassSpace, ImageInput, Layer, LayerId, LayerKind, Mask, MaskBackground, MaskOutline, MicroDetail, Mirror, NormalFormat, Project, Projection,
@@ -1316,7 +1313,6 @@ fn field(
     for (((&filter, &margin), &wrap), &own_wrap) in filters.iter().zip(&margins).zip(&wrapping).zip(&own_wraps) {
         let region = region_around(inp, tiles, margin, wrap)?;
         let start = previous.as_ref().map(|(index, field)| (*index, field));
-        let filtered = filter_region(inp, channels, below, (id, around), job, effects, filter, region, start)?;
         let filtered = filter_region(inp, channels, below, (id, around), job, effects, filter, own_wrap, region, start)?;
 
         // Preserve only stages with anchors before the next filter overwrites their value
@@ -1437,7 +1433,6 @@ fn filter_region(
     };
 
     let filter_effect = effects.iter().filter(|effect| effect.visible).nth(index);
-    let opacity = filter_effect.map(|effect| effect.blend_of(channel).opacity.clamp(0.0, 1.0)).unwrap_or(1.0);
     let filter = filter_effect.and_then(|effect| match &effect.kind {
         EffectKind::Filter(filter) => Some(filter),
         _ => None,
@@ -2171,7 +2166,6 @@ fn effect_plans<'a>(
                 }
                 _ => (None, false),
             };
-            let blend = effect.blend_of(channel);
             let environment = match &effect.kind {
                 EffectKind::Filter(Filter::EnvironmentLighting { .. }) => Some(EnvironmentSh::of(&inp.project.display, inp.images)),
                 _ => None,
@@ -2554,7 +2548,6 @@ type ChannelContents = [Option<([f32; 3], f32)>; NCH];
 
 impl<'a, 'b> Texel<'a, 'b> {
     fn new(inp: &'b Inputs<'a>, x: u32, y: u32, o: usize, stroke: f32) -> Self {
-        Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), below: None, tape: Tape::Off, copy: None }
         Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), below: None, lit: None, tape: Tape::Off, copy: None }
     }
 
@@ -3547,7 +3540,6 @@ impl<'a, 'b> Texel<'a, 'b> {
             EffectKind::Filter(filter @ Filter::BakedLighting { .. }) => match Channel::ALL.get(chan_plan.ch) {
                 Some(Channel::BaseColor) => {
                     let ao = self.baked(BakedMap::AmbientOcclusion).unwrap_or(1.0);
-                    (mix3(value, value.map(|x| (x * factor).clamp(0.0, 1.0)), opacity), coverage)
                     let lit = match &effect.stylized {
                         Some(stylized) => {
                             let nrm = self.lit_normal(stylized.relief());
@@ -4606,7 +4598,6 @@ pub fn flatten_layer(inputs: &Inputs, id: LayerId, tiles: &[(u32, u32)]) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use texturecraft_core::{ChannelBlend, CompareOp, Effect, Layer, OutputResolution, Procedural, ProceduralKind, ResolutionMode, TextureSet};
     use texturecraft_core::{
         ChannelBlend, CompareOp, Effect, Layer, OutputResolution, PbrValidate, Procedural, ProceduralKind, ResolutionMode, StylizedLighting, TextureSet,
     };
@@ -5930,7 +5921,6 @@ soft {soft:?}"
         };
         let mut mask = Mask::new(MaskBackground::Black);
         mask.effects.push(Effect::new(f.project.alloc_id(), compare));
-        mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 2.0 })));
         mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 2.0, wrap: true })));
         f.project.layer_mut(top).unwrap().mask = Some(mask);
 
