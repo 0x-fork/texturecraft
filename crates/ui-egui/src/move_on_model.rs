@@ -368,6 +368,7 @@ mod tests {
 
         let mut pointer = press_the_button(&mut harness);
         assert_eq!(harness.state().moving_on_model, Some(MoveOnModel { layer, effect: Some(LayerId(effect)) }), "a press starts the hold");
+
         pointer.drags(&mut harness, vec2(-60.0, 0.0), 10, Modifiers::NONE);
         let_go(&mut harness, &mut pointer);
 

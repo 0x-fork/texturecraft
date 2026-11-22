@@ -719,6 +719,7 @@ pub(crate) mod tests {
 
             let from = on_the_model_off_the_handles(&harness);
             drag(&mut harness, from, from + vec2(30.0, 0.0), Modifiers::NONE);
+
             assert_eq!(effect_projection(&harness, effect), before, "{kind}: a drag off the handles leaves the projection alone");
             assert_eq!(harness.state().session.history_labels().len(), steps, "{kind}: and adds no undo step");
 
@@ -727,6 +728,7 @@ pub(crate) mod tests {
                 None => crate::frame_gizmo::FrameGizmo::of(harness.state(), rect).unwrap_or_else(|| panic!("{kind}: a gizmo shows")).center,
             };
             drag(&mut harness, center, center + vec2(0.0, -30.0), Modifiers::NONE);
+
             assert_ne!(effect_projection(&harness, effect), before, "{kind}: the centre square moves it");
             assert_eq!(harness.state().session.history_labels().len(), steps + 1, "{kind}: one step, no stroke");
         }
