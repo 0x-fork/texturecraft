@@ -1,7 +1,5 @@
-use egui::{CornerRadius, Painter, Rect, pos2};
 use egui::{Align2, Color32, CornerRadius, FontId, Id, Painter, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 
-use crate::theme::Tokens;
 use super::row::SECTION_RULE_TO_CAPTION;
 use super::{PAD, SMALL_TEXT_SIZE};
 use crate::theme::{Tokens, semibold};

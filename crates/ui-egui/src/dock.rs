@@ -6,8 +6,8 @@ use egui_phosphor::regular as ic;
 use serde_json::{Value, json};
 use texturecraft_engine::compose::ThumbTarget;
 use texturecraft_engine::core::{
-    BakedMap, BlendMode, Channel, ChannelBlend, ChannelKind, Decal, DecalFlip, Effect, EffectKind, Fill, Filter, Layer, LayerId, LayerKind, LinkParam,
-    MaterialLink, Projection, Source,
+    BakedMap, BlendMode, Channel, ChannelBlend, ChannelKind, Effect, EffectKind, Fill, Filter, Layer, LayerId, LayerKind, LinkParam, MaterialLink, Projection,
+    Source,
 };
 use texturecraft_engine::filter_lib::scalar_params;
 use texturecraft_engine::paint::alpha_params::MAX_ALPHA_CONTRAST;
@@ -1885,7 +1885,6 @@ fn effect_type_label(kind: &EffectKind) -> &'static str {
 pub(crate) fn properties(app: &mut TextureCraftApp, ui: &mut Ui) {
     // A floating scroll bar would cover the right-aligned slider values and section reset icons
     ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-    egui::ScrollArea::vertical().id_salt(("props", properties_place(app))).auto_shrink([false, false]).show(ui, |ui| properties_contents(app, ui));
     let scope = SectionScope::Docked;
     if let Some(tabs) = properties_fill_tabs(app) {
         crate::property_sheet::section_tabs(ui, scope, 0, &tabs);
@@ -1920,6 +1919,8 @@ pub(crate) fn properties_scrolled(app: &mut TextureCraftApp, ui: &mut Ui, area: 
     });
 }
 
+/// The tabs over the panel when it shows a fill layer's sections, which they jump between
+pub(crate) fn properties_fill_tabs(app: &TextureCraftApp) -> Option<[(&'static str, &'static str); 2]> {
     if app.session.tool.tool == Tool::PolygonFill && app.session.tool_usable(Tool::PolygonFill) {
         return None;
     }
@@ -1928,6 +1929,7 @@ pub(crate) fn properties_scrolled(app: &mut TextureCraftApp, ui: &mut Ui, area: 
     match app.session.target {
         StackTarget::Content => {
             let layer = app.session.selected_layer().and_then(|id| project.layers.get(&id))?;
+            matches!(&layer.kind, LayerKind::Fill(fill) if fill.projection.placed().is_none()).then(crate::fill_panel::fill_tabs)
         }
         _ => None,
     }
@@ -1956,8 +1958,6 @@ pub(crate) fn properties_contents(app: &mut TextureCraftApp, ui: &mut Ui) {
     match (&selected, app.session.target) {
         // Polygon fill shows its own settings and says what it fills into, wherever it can fill
         _ if tool == Tool::PolygonFill && tool_usable => legacy_body(ui, |ui| polygon_fill_properties(app, ui)),
-        (Some(layer), StackTarget::Effect(effect)) => legacy_body(ui, |ui| effect_properties(app, ui, layer, effect)),
-        (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => legacy_body(ui, |ui| fill_properties(app, ui, layer)),
         (Some(layer), StackTarget::Effect(effect)) => effect_properties(app, ui, layer, effect),
         (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => fill_properties(app, ui, layer),
         (Some(layer), StackTarget::Content) if layer.is_group() => legacy_body(ui, |ui| {
@@ -2066,6 +2066,7 @@ fn tool_properties(app: &mut TextureCraftApp, ui: &mut Ui) {
 
     let stroke_width = (brush.size / PREVIEW_SIZE_UNIT * PREVIEW_STROKE_WIDTH_SCALE).clamp(*PREVIEW_STROKE_WIDTH.start(), *PREVIEW_STROKE_WIDTH.end());
     let alpha = (brush.flow * brush.opacity * 255.0) as u8;
+    painter.add(egui::Shape::line(points, Stroke::new(stroke_width, Color32::from_white_alpha(alpha.max(PREVIEW_STROKE_MIN_ALPHA)))));
     let base_color = app.session.tool.values.get(&Channel::BaseColor).copied().unwrap_or(PREVIEW_FALLBACK_BASE_COLOR);
     crate::thumbs::paint_sphere(painter, pos2(rect.left() + half_width * 1.5, rect.center().y), PREVIEW_SPHERE_RADIUS, base_color);
     ui.add_space(BRUSH_PREVIEW_GAP);
@@ -2721,6 +2722,7 @@ fn fill_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
     let LayerKind::Fill(fill) = &layer.kind else { return };
     let on: Vec<Channel> = layer.channels.keys().copied().collect();
     PropertySheet::show(ui, ("fill_sheet", layer.id.0), |sheet| {
+        crate::fill_panel::placement_sections(app, sheet, fill, &json!({"layer": layer.id.0}), layer.id);
     });
     legacy_body(ui, |ui| {
         if let Some(link) = &fill.link {
@@ -2945,7 +2947,7 @@ const FILL_MATERIAL_GAP: f32 = 6.0;
 /// Space between a fill's channel chips and its channel sources
 const FILL_CHANNELS_GAP: f32 = 4.0;
 
-/// Projection and sources of a fill layer or fill effect (`base`) for its enabled channels; `reader` owns it
+/// Sources of a fill layer or fill effect (`base`) for its enabled channels; `reader` owns it
 fn fill_editor(app: &mut TextureCraftApp, ui: &mut Ui, fill: &Fill, base: &Value, enabled_channels: &[Channel], reader: LayerId) {
     let salt = base.to_string();
     ui.add_space(FILL_MATERIAL_GAP);
@@ -3305,6 +3307,7 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
     // Property sheets keep the panel's own edges; only the rows not yet laid out by one get the legacy margin
     match &effect.kind {
         EffectKind::Generator(generator) => legacy_body(ui, |ui| crate::generator_panel::generator_properties(app, ui, layer.id, id, generator)),
+        EffectKind::Levels(levels) => legacy_body(ui, |ui| crate::levels_properties::levels_properties(app, ui, layer, effect_id, levels)),
         EffectKind::Fill { source, projection, .. } => legacy_body(ui, |ui| {
             ui.label(caption(tr("Fill")));
             let anchors = effect_anchors_below(app, layer.id, effect_id);
@@ -3353,9 +3356,11 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
         EffectKind::Material(fill) => {
             let enabled: Vec<Channel> = fill.sources.keys().copied().collect();
             PropertySheet::show(ui, ("fill_effect_sheet", id), |sheet| {
+                crate::fill_panel::placement_sections(app, sheet, fill, &json!({"effect": id}), layer.id);
             });
+            legacy_body(ui, |ui| fill_editor(app, ui, fill, &json!({"effect": id}), &enabled, layer.id));
         }
-        EffectKind::Anchor => {
+        EffectKind::Anchor => legacy_body(ui, |ui| {
             ui.label(caption(tr("Anchor point")));
             let text = if anchor_in_mask(app, effect_id) {
                 tr("Records the mask value at this point. Fill effects and generators in masks above can read it.")
@@ -3400,10 +3405,11 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
                 tool_properties(app, ui);
             }
         }),
+        EffectKind::Filter(filter) => legacy_body(ui, |ui| filter_properties(app, ui, id, filter)),
+        EffectKind::ColorSelection { colors, tolerance } => {
+            legacy_body(ui, |ui| crate::color_selection_editor::color_selection_properties(app, ui, effect_id, colors, *tolerance))
         }
-        EffectKind::Filter(filter) => filter_properties(app, ui, id, filter),
-        EffectKind::ColorSelection { colors, tolerance } => crate::color_selection_editor::color_selection_properties(app, ui, effect_id, colors, *tolerance),
-        other => {
+        other => legacy_body(ui, |ui| {
             ui.label(RichText::new(tr(other.name())).color(tokens.text_dim));
         }),
     }

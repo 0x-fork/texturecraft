@@ -42,6 +42,8 @@ pub use fill_symmetry::FillSymmetry;
 pub use layer::{
     ChannelBlend, CompareOp, CurvatureDetail, CurvatureMode, Decal, DecalFlip, DecalSymmetry, Effect, EffectKind, Fill, Filter, Filtering, Generator,
     GeneratorGlobal, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Levels, LinkParam, LinkPreset, Mask, MaskBackground, MaterialLink, MicroDetail,
+    OutputResolution, PathShape, Procedural, ProceduralKind, Projection, ResolutionMode, Sampling, ScaleMode, Source, TileBlending, TileGenerator,
+    TileInputDistribution, TileShape, TileSizeMode, TileSymmetry, UvTransform, UvWrap, gradient, hsl_adjust, per_unit,
 };
 pub use project::{
     AoMixing, BlockScales, Camera, DepthOfField, DisplaySettings, EnvAlignment, FORMAT_VERSION, MAX_RESOLUTION, MIN_RESOLUTION, NormalFormat, NormalMixing,

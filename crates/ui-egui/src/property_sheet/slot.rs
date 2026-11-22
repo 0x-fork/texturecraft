@@ -1,4 +1,6 @@
+use egui::{CornerRadius, FontId, Sense, Stroke, StrokeKind, pos2};
 
+use super::{ButtonIcon, CONTROL_RADIUS, PropertySheet, ROW_HEIGHT, TEXT_SIZE};
 
 /// Air between a full-width button's icon and its words
 const BUTTON_ICON_GAP: f32 = 8.0;

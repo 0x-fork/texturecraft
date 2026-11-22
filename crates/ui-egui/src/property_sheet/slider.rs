@@ -1,9 +1,11 @@
 use std::ops::RangeInclusive;
 
+use egui::{Align2, Id, Rect, Sense, Stroke, WidgetInfo, pos2};
 
 use super::number_field::shown_number;
 use super::track::Track;
 use super::value_text::ValueText;
+use super::{PropertySheet, ROW_HIT_HALF_HEIGHT, RowLead, TEXT_SIZE};
 use crate::theme::semibold;
 
 /// Radius of a slider's knob

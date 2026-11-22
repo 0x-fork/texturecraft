@@ -26,7 +26,6 @@ mod tooltip;
 mod track;
 mod value_text;
 
-pub(crate) use section_tabs::{full_height_tab_rect, shown_tab_box};
 #[cfg(test)]
 mod tests;
 
@@ -36,6 +35,7 @@ pub(crate) use number_field::NumberField;
 pub(crate) use preview_lower::PreviewLower;
 pub(crate) use preview_size::PreviewSize;
 pub(crate) use row_lead::RowLead;
+pub(crate) use section_tabs::{SectionScope, forget_sections, full_height_tab_rect, in_scope, room_past_end, section_tabs, shown_tab_box};
 pub(crate) use stack_slider::StackSlider;
 
 use egui::{Color32, FontId, Id, Rect, Ui, pos2, vec2};

@@ -786,6 +786,7 @@ pub(crate) fn brush_fill(id: LayerId, sources: Vec<(Channel, Source)>, scale: f3
     Layer::new(
         id,
         "Brush material",
+        LayerKind::Fill(Fill { sources: sources.into_iter().collect(), projection, sampling: Default::default(), link: None }),
         &channels,
     )
 }
