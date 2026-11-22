@@ -430,7 +430,6 @@ pub(crate) mod tests {
     use texturecraft_engine::core::{Fill, LayerId, LayerKind, Projection, Projector};
 
     use super::*;
-    use crate::frame_gizmo::tests::{drag, drag_frames, fill_app, fill_app_with, panel_xyz, press_and_move, projection};
     use crate::frame_gizmo::tests::{ball_app, drag, drag_frames, fill_app, fill_app_with, panel_xyz, press_and_move, projection};
 
     fn gizmo(harness: &egui_kittest::Harness<'_, TextureCraftApp>) -> RoundGizmo {

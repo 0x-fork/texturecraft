@@ -224,6 +224,7 @@ fn seed_count(layer: &Layer) -> usize {
         .map(|effect| match &effect.kind {
             EffectKind::Fill { source, .. } => usize::from(matches!(source, Source::Procedural { .. })),
             EffectKind::Material(fill) => fill_seeds(fill),
+            EffectKind::Generator(_) | EffectKind::Filter(Filter::Warp { .. } | Filter::SlopeBlur { .. } | Filter::DirectionalWarp { .. }) => 1,
             _ => 0,
         })
         .sum();

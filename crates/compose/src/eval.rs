@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 use texturecraft_core::{
-    BakedMap, BlendMode, BlockScales, Channel, ChannelKind, CompareOp, CurvatureDetail, CurvatureMode, Effect, EffectKind, Fill, Filter, Filtering, Generator,
-    GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, MicroDetail, NormalFormat, Project, Projection, Sampling, ShapeCrop, Source,
-    TextureSet, TileGrid, blend1, blend3, lum, mix3, per_unit,
+    BakedMap, BlendMode, BlockScales, Channel, ChannelKind, CompareSource, ContentsOffset, CurvatureDetail, CurvatureMode, Effect, EffectKind, Fill, Filter,
+    Filtering, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, MicroDetail, NormalFormat, Project, Projection, Sampling,
+    ShapeCrop, Source, TextureSet, TileGrid, blend1, blend3, lum, mix3, per_unit,
 };
 use texturecraft_geom::glam::{Vec2, Vec3};
 use texturecraft_geom::{Mesh, NO_TRI, Surface, UvGBuffer};
@@ -752,7 +752,7 @@ fn filter_region(
     };
 
     let filter_effect = effects.iter().filter(|effect| effect.visible).nth(index);
-    let opacity = filter_effect.map(|effect| effect.opacity.clamp(0.0, 1.0)).unwrap_or(1.0);
+    let opacity = filter_effect.map(|effect| effect.blend_of(channel).opacity.clamp(0.0, 1.0)).unwrap_or(1.0);
     let (radius_texels, _) = filter_extent(radius, op, inputs.gbuf.width.max(inputs.gbuf.height));
 
     // Generator stages keep their ramp beside the mask stack below
@@ -1155,7 +1155,6 @@ struct Node<'a> {
 
 /// Plans of the visible effects of a stack: mask effects (`channel` None) or the content
 /// effects of one channel (paint effects then read that channel's pixels).
-fn effect_plans<'a>(inp: &EvaluationInputs<'a>, effects: &'a [Effect], tile_x: u32, tile_y: u32, channel: Option<Channel>) -> Vec<EffectPlan<'a>> {
 fn effect_plans<'a>(
     inp: &Inputs<'a>,
     effects: &'a [Effect],
@@ -1182,6 +1181,7 @@ fn effect_plans<'a>(
                 }
                 _ => (None, false),
             };
+            let blend = effect.blend_of(channel);
             EffectPlan {
                 id: effect.id,
                 kind: offset_effect(&effect.kind, around),
@@ -1242,7 +1242,6 @@ fn tile_of<'a>(inp: &Inputs, img: Option<&'a TileImage>, tx: u32, ty: u32, chann
     img.resampled_tile(w, h, tx, ty, &empty).map(Cow::Owned)
 }
 
-fn mask_plan<'a>(inp: &EvaluationInputs<'a>, id: LayerId, mask: &'a Mask, tx: u32, ty: u32, fields: Option<&'a Fields>) -> Option<MaskPlan<'a>> {
 /// The plan of layer `id`'s `mask` for tile (tx, ty), its fills under the Scale and Rotation `around` of the folders holding the layer
 fn mask_plan<'a>(inp: &Inputs<'a>, id: LayerId, mask: &'a Mask, tx: u32, ty: u32, fields: Option<&'a Fields>, around: ContentsOffset) -> Option<MaskPlan<'a>> {
     if !mask.enabled {
@@ -1375,7 +1374,6 @@ fn plan_content<'a>(
         LayerKind::Paint => Content::Paint { preview: previews(inp, PaintTarget::Layer(layer.id)) },
         LayerKind::Fill(f) => {
             let (depth, covers_all) = fill_coverage(inp, &f.projection, f.sampling);
-            Content::Fill { fill: Box::new(Cow::Borrowed(f)), depth, covers_all }
             Content::Fill { fill: Box::new(offset_fill(f, around)), depth, covers_all }
         }
         LayerKind::Group { children, contents, .. } => {
@@ -1512,7 +1510,7 @@ impl<'t> Tape<'t> {
 
 impl<'a, 'b> Texel<'a, 'b> {
     fn new(inp: &'b Inputs<'a>, x: u32, y: u32, o: usize, stroke: f32) -> Self {
-        Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), tape: Tape::Off, copy: None }
+        Texel { inp, x, y, o, res: inp.gbuf.width, coords: None, stroke, stop: None, anchors: Vec::new(), below: None, tape: Tape::Off, copy: None }
     }
 
     /// Run `f` with `tape` as this texel's tape.
@@ -2400,7 +2398,6 @@ impl<'a, 'b> Texel<'a, 'b> {
                 }
                 None => (value, coverage),
             },
-            EffectKind::Levels(levels) => (mix3(value, per_unit(chan_plan.kind, value, |x| levels.apply(x)), opacity), coverage),
             EffectKind::Levels(levels) => match Channel::ALL.get(chan_plan.ch) {
                 Some(&channel) if levels.remaps(channel) => (mix3(value, per_unit(chan_plan.kind, value, |x| levels.apply(x)), opacity), coverage),
                 _ => (value, coverage),
@@ -3265,14 +3262,12 @@ pub fn compare_histograms(inp: &Inputs, effect: LayerId, bins: usize) -> Option<
     }
     let reads_stack = found.kind.reads_stack();
     let tiles = histogram_tiles(inp.gbuf.width, inp.gbuf.height);
-    let probe = evaluation_fields(&cut_inp, &channels, tiles.get(..1).unwrap_or_default());
     let shared = shared_histogram_fields(&cut_inp, &channels, &tiles);
     let empty = || [EffectHistogram::new(bins, false), EffectHistogram::new(bins, false)];
 
     let [left_counts, right_counts] = tiles
         .par_iter()
         .map(|&(tx, ty)| {
-                    own = evaluation_fields(&cut_inp, &channels, &[(tx, ty)]);
             let mut own = None;
             let fields = histogram_tile_fields(shared.as_ref(), &mut own, &cut_inp, &channels, (tx, ty));
             let mut sides = empty();
@@ -3387,7 +3382,7 @@ pub fn flatten_layer(inputs: &Inputs, id: LayerId, tiles: &[(u32, u32)]) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use texturecraft_core::{ChannelBlend, Effect, Layer, OutputResolution, Procedural, ProceduralKind, ResolutionMode, TextureSet};
+    use texturecraft_core::{ChannelBlend, CompareOp, Effect, Layer, OutputResolution, Procedural, ProceduralKind, ResolutionMode, TextureSet};
     use texturecraft_geom::primitives;
 
     struct Fixture {
@@ -4442,6 +4437,7 @@ soft {soft:?}"
         };
         let mut mask = Mask::new(MaskBackground::Black);
         mask.effects.push(Effect::new(f.project.alloc_id(), compare));
+        mask.effects.push(Effect::new(f.project.alloc_id(), EffectKind::Filter(Filter::Blur { radius: 2.0 })));
         f.project.layer_mut(top).unwrap().mask = Some(mask);
 
         let color = run(&f, None).value(Channel::BaseColor, 30, 30);

@@ -4,7 +4,6 @@ use egui_kittest::kittest::Queryable as _;
 use egui_phosphor::regular as ic;
 
 use super::number_field::shown_number;
-use super::slot::next_seed;
 use super::{NumberField, PropertySheet};
 use crate::theme::{Accent, Brightness, Tokens};
 use texturecraft_engine::folder_cmds::next_seed;
@@ -264,6 +263,7 @@ fn card_under_caption(ui: &mut egui::Ui, state: &mut (bool, std::cell::Cell<Opti
             if *instance {
                 sheet.source_card(&record, "Layer", "Set", false);
             } else {
+                sheet.slot(&record, "Layer", "Set", None, true, false);
             }
         });
     });

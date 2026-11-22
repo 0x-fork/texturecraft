@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Backface, BakedMap, BlendMode, Channel, ChannelKind, DepthCulling, Projector, ShapeCrop, lum};
+use crate::{Backface, BakedMap, BlendMode, Channel, ChannelKind, CompareSource, ContentsOffset, DepthCulling, Projector, RandomizedSeed, ShapeCrop, lum};
 
 mod curvature_detail;
 mod curvature_mode;
@@ -1176,6 +1176,7 @@ pub enum Filter {
     },
 }
 
+/// Whether a switch is on, its default where it defaults to on (not saved then)
 fn is_true(on: &bool) -> bool {
     *on
 }
@@ -1645,6 +1646,7 @@ impl Layer {
             LayerKind::Fill(fill) => fill.sources.values().any(|source| source.reads_anchor(None)),
             _ => false,
         };
+        fill || self.mask.iter().flat_map(|mask| mask.effects.iter()).chain(self.content_effects.iter()).any(|effect| effect.kind.reads(None))
     }
 
     /// Whether the layer's result depends on the stack below it: it reads an anchor point, or its mask compares channels of the stack
@@ -1669,6 +1671,7 @@ pub struct Effect {
 impl Effect {
     pub fn new(id: LayerId, kind: EffectKind) -> Effect {
         // Generators and fills that build a mask usually add on top of the background
+        Effect { id, name: kind.name().to_string(), visible: true, kind, blend: BlendMode::Normal, opacity: 1.0, channel_blends: BTreeMap::new() }
     }
 
     /// How the effect blends on `channel` of its layer's content, or on its mask (`None`)
@@ -1713,9 +1716,12 @@ mod tests {
     }
 
     #[test]
+    fn a_colour_selection_id_map_is_reported_as_used() {
         let mut selection = crate::ColorSelection::new(Vec::new(), 0.0);
         selection.id_map = Some("id.png".into());
+        let effect = Effect::new(LayerId(1), EffectKind::ColorSelection(selection));
 
+        assert_eq!(effect.kind.images_read().collect::<Vec<_>>(), vec!["id.png"]);
     }
 
     #[test]

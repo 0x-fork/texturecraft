@@ -8,8 +8,8 @@ use texturecraft_compose::{
     BelowCache, Composite, Inputs, MaskGray, PaintTarget, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached,
 };
 use texturecraft_core::{
-    BakedMap, BlendMode, Channel, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground,
-    Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
+    BakedMap, BlendMode, Channel, ColorSelection, CompareOp, CompareSource, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind, HeightMask, Layer,
+    LayerId, LayerKind, Mask, MaskBackground, Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
 };
 use texturecraft_geom::{Mesh, UvGBuffer, primitives};
 use texturecraft_texel::{TILE, TileImage, to_u16};
@@ -954,6 +954,7 @@ fn flat_image(value: f32) -> std::sync::Arc<texturecraft_compose::ImageRes> {
 }
 
 #[test]
+fn id_map_image_changes_invalidate_stack_key() {
     let mut fixture = fixture();
     heavy_stack(&mut fixture);
     let bottom_layer = fixture.project.texture_sets[0].stack[0];
@@ -967,5 +968,7 @@ fn flat_image(value: f32) -> std::sync::Arc<texturecraft_compose::ImageRes> {
     images.insert("id".into(), flat_image(0.1));
 
     let original = stack_key(&fixture, &images);
+    images.insert("id".into(), flat_image(0.9));
 
+    assert!(stack_key(&fixture, &images) != original, "replacing the id image must invalidate the cache");
 }

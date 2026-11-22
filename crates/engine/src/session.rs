@@ -775,6 +775,8 @@ impl Session {
         let added_resource_names: BTreeSet<&str> =
             self.doc.resources.keys().filter(|name| !previous_document.resources.contains_key(*name)).map(String::as_str).collect();
         let is_added = |name: &str| added_resource_names.contains(name);
+        let uses_added_resource =
+            |texture_set_index: usize| {
                 use texturecraft_core::{EffectKind, Fill};
 
                 let uses_link = |fill: &Fill| fill.link.as_ref().is_some_and(|link| is_added(&link.package));
@@ -785,6 +787,7 @@ impl Session {
                         project.render_tree(&set.stack).iter().filter_map(|id| project.layers.get(id)).any(|layer| {
                             matches!(&layer.kind, LayerKind::Fill(fill) if uses_fill(fill))
                                 || layer.mask.iter().flat_map(|mask| &mask.effects).chain(&layer.content_effects).any(|effect| {
+                                    effect.kind.images_read().any(is_added) || matches!(&effect.kind, EffectKind::Material(fill) if uses_link(fill))
                                 })
                         })
                     })

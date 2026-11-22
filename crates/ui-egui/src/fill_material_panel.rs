@@ -178,7 +178,6 @@ pub(crate) fn source_line(app: &TextureCraftApp, source: &Source) -> String {
     }
 }
 
-/// One source's card (a channel's): its slot (the row opens the source picker), then the source's own settings; `in_card`: only its slot row, inside the card open now
 /// One source's card (a channel's, a mask fill's grayscale or a filter's image input): its slot (the row opens the source picker), then the source's own settings; `in_card`: only its slot row, inside the card open now
 pub(crate) fn source_card(
     app: &mut TextureCraftApp,
@@ -302,7 +301,6 @@ fn pick_source(app: &mut TextureCraftApp, ctx: &egui::Context, slot_of: SourceSl
 }
 
 /// The picker's choice `source` is: a library alpha's image is its alpha
-pub(crate) fn source_choice(source: &Source) -> SourceChoice {
 fn source_choice(source: &Source) -> SourceChoice {
     match source {
         Source::Uniform(_) => SourceChoice::Uniform,
@@ -313,13 +311,6 @@ fn source_choice(source: &Source) -> SourceChoice {
 }
 
 /// The source picker's tabs: Resources (Procedurals, Textures with Import... first, Alphas in their shelf groups, Uniform) and the stack's Anchor points
-pub(crate) fn source_tabs(
-    thumbs: &mut Thumbs,
-    ctx: &egui::Context,
-    images: &ImageStore,
-    anchors: &[(LayerId, String)],
-    uniform: Color32,
-) -> Vec<PickerTab<SourceChoice>> {
 fn source_tabs(thumbs: &mut Thumbs, ctx: &egui::Context, images: &ImageStore, anchors: &[(LayerId, String)], uniform: Color32) -> Vec<PickerTab<SourceChoice>> {
     let procedurals =
         ProceduralKind::ALL.into_iter().map(|kind| tile(SourceChoice::Procedural(kind), tr(kind.label()), None, TilePicture::Procedural(kind))).collect();
@@ -436,6 +427,7 @@ fn procedural_rows(
     let mut edit = scale_and_contrast(sheet, &mut edited);
 
     // A grayscale's card (a mask fill's, a filter input's) shows its Balance and Seed with Scale and Contrast; a material channel's keeps them in Attributes
+    let gray = matches!(slot_of, SourceSlot::Grayscale);
     if gray {
         edit = edit.or(balance_and_seed(sheet, &mut edited));
     }

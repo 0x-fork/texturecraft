@@ -118,7 +118,6 @@ fn the_anchor_points_tab_picks_an_anchor() {
     harness.get_by_label("Anchor points").click();
     harness.run_steps(3);
 
-    harness.get_by_role_and_label(Role::ListBoxOption, &label).click();
     // An anchor tile is labelled with the anchor's name; its layer is named only where two anchors share a name
     harness.get_by_role_and_label(Role::ListBoxOption, "Height").click();
     harness.run_steps(3);

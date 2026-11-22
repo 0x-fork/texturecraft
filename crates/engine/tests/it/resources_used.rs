@@ -1,3 +1,4 @@
+//! The images a project reads beyond fill sources: a colour selection's ID map, the mask brush and its paths
 
 use serde_json::{Value, json};
 use texturecraft_engine::core::{Channel, LayerId};
@@ -27,7 +28,10 @@ fn selecting_layer(session: &mut Session, id_map: &str) -> LayerId {
 }
 
 #[test]
+fn removing_unused_resources_keeps_the_images_a_selection_the_mask_brush_and_a_path_read() {
     let mut session = session();
+    let [id_map, path, brush, unused] = ["id.png", "path.png", "brush.png", "unused.png"].map(|name| session.import_resource_bytes(name, white_png()).unwrap());
+    let layer = selecting_layer(&mut session, &id_map);
 
     // A path on the mask is painted with one image, then the brush moves on to another
     execute(&mut session, "layer.select", &json!({"layer": layer.0, "target": "mask"})).unwrap();
@@ -41,8 +45,10 @@ fn selecting_layer(session: &mut Session, id_map: &str) -> LayerId {
 }
 
 #[test]
+fn a_smart_material_carries_the_image_its_selection_reads() {
     let mut session = session();
     let id_map = session.import_resource_bytes("id.png", white_png()).unwrap();
+    let layer = selecting_layer(&mut session, &id_map);
     let bytes = session.smart_material_bytes(layer, "Parts").unwrap();
 
     let mut other = self::session();
