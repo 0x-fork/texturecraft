@@ -116,12 +116,15 @@ mod tests {
 
         let context = egui::Context::default();
         for (selection, expected_offset) in [(content, 42.0), (effect, 68.0), (content, 42.0)] {
-            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            let mut frame = context.run_ui(egui::RawInput::default(), |ui| {
                 let area = scroll.prepare(ScrollArea::vertical().max_height(80.0), ui.scope_id(), selection);
                 let output = area.show(ui, |ui| ui.add_space(256.0));
 
                 assert_eq!(output.state.clamped_offset().y, expected_offset);
             });
+
+            // This headless test has no renderer to apply texture updates
+            frame.textures_delta.clear();
         }
 
         execute(&mut session, "effect.remove", &json!({"effect": effect_id.0})).unwrap();
