@@ -495,6 +495,20 @@ fn gradient(painter: &egui::Painter, rect: egui::Rect, rgb: impl Fn(f32, f32) ->
     painter.add(mesh);
 }
 
+/// Gap above empty panel text, in points
+const EMPTY_NOTE_TOP_GAP: f32 = 9.0;
+
+/// Aligns an empty panel's note with its header
+pub(crate) fn empty_note(ui: &mut Ui, text: &str) {
+    let tokens = Tokens::get(ui.ctx());
+    let side_margin = crate::docking::HEADER_TITLE_LEFT as i8;
+
+    ui.add_space(EMPTY_NOTE_TOP_GAP);
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(side_margin, 0)).show(ui, |ui| {
+        ui.label(RichText::new(text).color(tokens.text_dim));
+    });
+}
+
 /// Panel title row with optional trailing content.
 pub fn panel_header(ui: &mut Ui, title: &str, trailing: impl FnOnce(&mut Ui)) {
     ui.horizontal(|ui| {
