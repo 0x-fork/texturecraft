@@ -47,11 +47,16 @@ fn pattern(harness: &Harness<'_, TextureCraftApp>, effect: LayerId) -> Procedura
     }
 }
 
-/// Opens the mask fill's source picker from its Grayscale slot and clicks the tile labelled `tile`
+/// Frames for a scroll to bring a control into view (it animates)
+const SCROLL_FRAMES: usize = 25;
+
+/// Opens the mask fill's source picker from its Grayscale slot and clicks the tile labelled `tile`, scrolled into view first
 fn pick(harness: &mut Harness<'_, TextureCraftApp>, tile: &str) {
     harness.get_by_role_and_label(Role::ComboBox, "Grayscale").click();
     harness.run_steps(3);
-    harness.get_by_label(tile).click();
+    harness.get_by_role_and_label(Role::ListBoxOption, tile).scroll_to_me();
+    harness.run_steps(SCROLL_FRAMES);
+    harness.get_by_role_and_label(Role::ListBoxOption, tile).click();
     harness.run_steps(3);
 }
 
@@ -112,7 +117,7 @@ fn the_anchor_points_tab_picks_an_anchor() {
     let project = &harness.state().session.doc.project;
     let owner = project.layers.values().find(|layer| layer.content_effects.iter().any(|effect| effect.name == "Height")).unwrap();
     let label = format!("{} / Height", owner.name);
-    harness.get_by_role_and_label(Role::Button, &label).click();
+    harness.get_by_role_and_label(Role::ListBoxOption, &label).click();
     harness.run_steps(3);
     assert!(source(&harness, effect).anchor().is_some());
 }

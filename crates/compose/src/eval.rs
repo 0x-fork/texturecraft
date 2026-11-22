@@ -247,6 +247,7 @@ enum Content<'a> {
     Paint {
         preview: bool,
     },
+    /// A fill (with the Scale and Rotation of the folders around it laid on)
     Fill {
         fill: Box<Cow<'a, Fill>>,
         /// Its projector's depth map when it culls by depth
@@ -338,13 +339,14 @@ enum Op {
     Slope { scale: f32, seed: u32 },
 }
 
-/// The last neighbourhood filter of an effect stack (see [`neighbourhood_filters`]).
+/// The last neighbourhood filter of an effect stack (see [`neighbourhood_filters`])
 fn neighbourhood(effects: &[Effect], res: u32) -> Option<(usize, f32, Op)> {
     neighbourhood_filters(effects, res).last()
 }
 
 /// Below this a coverage weight counts as no coverage at all.
 const MIN_COVERAGE_WEIGHT: f32 = 1e-6;
+
 /// Filter sizes are texels at this many texels per side (2K), scaled to the resolution they run at.
 const FILTER_SIZE_RESOLUTION: f32 = 2048.0;
 /// The smallest radius a filter runs at, in texels.
@@ -1115,9 +1117,10 @@ struct Node<'a> {
     content: Content<'a>,
     chans: Vec<ChanPlan<'a>>,
     mask: Option<MaskPlan<'a>>,
-    /// Visible anchor points of the layer: recorded after it is applied, or (`Some(k)`, an anchor with visible effects above it) with its content cut after `k` visible effects
+    /// Visible anchor points of the layer: recorded after it is applied, or (`Some(k)`, an
+    /// anchor with visible effects above it) with its content cut after `k` visible effects.
     anchors: Vec<(LayerId, Option<usize>)>,
-    /// The node or one of its children records an anchor
+    /// The node or one of its children records an anchor.
     has_anchor: bool,
     height_mask: HeightMask,
     /// Geometry mask: whether the layer shows on each mesh submesh (None: everywhere).
@@ -1209,7 +1212,8 @@ fn plan<'a>(inp: &EvaluationInputs<'a>, list: &[LayerId], channels: &[Channel], 
     list.iter().filter_map(|id| plan_node(inp, *id, channels, tx, ty, depth, fields, true)).collect()
 }
 
-/// The plan of layer `id` at `depth` (None where it draws nothing); a folder's children are planned when `kids`
+/// The plan of layer `id` at `depth` (None where it draws nothing); a folder's children are
+/// planned when `kids`.
 #[allow(clippy::too_many_arguments)]
 fn plan_node<'a>(
     inp: &EvaluationInputs<'a>,
@@ -2294,8 +2298,8 @@ impl<'a, 'b> Texel<'a, 'b> {
             // Baked lighting reads the texel's normal and occlusion, and lights the base color only
             EffectKind::Filter(filter @ Filter::BakedLighting { .. }) => match Channel::ALL.get(chan_plan.ch) {
                 Some(Channel::BaseColor) => {
-                    let nrm = self.coords().nrm.to_array();
-                    let factor = filter.baked_light(nrm, self.baked(BakedMap::AmbientOcclusion).unwrap_or(1.0)).unwrap_or(1.0);
+                    let ao = self.baked(BakedMap::AmbientOcclusion).unwrap_or(1.0);
+                    let factor = filter.baked_light(self.coords().nrm.to_array(), ao).unwrap_or(1.0);
                     (mix3(value, value.map(|x| (x * factor).clamp(0.0, 1.0)), opacity), coverage)
                 }
                 _ => (value, coverage),
@@ -2340,8 +2344,13 @@ pub fn composite_tiles(inp: &Inputs, out: &mut Composite, tiles: &[(u32, u32)]) 
 pub const BLOCK: u32 = 16;
 
 /// [`composite_tiles`], serving everything but the hot layer from `below` where it can (and
-/// filling it). Results are identical to [`composite_tiles`].
-pub fn composite_tiles_cached(inputs: &Inputs, out: &mut Composite, tiles: &[(u32, u32)], below: Option<&mut BelowCache>) {
+/// filling it). The borrowed mesh is fingerprinted once per batch. Callers with an owned mesh
+/// can use [`composite_tiles_with_projectors`] for constant-time identity checks.
+pub fn composite_tiles_cached(inputs: &Inputs, out: &mut Composite, tiles: &[(u32, u32)], mut below: Option<&mut BelowCache>) {
+    if let Some(cache) = below.as_deref_mut() {
+        cache.bind_borrowed_mesh(inputs.mesh);
+    }
+
     let projectors = ProjectorDepthCache::default();
     let inputs = EvaluationInputs::new(inputs, &projectors);
     composite_evaluation_tiles(&inputs, out, tiles, below);
@@ -2361,10 +2370,9 @@ pub fn composite_tiles_with_projectors(
         return;
     }
 
-    if projectors.bind(mesh)
-        && let Some(cache) = below.as_deref_mut()
-    {
-        cache.clear();
+    projectors.bind(mesh);
+    if let Some(cache) = below.as_deref_mut() {
+        cache.bind_mesh(mesh);
     }
 
     let inputs = EvaluationInputs::new(inputs, projectors);
