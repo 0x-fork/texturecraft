@@ -240,6 +240,7 @@ pub struct TextureCraftApp {
     pub placing_decal: Option<texturecraft_engine::core::LayerId>,
     /// The Properties popup a right click in a view opens.
     pub properties_popup: Option<properties_popup::PropertiesPopup>,
+    properties_scroll: property_sheet::PropertiesScroll,
     /// The color selection the next click in the 3D or 2D view picks an ID color for
     pub picking_id_color: Option<id_color_pick::IdColorPick>,
     /// Whether the next click on the model places the symmetry planes (Pick point in the symmetry settings)
@@ -297,6 +298,7 @@ impl TextureCraftApp {
     /// The app around `session`, with the saved UI state (or defaults in the OS language) and the GPU viewport.
     pub fn new(cc: &eframe::CreationContext<'_>, mut session: Session) -> TextureCraftApp {
         theme::install(&cc.egui_ctx);
+        popup_drag::install(&cc.egui_ctx);
 
         // Bakes cast their rays on a GPU device of their own (created on the first bake)
         #[cfg(not(target_arch = "wasm32"))]
@@ -346,6 +348,7 @@ impl TextureCraftApp {
             last_paint_uv: None,
             placing_decal: None,
             properties_popup: None,
+            properties_scroll: property_sheet::PropertiesScroll::default(),
             picking_id_color: None,
             picking_symmetry_plane: false,
             render_state: cc.wgpu_render_state.clone(),
@@ -1007,6 +1010,7 @@ impl eframe::App for TextureCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.poll_link_imports(ctx);
         self.thumbs.sync_images(&self.session.images, self.session.revision);
+        self.properties_scroll.sync(&self.session);
 
         // The library shelf rescans when the window comes back (MaterialCraft may have sent a material)
         let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
@@ -1054,9 +1058,6 @@ impl eframe::App for TextureCraftApp {
         if !self.session.project_open {
             self.ui.mode = state::Mode::Painting;
         }
-
-        // Before any popup draws, so one a drag closes is gone from this frame
-        popup_drag::close_on_drag_outside(&ctx);
 
         if !self.ui.hide_ui {
             titlebar::show(self, ui);

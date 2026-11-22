@@ -126,6 +126,27 @@ fn a_groups_shown_tab_rises_as_a_box_and_the_others_and_a_lone_panels_do_not() {
 }
 
 #[test]
+fn the_selected_dock_tab_keeps_its_keyboard_focus_outline_visible() {
+    let mut harness = app();
+    let layers = tab_rect(&harness, "Layers");
+    let tab_id = egui::Id::unique("texturecraft-docking").with(("tab", Panel::Layers));
+    harness.ctx.memory_mut(|memory| memory.request_focus(tab_id));
+    harness.run_steps(SETTLE_FRAMES);
+
+    assert_eq!(harness.ctx.memory(|memory| memory.focused()), Some(tab_id));
+    let raised_box = tab_boxes(&harness, layers, HEADER_RISE)[0];
+    let shapes = &harness.output().shapes;
+    let box_index = shapes.iter().position(|shape| matches!(&shape.shape, egui::Shape::Rect(rect) if rect.rect == raised_box)).unwrap();
+    assert!(
+        shapes[box_index + 1..].iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Rect(rect)
+            if rect.stroke.width > 0.0 && layers.contains_rect(rect.rect) && rect.rect.contains(layers.center()))
+        }),
+        "the focus outline is painted above the selected tab"
+    );
+}
+
+#[test]
 fn the_first_tabs_box_starts_on_the_panels_edge_and_a_later_tabs_box_keeps_its_inset() {
     let mut harness = app();
     let layers = tab_rect(&harness, "Layers");
