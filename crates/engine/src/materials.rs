@@ -786,7 +786,6 @@ pub(crate) fn brush_fill(id: LayerId, sources: Vec<(Channel, Source)>, scale: f3
     Layer::new(
         id,
         "Brush material",
-        LayerKind::Fill(Fill { sources: sources.into_iter().collect(), projection, sampling: Default::default(), link: None }),
         LayerKind::Fill(Fill { sources: sources.into_iter().collect(), projection, sampling: Default::default(), link: None, material: None }),
         &channels,
     )
@@ -842,6 +841,7 @@ pub fn apply_at(s: &mut Session, id: &str, place: Place) -> Result<LayerId> {
             crate::layer_cmds::insert_selected(s, layer)?
         } else {
             let folder_id = s.doc.project.alloc_id();
+            let mut folder = Layer::new(folder_id, material.label, LayerKind::Group { children: Vec::new(), collapsed: false }, &channels);
             for blend in folder.channels.values_mut() {
                 *blend = ChannelBlend { mode: BlendMode::Passthrough, opacity: 1.0 };
             }

@@ -1,8 +1,6 @@
-use egui::{CornerRadius, FontId, Sense, Stroke, StrokeKind, pos2};
 use egui::{Align2, CornerRadius, FontId, Painter, Rect, Sense, Stroke, StrokeKind, Vec2, pos2, vec2};
 use egui_phosphor::regular as ic;
 
-use super::{ButtonIcon, CONTROL_RADIUS, PropertySheet, ROW_HEIGHT, TEXT_SIZE};
 use super::switch_control::PILL_SIZE;
 use super::{ButtonIcon, CONTROL_RADIUS, PropertySheet, ROW_HEIGHT, SlotResponse, TEXT_SIZE};
 use crate::theme::semibold;
@@ -278,10 +276,17 @@ impl PropertySheet<'_> {
         dice_response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, crate::i18n::tr("Random")));
 
         if dice_response.clicked() {
+            *seed = next_seed(*seed);
             changed = true;
         }
         changed
     }
 }
 
+/// A new seed that looks random but follows from the old one (SplitMix32's mixing step), so tests and replays get the same sequence
+pub(crate) fn next_seed(seed: u32) -> u32 {
+    let mut z = seed.wrapping_add(0x9e37_79b9);
+    z = (z ^ (z >> 16)).wrapping_mul(0x85eb_ca6b);
+    z = (z ^ (z >> 13)).wrapping_mul(0xc2b2_ae35);
+    z ^ (z >> 16)
 }

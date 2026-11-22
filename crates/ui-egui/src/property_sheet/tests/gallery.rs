@@ -2,7 +2,6 @@
 
 use super::Filtering;
 
-/// The gallery's controls, with the values they last set
 /// Every control of the shared set once, with the values the gallery last set
 pub(super) struct Gallery {
     pub(super) scale: usize,
@@ -28,7 +27,6 @@ pub(super) struct Gallery {
 
 impl Default for Gallery {
     fn default() -> Self {
-        Gallery { filtering: Filtering::BilinearHq, position: [0.0, 1.25, -0.5], position_merges: Vec::new(), linked: true }
         Gallery {
             scale: 0,
             filtering: Filtering::BilinearHq,

@@ -878,7 +878,6 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
     let picker = crate::color_picker::blocks_view_press(ui.ctx());
     let popup = app.properties_popup.is_some() || rail_popup || picker;
 
-    let picking = app.picking_id_color.is_some();
     // A pending ID color pick or eyedropper takes the next click instead of the brush
     let picking = app.picking_id_color.is_some() || app.picking_color.is_some();
     if picking {
