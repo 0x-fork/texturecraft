@@ -102,7 +102,7 @@ fn shade(material: &OrbMaterial, env: &OrbEnvironment, direction: Vec3, pixel: f
 
     // Tangent frame on the material: east along the UVs, then north
     let east = Vec3::new(-direction.z, 0.0, direction.x).try_normalize().unwrap_or(Vec3::X);
-    let north = direction.cross(east).try_normalize().unwrap_or(Vec3::Y);
+    let north = east.cross(direction).try_normalize().unwrap_or(Vec3::Y);
     let mapped = Vec3::from(sample.normal.map(|component| component * 2.0 - 1.0));
     let mut surface = (east * mapped.x + north * mapped.y + direction * mapped.z).try_normalize().unwrap_or(direction);
     if material.has_relief() {

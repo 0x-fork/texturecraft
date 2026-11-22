@@ -12,6 +12,7 @@ use crate::orb_material::OrbMaterial;
 #[derive(Clone, Debug)]
 pub(crate) struct OrbJob {
     pub(super) key: u64,
+    pub(super) request: u64,
     pub(super) material: OrbMaterial,
     pub(super) side: usize,
     pub(super) backdrop: Color32,
@@ -25,6 +26,7 @@ pub(crate) struct OrbJob {
 impl OrbJob {
     pub(crate) fn new(material: OrbMaterial, side: usize, backdrop: Color32) -> OrbJob {
         OrbJob {
+            request: 0,
             key: OrbJob::key_of(&material, side, backdrop),
             material,
             side,

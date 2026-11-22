@@ -37,9 +37,12 @@ pub fn reset_projection_of(current: &Projection) -> Projection {
         .find(|fresh| std::mem::discriminant(fresh) == std::mem::discriminant(current));
     let Some(mut fresh) = same_kind else { return current.clone() };
 
-    if let (Projection::Planar { placed, .. }, Projection::Planar { placed: Some(frame), .. }) = (&mut fresh, current) {
+    if let (Projection::Planar { placed, projector, .. }, Projection::Planar { placed: Some(frame), projector: previous_projector, .. }) = (&mut fresh, current)
+    {
         *placed = Some(*frame);
+        projector.ignore_image_alpha = previous_projector.ignore_image_alpha;
     }
+
     fresh
 }
 

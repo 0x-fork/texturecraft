@@ -35,6 +35,7 @@ impl PropertySheet<'_> {
         response.widget_info(|| WidgetInfo::selected(Role::CheckBox, true, shown, tip));
         let response = self.tip(response, tip);
         paint_eye(self.ui.painter(), rect, shown, response.hovered(), &self.tokens);
+        self.paint_control_focus(&response);
         (picked, response.clicked())
     }
 }

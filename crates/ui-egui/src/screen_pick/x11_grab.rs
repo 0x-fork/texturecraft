@@ -10,7 +10,7 @@ use std::time::Duration;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::render::{ConnectionExt as _, CreatePictureAux, PictType, Pictformat};
-use x11rb::protocol::xproto::{ConnectionExt, CreateGCAux, Cursor, EventMask, GrabMode, GrabStatus, ImageFormat, ImageOrder, Window};
+use x11rb::protocol::xproto::{ConnectionExt, CreateGCAux, Cursor, EventMask, GrabMode, GrabStatus, ImageFormat, ImageOrder, KeyButMask, Window};
 use x11rb::rust_connection::RustConnection;
 
 use super::pick_shared::over_windows;
@@ -49,11 +49,39 @@ pub(super) fn run(shared: &Arc<PickShared>, outcomes: &Sender<PickOutcome>, ctx:
     let mut grabbed = false;
     let mut pressed = false;
     while pressed || !shared.stopped() {
-        // Held off the app's windows and while the taken press is down; a failed query returns, and the closed connection ends the grab
+        // Closing the connection releases the grab if a pointer query fails
         let pointer = connection.query_pointer(root).ok()?.reply().ok()?;
+        if pressed && !pointer.mask.contains(KeyButMask::BUTTON1) {
+            return Some(());
+        }
+
         let windows = shared.windows();
+
+        // Events already delivered by the grab keep their own position when the pointer crosses a window
+        while let Some(event) = connection.poll_for_event().ok()? {
+            match event {
+                Event::ButtonPress(press)
+                    if press.detail == LEFT_BUTTON
+                        && !pressed
+                        && !shared.stopped()
+                        && !windows.is_empty()
+                        && !over_windows(&windows, press.root_x.into(), press.root_y.into()) =>
+                {
+                    let picked = root_pixel(&connection, root, layout, press.root_x, press.root_y);
+                    let _ = outcomes.send(picked.map_or(PickOutcome::Unavailable, PickOutcome::Picked));
+                    ctx.request_repaint();
+                    pressed = true;
+                }
+                Event::ButtonRelease(release) if pressed && release.detail == LEFT_BUTTON => {
+                    ungrab(&connection);
+                    return Some(());
+                }
+                _ => {}
+            }
+        }
+
         let outside = !windows.is_empty() && !over_windows(&windows, pointer.root_x.into(), pointer.root_y.into());
-        if outside && !grabbed && !shared.stopped() {
+        if (outside || pressed) && !grabbed && !shared.stopped() {
             grabbed = grab(&connection, root, disc.as_ref().map_or(pointer_shape, |disc| disc.pointer));
         } else if !outside && grabbed && !pressed {
             grabbed = !ungrab(&connection);
@@ -68,22 +96,6 @@ pub(super) fn run(shared: &Arc<PickShared>, outcomes: &Sender<PickOutcome>, ctx:
             let unit = swatch_unit(cell);
             let side = SwatchSide::fitting(tip, unit, swatch_reach(unit), [0.0, 0.0, f32::from(root_size[0]), f32::from(root_size[1])]);
             follow(&connection, root, argb, cell, (color, side), &mut disc);
-        }
-
-        while let Ok(Some(event)) = connection.poll_for_event() {
-            match event {
-                Event::ButtonPress(press) if grabbed && press.detail == LEFT_BUTTON && !pressed => {
-                    let picked = root_pixel(&connection, root, layout, press.root_x, press.root_y);
-                    let _ = outcomes.send(picked.map_or(PickOutcome::Unavailable, PickOutcome::Picked));
-                    ctx.request_repaint();
-                    pressed = true;
-                }
-                Event::ButtonRelease(release) if pressed && release.detail == LEFT_BUTTON => {
-                    ungrab(&connection);
-                    return Some(());
-                }
-                _ => {}
-            }
         }
 
         std::thread::sleep(POLL);

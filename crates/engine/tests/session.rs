@@ -259,8 +259,7 @@ fn panic_hunt() {
         }
         for p in &hostile {
             let mut s = session();
-            // Match the 256px fixture: otherwise empty/irrelevant bake.run params perform
-            // repeated 2048px default bakes. Keep every input, ray count and fresh session.
+            // Match the fixture resolution to avoid a full 2048px bake for each unrelated input
             for texture_set in &mut s.doc.project.texture_sets {
                 texture_set.bake.common.resolution = texturecraft_engine::core::BakeResolution::R256;
             }

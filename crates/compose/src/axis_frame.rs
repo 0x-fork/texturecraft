@@ -6,7 +6,8 @@ use texturecraft_geom::glam::{EulerRot, Mat3, Vec3};
 use crate::frame_placement::culling_folds;
 use crate::pattern::{DEPTH_FADE_START, frame_uv_from_corner, mesh_frame, nonzero_stretch, projector_stretch};
 
-/// The placed planar projection that reads images exactly as axis planar `proj` does on a mesh within `bounds` (None for other projections, placed ones included, and while backface culling cannot keep its facing in a frame: see [`culling_folds`])
+/// Place an axis planar on a mesh within `bounds` while keeping its sampling and culling.
+/// See [`culling_folds`] for when culling prevents placement.
 pub fn placed_from_axis(proj: &Projection, bounds: (Vec3, Vec3)) -> Option<Projection> {
     let Projection::Planar { scale, axis, offset, uv, projector, placed: None } = proj else { return None };
 
@@ -16,8 +17,8 @@ pub fn placed_from_axis(proj: &Projection, bounds: (Vec3, Vec3)) -> Option<Proje
 
     let frame = axis_frame(*scale, *axis, Vec3::from(*offset), projector, bounds)?;
 
-    // The turn and per-axis scale are now in the frame; culling and crop stay
-    let projector = Projector { rotation: [0.0; 3], scale: [1.0; 3], ..*projector };
+    // The frame carries rotation and scale while the projected rectangle keeps axis coverage
+    let projector = Projector { rotation: [0.0; 3], scale: [1.0; 3], ignore_image_alpha: true, ..*projector };
 
     // An axis planar turns its image round the top left, a frame round its centre
     let uv = frame_uv_from_corner(uv);
@@ -109,6 +110,7 @@ mod tests {
                         let (before, _) = image_samples(&axis_planar, &coords)[0];
                         let (uv_after, cover) = framed_cover(&placed, position, normal, center).expect("a placed frame covers");
                         let (after, _) = image_samples(&placed, &Coords { uv: uv_after, ..coords })[0];
+
                         assert!(before.distance(after) < 1e-3, "axis {axis} {rotation:?}: {before} became {after}");
                         assert!((projector_cover(&axis_planar, &coords) - cover).abs() < 1e-3, "axis {axis} {crop:?}: cover changed at {position}");
                     }
@@ -124,7 +126,7 @@ mod tests {
         let radius = (hi - lo).length() * 0.5;
         let backface = Backface { on: true, angle: 60.0, hardness: 1.0 };
 
-        // Half way between across and out: a stretch across tilts the culled normal past the angle, a negative one turns it round
+        // An oblique normal exposes tilted and reversed culling under stretch
         let halfway = (center, Vec3::new(1.0, 0.0, 1.0).normalize());
 
         for stretch in [[4.0, 1.0, 1.0], [1.5, -1.5, 1.5], [1.7; 3]] {
@@ -150,6 +152,7 @@ mod tests {
     #[test]
     fn only_axis_planars_are_placed() {
         let bounds = (Vec3::NEG_ONE, Vec3::ONE);
+
         assert!(placed_from_axis(&Projection::default(), bounds).is_none());
 
         let frame = axis_frame(1.0, 2, Vec3::ZERO, &Projector::default(), bounds).expect("a frame");

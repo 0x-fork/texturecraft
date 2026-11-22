@@ -733,7 +733,7 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
     let adjusting = brush_drag(app, ui, &response);
     let ctrl = ui.input(|input| input.modifiers.ctrl);
 
-    // A held Move on model button owns the pointer and the wheel until it lets go: the camera, brush and gizmos keep still
+    // The move pad owns both pointer and wheel until release
     let holding = crate::move_on_model::holding(app, ui.ctx());
     let navigating = !adjusting && !holding && (alt || ui.input(|input| input.pointer.middle_down() || input.pointer.secondary_down()));
 
@@ -778,7 +778,8 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
         app.orbit_snap = None;
     }
 
-    if response.hovered() && !holding {
+    let camera_input = !holding && !ShownGizmo::dragging(ui.ctx());
+    if response.hovered() && camera_input {
         size_brush_by_ctrl_wheel(app, ui);
         if ui.input(|input| input.multi_touch().is_none()) {
             let pinch = trackpad_pinch(ui);
@@ -800,7 +801,7 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
 
     // Touch: two fingers orbit and pinch zooms, three pan; a second finger cancels the first one's stroke
     let touch = ui.input(|input| input.multi_touch()).filter(|_| response.contains_pointer() || response.dragged());
-    if let Some(gesture) = touch {
+    if let Some(gesture) = touch.filter(|_| camera_input) {
         if app.session.stroke_active() {
             app.session.cancel_stroke();
         }
@@ -822,7 +823,7 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
         ui.data_mut(|data| data.remove::<f32>(raw_id));
     }
 
-    // Stencil: S + left drag turns it (with Shift in snapped steps), S + right drag scales it, S + middle drag moves it
+    // With S held, left rotates, Shift snaps, right scales and middle moves the stencil
     if s_held
         && stencil_moves
         && let Some(stencil) = app.session.tool.stencil.as_mut()
@@ -906,14 +907,15 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
         }
     }
 
-    // The selected fill's frame (planar, warp) or round projector (tri-planar, spherical, cylindrical): only a press on one of its handles moves it
+    // Only a press on a projection handle moves the selected fill
     let gizmo_free =
         !adjusting && !alt && !holding && !s_held && !v_held && !focus_pick && !popup && !picking && touch.is_none() && !DecalDrop::blocks_input(ui.ctx());
     let gizmo = ShownGizmo::of(app, rect);
-    let frame_drag = gizmo_free && ShownGizmo::input(app, ui, &response, rect, gizmo.as_ref());
+    let began_on_handle = handle_press(ui.ctx(), |at| gizmo.as_ref().is_some_and(|gizmo| gizmo.on_handle(rect, at)));
+    let frame_drag = gizmo_free && began_on_handle && ShownGizmo::input(app, ui, &response, rect, gizmo.as_ref());
 
     // End the gizmo drag when navigation takes over because the camera may have moved
-    if !gizmo_free {
+    if !gizmo_free || !began_on_handle {
         ShownGizmo::let_go(ui.ctx());
     }
 
@@ -946,8 +948,6 @@ fn view_3d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
     // A handle owns a new click, but a stroke already under way must still finish over it
     let symmetry_handle = !app.session.stroke_active() && crate::symmetry::manipulator_hovered(app, ui, rect);
 
-    // A projection gizmo's handle owns a press that began on it through its release (the pointer may have left it by then)
-    let began_on_handle = handle_press(ui.ctx(), |at| gizmo.as_ref().is_some_and(|gizmo| gizmo.on_handle(rect, at)));
     let gizmo_handle = gizmo_free && !app.session.stroke_active() && began_on_handle;
 
     // Painting
@@ -1520,58 +1520,91 @@ fn path_cursor(ui: &Ui, painter: &egui::Painter, at: Pos2, insert: bool) {
     }
 }
 
-/// Dashed curve preview clipped segment by segment to bound offscreen dash allocation
+/// Draw the Path tool's dashed curve preview
 fn rubber_band(ui: &Ui, rect: Rect, line: &[Pos2]) {
     let painter = ui.painter_at(rect);
-    let period = RUBBER_BAND_DASH + RUBBER_BAND_GAP;
-    let mut distance = 0.0;
-    for pair in line.windows(2) {
-        if let Some(visible) = visible_dashes(rect, pair[0], pair[1]) {
-            // Continue the dash pattern across sampled curve segments and clipped portions
-            let phase = (distance + pair[0].distance(visible[0])) % period;
-            for stroke in [Stroke::new(2.5, Color32::from_black_alpha(120)), Stroke::new(1.0, Color32::from_white_alpha(200))] {
-                // Draw any dash already in progress without extending behind this curve segment
-                if phase > 0.0 && phase < RUBBER_BAND_DASH {
-                    let direction = visible[1] - visible[0];
-                    let end = visible[0] + direction.normalized() * (RUBBER_BAND_DASH - phase).min(direction.length());
-                    painter.line_segment([visible[0], end], stroke);
-                }
-                let offset = if phase == 0.0 { 0.0 } else { period - phase };
-                painter.add(egui::Shape::dashed_line_with_offset(&visible, stroke, &[RUBBER_BAND_DASH], &[RUBBER_BAND_GAP], offset));
-            }
+    let strokes = [Stroke::new(2.5, Color32::from_black_alpha(120)), Stroke::new(1.0, Color32::from_white_alpha(200))];
+    paint_dashed_outline(&painter, line, RUBBER_BAND_DASH, RUBBER_BAND_GAP, strokes);
+}
+
+/// Draw a dashed polyline with work proportional to its visible length
+pub(crate) fn paint_dashed_outline(painter: &egui::Painter, line: &[Pos2], dash_points: f32, gap_points: f32, strokes: [Stroke; 2]) {
+    let clip = painter.clip_rect().expand(strokes[0].width);
+    if line.iter().all(|&point| clip.contains(point)) {
+        for stroke in strokes {
+            painter.add(egui::Shape::dashed_line(line, stroke, dash_points, gap_points));
         }
-        distance = (distance + pair[0].distance(pair[1])) % period;
+        return;
+    }
+
+    let [shadow_stroke, light_stroke] = strokes;
+    let mut shadows = Vec::new();
+    let mut highlights = Vec::new();
+    visible_dashes(clip, line, dash_points, gap_points, |dash| {
+        shadows.push(egui::Shape::line_segment(dash, shadow_stroke));
+        highlights.push(egui::Shape::line_segment(dash, light_stroke));
+    });
+    if !shadows.is_empty() {
+        painter.add(shadows);
+        painter.add(highlights);
     }
 }
 
-/// The part of `from`→`to` inside `rect`, its start moved back to a whole dash period so the dashes keep their place.
-fn visible_dashes(rect: Rect, from: Pos2, to: Pos2) -> Option<[Pos2; 2]> {
-    let direction = to - from;
-    let length = direction.length();
-    if length == 0.0 {
-        return rect.contains(from).then_some([from, to]);
-    }
+/// Visit visible dashes while preserving the pattern across all polyline segments
+fn visible_dashes(clip: Rect, line: &[Pos2], dash_points: f32, gap_points: f32, mut draw: impl FnMut([Pos2; 2])) {
+    let dash_length = f64::from(dash_points);
+    let period = dash_length + f64::from(gap_points);
+    let mut phase = 0.0;
+    for &[from, to] in line.array_windows() {
+        let dx = f64::from(to.x) - f64::from(from.x);
+        let dy = f64::from(to.y) - f64::from(from.y);
+        let length = dx.hypot(dy);
+        if !length.is_finite() || length == 0.0 {
+            continue;
+        }
 
-    // Clip the segment's parameter range against each axis's slab
-    let (mut enter, mut exit) = (0.0_f32, 1.0_f32);
-    for (delta, origin, low, high) in [(direction.x, from.x, rect.left(), rect.right()), (direction.y, from.y, rect.top(), rect.bottom())] {
+        if let Some((enter, exit)) = segment_in_rect(clip, from, dx, dy) {
+            let point_at =
+                |fraction: f64| pos2((f64::from(from.x) + dx * fraction) as f32, (f64::from(from.y) + dy * fraction) as f32).clamp(clip.min, clip.max);
+            let first = point_at(enter);
+            let last = point_at(exit);
+            let visible_length = f64::from(first.distance(last));
+            if visible_length > 0.0 {
+                let mut start = -(phase + (enter * length) % period) % period;
+                while start < visible_length {
+                    let end = (start + dash_length).min(visible_length);
+                    if end > 0.0 {
+                        let point = |distance: f64| first.lerp(last, (distance / visible_length) as f32);
+                        draw([point(start.max(0.0)), point(end)]);
+                    }
+                    start += period;
+                }
+            }
+        }
+
+        phase = (phase + length % period) % period;
+    }
+}
+
+/// The interval of the segment that intersects the two axis ranges of `clip`
+fn segment_in_rect(clip: Rect, from: Pos2, dx: f64, dy: f64) -> Option<(f64, f64)> {
+    let (mut enter, mut exit) = (0.0_f64, 1.0_f64);
+    for (delta, origin, low, high) in [(dx, from.x, clip.left(), clip.right()), (dy, from.y, clip.top(), clip.bottom())] {
         if delta == 0.0 {
             if origin < low || origin > high {
                 return None;
             }
+
             continue;
         }
-        let (at_low, at_high) = ((low - origin) / delta, (high - origin) / delta);
+
+        let origin = f64::from(origin);
+        let (at_low, at_high) = ((f64::from(low) - origin) / delta, (f64::from(high) - origin) / delta);
         enter = enter.max(at_low.min(at_high));
         exit = exit.min(at_low.max(at_high));
     }
-    if enter > exit {
-        return None;
-    }
 
-    let period = RUBBER_BAND_DASH + RUBBER_BAND_GAP;
-    let start = (enter * length / period).floor() * period / length;
-    Some([from + direction * start, from + direction * exit])
+    (enter <= exit).then_some((enter, exit))
 }
 
 /// Polygon fill in a view: a click fills one target, a drag fills its box live (one undo step); returns the box to draw over the view image
@@ -1763,14 +1796,17 @@ fn scale_brush_by_wheel(app: &mut TextureCraftApp, scroll: f32) {
 /// Whether the press under way, or released this frame, began on a projection handle (`on_handle`); with no press, whether the pointer is on one
 fn handle_press(ctx: &egui::Context, on_handle: impl Fn(Pos2) -> bool) -> bool {
     let id = egui::Id::unique(HANDLE_PRESS_ID);
-    let (pressed, down, released, origin, hover) = ctx.input(|input| {
-        let pointer = &input.pointer;
-        (pointer.any_pressed(), pointer.any_down(), pointer.any_released(), pointer.press_origin(), pointer.hover_pos())
+    let (pressed_at, down, released, hover) = ctx.input(|input| {
+        let pressed_at = input.events.iter().rev().find_map(|event| match event {
+            egui::Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, .. } => Some(*pos),
+            _ => None,
+        });
+        (pressed_at, input.pointer.primary_down(), input.pointer.button_released(PointerButton::Primary), input.pointer.hover_pos())
     });
 
-    // Kept from the press frame: egui forgets the press origin on the release frame, where a short drift still makes a click
-    if pressed {
-        let on = origin.is_some_and(&on_handle);
+    // Keep the press origin because egui clears it before the release frame
+    if let Some(at) = pressed_at {
+        let on = on_handle(at);
         ctx.data_mut(|data| data.insert_temp(id, on));
     }
     let kept = ctx.data(|data| data.get_temp::<bool>(id)).filter(|_| down || released);
@@ -1778,7 +1814,7 @@ fn handle_press(ctx: &egui::Context, on_handle: impl Fn(Pos2) -> bool) -> bool {
         ctx.data_mut(|data| data.remove::<bool>(id));
     }
 
-    kept.unwrap_or_else(|| (if down { origin } else { hover }).is_some_and(on_handle))
+    kept.unwrap_or_else(|| !down && !released && hover.is_some_and(on_handle))
 }
 
 /// Where [`handle_press`] keeps whether the press began on a handle
@@ -2204,7 +2240,7 @@ fn view_2d(app: &mut TextureCraftApp, ui: &mut Ui, rect: Rect, sync: &mut Pendin
     let tile_grid = set.and_then(|texture_set| Some((texture_set, texture_set.tile_grid()?)));
     match tile_grid {
         Some((texture_set, grid)) => {
-            // Grid lines over the whole view with the UV axes and the tile numbers, and an outline around each tile the set paints
+            // Show UV axes and tile numbers across the view and outline tiles painted by the set
             crate::uv_tile_grid::draw(&painter, view_map, texture_set, grid, app.ui.uv_tile_info, tokens.viewport_text);
             for (udim, (block_x, block_y)) in texture_set.uv_tiles.iter().filter_map(|udim| Some((*udim, grid.block(*udim)?))) {
                 // A tile smaller than its block fills the block's top-left corner
@@ -2584,6 +2620,7 @@ mod tests {
             let history = app.session.history_labels().len();
             if tool == Tool::Paint {
                 app.session.begin_stroke_uv(Vec2::splat(0.5), 1.0).unwrap();
+
                 assert!(app.session.stroke_active());
             } else {
                 assert!(app.session.drag_polygon_fill_box_uv(Vec2::ZERO, Vec2::ONE).unwrap() > 0);
@@ -2683,6 +2720,7 @@ mod tests {
             let output = context.run_ui(Default::default(), |ui| {
                 for index in 0..8 {
                     let surface = stored_surface(harness.state(), ui, effect, index).unwrap();
+
                     assert!(surface.iter().map(Vec::len).sum::<usize>() > 10);
                     if let Some(cached) = previous.get(index) {
                         assert!(Arc::ptr_eq(&cached.upgrade().unwrap(), &surface), "unchanged paths must not be resampled");
@@ -2876,6 +2914,7 @@ mod tests {
         let app = harness.state_mut();
         app.ui.mode = crate::state::Mode::Baking;
         let before = bake_visualization(app).unwrap();
+
         assert!(before.high_poly.shown && before.cage_shown());
 
         app.start_bake(vec![0]);
@@ -2892,28 +2931,35 @@ mod tests {
     }
 
     const VIEW: Rect = Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0));
-    const DASH_PERIOD: f32 = RUBBER_BAND_DASH + RUBBER_BAND_GAP;
-
     #[test]
-    fn a_far_start_is_clipped_to_the_view_on_a_whole_dash_period() {
+    fn a_far_start_is_clipped_to_the_view_and_preserves_dash_phase() {
         let far_start = pos2(-10_003.0, 50.0);
+        let end = pos2(50.0, 50.0);
+        let mut dashes = Vec::new();
 
-        let [start, end] = visible_dashes(VIEW, far_start, pos2(50.0, 50.0)).unwrap();
+        visible_dashes(VIEW, &[far_start, end], 6.0, 4.0, |dash| dashes.push(dash));
 
-        assert!(start.x <= VIEW.left() && start.x > VIEW.left() - DASH_PERIOD, "starts at the view's edge: {start:?}");
-        let periods = (start.x - far_start.x) / DASH_PERIOD;
-        assert!((periods - periods.round()).abs() < 1e-3, "a whole number of dash periods from the real start: {periods}");
-        assert_eq!(end, pos2(50.0, 50.0));
+        assert_eq!(dashes[0], [pos2(0.0, 50.0), pos2(3.0, 50.0)]);
+        assert_eq!(dashes[1], [pos2(7.0, 50.0), pos2(13.0, 50.0)]);
+        assert!(dashes.iter().flatten().all(|point| VIEW.contains(*point) && point.x <= end.x));
     }
 
     #[test]
-    fn a_segment_inside_the_view_is_kept_whole() {
-        assert_eq!(visible_dashes(VIEW, pos2(10.0, 20.0), pos2(90.0, 80.0)), Some([pos2(10.0, 20.0), pos2(90.0, 80.0)]));
+    fn an_outline_keeps_its_dash_pattern_across_segments() {
+        let line = [pos2(10.0, 20.0), pos2(14.0, 20.0), pos2(20.0, 20.0)];
+        let mut dashes = Vec::new();
+
+        visible_dashes(VIEW, &line, 6.0, 4.0, |dash| dashes.push(dash));
+
+        assert_eq!(dashes, [[line[0], line[1]], [line[1], pos2(16.0, 20.0)]]);
     }
 
     #[test]
     fn a_segment_outside_the_view_draws_nothing() {
-        assert_eq!(visible_dashes(VIEW, pos2(-50.0, -10.0), pos2(150.0, -10.0)), None);
-        assert_eq!(visible_dashes(VIEW, pos2(-50.0, 120.0), pos2(120.0, 300.0)), None);
+        let mut count = 0;
+
+        visible_dashes(VIEW, &[pos2(-50.0, -10.0), pos2(150.0, -10.0), pos2(120.0, 300.0)], 6.0, 4.0, |_| count += 1);
+
+        assert_eq!(count, 0);
     }
 }

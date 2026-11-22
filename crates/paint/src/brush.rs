@@ -447,6 +447,7 @@ mod tests {
         // Left half white, right half black (2×1 image, sampled at texel centers)
         let img = ImageRes::new(2, 1, vec![[1.0; 4], [0.0, 0.0, 0.0, 1.0]], true);
         let shape = Shape { alpha: BrushAlpha::Round, image: Some(&img), library: None, params: AlphaParams::default(), level: 0 };
+
         assert!(shape.sample(-0.5, 0.0, 0.5, 0) > 0.99);
         assert!(shape.sample(0.5, 0.0, 0.5, 0) < 0.01);
         assert_eq!(shape.sample(1.5, 0.0, 0.5, 0), 0.0);
@@ -521,6 +522,7 @@ mod tests {
         let img = ImageRes::new(1, 1, vec![[1.0; 4]], true);
         let params = AlphaParams { size_x: 0.5, ..AlphaParams::default() };
         let image = Shape { alpha: BrushAlpha::Round, image: Some(&img), library: None, params, level: 0 };
+
         assert_eq!((image.sample(0.4, 0.0, 0.5, 0) > 0.99, image.sample(0.6, 0.0, 0.5, 0)), (true, 0.0));
 
         let library = crate::alphas::find("square").map(|alpha| alpha.image());

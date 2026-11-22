@@ -1,7 +1,7 @@
 use egui::{Align2, Color32, CornerRadius, FontId, Id, Painter, Rect, Role, Sense, Ui, WidgetInfo, pos2, vec2};
 
 use super::row::SECTION_RULE_TO_CAPTION;
-use super::{PAD, SMALL_TEXT_SIZE};
+use super::{SIDE_PADDING_POINTS, SMALL_TEXT_SIZE};
 use crate::theme::{Tokens, semibold};
 
 mod section_scope;
@@ -17,7 +17,7 @@ const STRIP_HEIGHT: f32 = 30.0;
 const FIRST_TAB_OUTDENT: f32 = 4.0;
 
 /// From the panel's left edge to the first tab
-const FIRST_TAB: f32 = PAD - FIRST_TAB_OUTDENT;
+const FIRST_TAB: f32 = SIDE_PADDING_POINTS - FIRST_TAB_OUTDENT;
 
 /// A tab's width beyond its name: icon and air (the resource picker's tabs share these measures)
 pub(crate) const TAB_PADDING: f32 = 38.0;
@@ -148,6 +148,10 @@ pub(crate) fn section_tabs(ui: &mut Ui, scope: SectionScope, top_corner: u8, tab
         painter.text(pos2(x + TAB_ICON_CENTER, center_y), Align2::CENTER_CENTER, *icon, FontId::proportional(TAB_ICON_SIZE), color);
         let font = if on { semibold(TAB_TEXT_SIZE) } else { FontId::proportional(TAB_TEXT_SIZE) };
         painter.text(pos2(x + TAB_NAME_LEFT, center_y), Align2::LEFT_CENTER, *title, font, color);
+        if response.has_focus() {
+            super::switch_control::paint_focus_outline(painter, response.rect, tokens.text_strong);
+        }
+
         x += width + TAB_GAP;
     }
 }

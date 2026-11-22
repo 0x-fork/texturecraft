@@ -83,7 +83,7 @@ impl EyedropperPointer {
 
 impl Drop for EyedropperPointer {
     fn drop(&mut self) {
-        // Waited for (at most RESTORE_WAIT_MS): windows_hook::run starts the next pick's keeper only after the user's pointers are back
+        // A timed-out keeper still holds the system-cursor lock until restoration finishes
         let _ = self.stop.SetEvent();
         let _ = self.keeper.hProcess.WaitForSingleObject(Some(RESTORE_WAIT_MS));
     }
@@ -104,6 +104,13 @@ pub fn keep_pointer() -> i32 {
     let Ok(stop) = HEVENT::NULL.OpenEvent(co::EVENT_RIGHTS::SYNCHRONIZE, false, &keeper.stop) else { return EXIT_UNAVAILABLE };
     if ended(stop.WaitForSingleObject(Some(0))) {
         return 0;
+    }
+
+    // The keeper owns this lock through restoration, even if the app times out waiting for it
+    let lock_path = std::env::temp_dir().join("texturecraft-system-cursors.lock");
+    let Ok(owner) = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(lock_path) else { return EXIT_UNAVAILABLE };
+    if owner.try_lock().is_err() {
+        return EXIT_UNAVAILABLE;
     }
 
     let size = keeper.pointer_px(winsafe::GetSystemMetricsForDpi(co::SM::CXCURSOR, keeper.dpi).ok());

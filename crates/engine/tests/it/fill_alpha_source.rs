@@ -67,3 +67,35 @@ fn an_unknown_alpha_changes_nothing() {
 
     assert!(session.doc.project.layer(layer).is_err(), "the refused set added no undo step");
 }
+
+#[test]
+fn an_import_and_a_legacy_resource_keep_their_own_pixels_when_picking_an_alpha() {
+    let alpha = alphas::find("round_soft").unwrap();
+    let reserved = resource_name(alpha);
+    let image_bytes = texturecraft_engine::formats::mcmat::mesh_map_png(2, 1, &[0.25; 4]).unwrap();
+
+    for legacy in [true, false] {
+        let (mut session, layer) = fill();
+        let imported = if legacy {
+            session.doc.resources.insert(reserved.clone(), std::sync::Arc::new(image_bytes.clone()));
+            session.sync_images();
+            reserved.clone()
+        } else {
+            session.import_resource_bytes(&reserved, image_bytes.clone()).unwrap()
+        };
+        execute(&mut session, "layer.fill.set", &json!({"layer": layer.0, "channel": "metallic", "image": imported})).unwrap();
+
+        execute(&mut session, "layer.fill.set", &json!({"layer": layer.0, "channel": "roughness", "alpha": alpha.id})).unwrap();
+
+        let Source::Image { name, .. } = source(&session, layer, Channel::Roughness) else { panic!("alpha image") };
+        assert_ne!(name, imported, "the library picture must have a separate resource");
+        assert_eq!(session.images[&name].width as usize, alphas::BASE);
+        assert_eq!(session.doc.resources[&imported].as_slice(), image_bytes);
+        assert_eq!(source(&session, layer, Channel::Metallic), Source::image(imported.clone()));
+
+        let reopened = Session::from_project_file(session.project_file()).unwrap();
+
+        assert!(reopened.library_alpha(&imported).is_none());
+        assert_eq!(reopened.library_alpha(&name).unwrap().id, alpha.id);
+    }
+}

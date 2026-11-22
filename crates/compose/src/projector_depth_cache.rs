@@ -1,13 +1,12 @@
 use std::sync::{Arc, Mutex, Weak};
 
-use texturecraft_core::Projection;
-use texturecraft_geom::{Mesh, glam::Vec3};
+use texturecraft_geom::Mesh;
 
-use crate::{projector_depth::ProjectorDepth, projector_view::ProjectorView};
+use crate::fill_depth::{FillDepth, FillDepthKey};
 
-type ViewDepth = (ProjectorView, Option<Arc<ProjectorDepth>>);
+pub(crate) type ViewDepth = (FillDepthKey, Option<Arc<FillDepth>>);
 
-// Each map holds about 3 MiB
+// Each fill's grids share about 3 MiB
 const MAX_CACHED_VIEWS: usize = 8;
 
 /// Reuse projector depth maps for one mesh across tile batches.
@@ -18,30 +17,25 @@ pub struct ProjectorDepthCache {
 }
 
 impl ProjectorDepthCache {
-    pub(crate) fn bind(&mut self, mesh: &Arc<Mesh>) -> bool {
+    pub(crate) fn bind(&mut self, mesh: &Arc<Mesh>) {
         if !std::ptr::eq(self.mesh.as_ptr(), mesh.as_ref()) {
             self.maps.get_mut().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
             self.mesh = Arc::downgrade(mesh);
-            return true;
         }
-
-        false
     }
 
-    pub(crate) fn get(&self, mesh: &Mesh, bounds: (Vec3, Vec3), projection: &Projection) -> Option<Arc<ProjectorDepth>> {
-        let view = ProjectorView::of(projection, bounds)?;
-
+    pub(crate) fn get(&self, mesh: &Mesh, key: FillDepthKey) -> Option<Arc<FillDepth>> {
         // Rasterization is serial so tile workers can wait for a single build
         let mut maps = self.maps.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(index) = maps.iter().position(|(cached_view, _)| *cached_view == view) {
+        if let Some(index) = maps.iter().position(|(cached_key, _)| *cached_key == key) {
             let entry = maps.remove(index);
             let depth = entry.1.clone();
             maps.insert(0, entry);
             return depth;
         }
 
-        let depth = ProjectorDepth::build(view, mesh).map(Arc::new);
-        maps.insert(0, (view, depth.clone()));
+        let depth = FillDepth::build(mesh, key).map(Arc::new);
+        maps.insert(0, (key, depth.clone()));
         maps.truncate(MAX_CACHED_VIEWS);
 
         depth
@@ -51,7 +45,8 @@ impl ProjectorDepthCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use texturecraft_core::{Projector, UvTransform};
+    use crate::projector_view::ProjectorView;
+    use texturecraft_core::{Projection, Projector, UvTransform};
     use texturecraft_geom::primitives;
 
     #[test]
@@ -68,8 +63,10 @@ mod tests {
             let mut projector = Projector::depth_culled();
             projector.rotation[2] = angle_degrees as f32;
             let projection = Projection::Planar { scale: 1.0, axis: 1, offset: [0.0; 3], uv: UvTransform::default(), projector, placed: None };
-            let map = cache.get(&mesh, bounds, &projection).unwrap();
-            let reused = cache.get(&mesh, bounds, &projection).unwrap();
+            let view = ProjectorView::of(&projection, bounds).unwrap();
+            let map = cache.get(&mesh, (view, None)).unwrap();
+            let reused = cache.get(&mesh, (view, None)).unwrap();
+
             assert!(Arc::ptr_eq(&map, &reused));
             maps.push(Arc::downgrade(&map));
             if angle_degrees == 0 {
@@ -89,7 +86,8 @@ mod tests {
 
         let projection =
             Projection::Planar { scale: 1.0, axis: 1, offset: [0.0; 3], uv: UvTransform::default(), projector: Projector::depth_culled(), placed: None };
-        let last_map = Arc::downgrade(&cache.get(&mesh, mesh.bounds(), &projection).unwrap());
+        let view = ProjectorView::of(&projection, mesh.bounds()).unwrap();
+        let last_map = Arc::downgrade(&cache.get(&mesh, (view, None)).unwrap());
 
         drop(cache);
         assert!(last_map.upgrade().is_none());

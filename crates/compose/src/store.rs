@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use texturecraft_core::{Channel, ChannelKind, Filtering, LayerId, Sampling};
-use texturecraft_texel::{TileImage, from_u16, from_u16_signed};
+use texturecraft_texel::{TileImage, from_u16, from_u16_signed, srgb_to_linear};
 
 use crate::mip_level::MipLevel;
 
@@ -71,6 +71,8 @@ pub struct ImageRes {
     pub srgb: bool,
     /// Halved copies of the image, built on first use by [`Filtering::BilinearHq`]
     pub mips: OnceLock<Vec<MipLevel>>,
+    /// Mip levels for sRGB color reads. RGB is linear, alpha is unchanged.
+    linear_mips: OnceLock<Vec<MipLevel>>,
 }
 
 /// Image resources by name.
@@ -110,9 +112,24 @@ fn bilinear(rgba: &[[f32; 4]], width: u32, height: u32, u: f32, v: f32, repeat: 
     blended
 }
 
+fn linearize_rgb([red, green, blue, alpha]: [f32; 4]) -> [f32; 4] {
+    [srgb_to_linear(red), srgb_to_linear(green), srgb_to_linear(blue), alpha]
+}
+
+pub(crate) fn uses_mips(footprint: f32) -> bool {
+    footprint.is_finite() && footprint > 1.0
+}
+
 impl ImageRes {
     pub fn new(width: u32, height: u32, rgba: Vec<[f32; 4]>, srgb: bool) -> ImageRes {
-        ImageRes { width, height, rgba, srgb, mips: OnceLock::new() }
+        ImageRes { width, height, rgba, srgb, mips: OnceLock::new(), linear_mips: OnceLock::new() }
+    }
+
+    /// Bytes held by the image's texel buffers, used to budget other image work.
+    pub fn retained_texel_bytes(&self) -> u64 {
+        let mip_levels = self.mips.get().into_iter().flatten().chain(self.linear_mips.get().into_iter().flatten());
+        let capacity = mip_levels.fold(self.rgba.capacity() as u64, |texels, level| texels.saturating_add(level.rgba.capacity() as u64));
+        capacity.saturating_mul(std::mem::size_of::<[f32; 4]>() as u64)
     }
 
     fn texel(&self, x: i64, y: i64, repeat: (bool, bool)) -> [f32; 4] {
@@ -133,52 +150,80 @@ impl ImageRes {
         self.texel((u * self.width as f32).floor() as i64, (v * self.height as f32).floor() as i64, repeat)
     }
 
-    /// The halved levels, built the first time they are asked for
+    fn build_mips(&self, halve_first: impl FnOnce(&[[f32; 4]], u32, u32) -> MipLevel) -> Vec<MipLevel> {
+        if self.width <= 1 && self.height <= 1 {
+            return Vec::new();
+        }
+
+        // Decode while reducing the first level to avoid a full-size linear image
+        let mut level = halve_first(&self.rgba, self.width, self.height);
+        let mut levels = Vec::new();
+        while (level.width > 1 || level.height > 1) && levels.len() + 1 < MAX_MIP_LEVELS {
+            let next = MipLevel::halve(&level.rgba, level.width, level.height);
+            levels.push(level);
+            level = next;
+        }
+
+        levels.push(level);
+        levels
+    }
+
     fn mips(&self) -> &[MipLevel] {
-        self.mips.get_or_init(|| {
-            let mut levels: Vec<MipLevel> = Vec::new();
-            let (mut w, mut h) = (self.width, self.height);
-            while (w > 1 || h > 1) && levels.len() < MAX_MIP_LEVELS {
-                let next = match levels.last() {
-                    Some(level) => MipLevel::halve(&level.rgba, level.width, level.height),
-                    None => MipLevel::halve(&self.rgba, w, h),
-                };
-                (w, h) = (next.width, next.height);
-                levels.push(next);
-            }
-            levels
+        self.mips.get_or_init(|| self.build_mips(MipLevel::halve))
+    }
+
+    /// Sample an sRGB image as linear color, preserving the full-resolution filter.
+    pub(crate) fn sample_srgb_color(&self, u: f32, v: f32, sampling: Sampling, footprint: f32) -> [f32; 4] {
+        self.sample_filtered_with(u, v, sampling, footprint, linearize_rgb, || {
+            self.linear_mips.get_or_init(|| self.build_mips(|rgba, width, height| MipLevel::halve_with(rgba, width, height, Some(linearize_rgb))))
         })
+    }
+
+    /// Read coverage from either mip chain since the RGB transfer leaves alpha unchanged.
+    pub(crate) fn sample_alpha(&self, u: f32, v: f32, sampling: Sampling, footprint: f32) -> f32 {
+        self.sample_filtered_with(u, v, sampling, footprint, std::convert::identity, || self.linear_mips.get().map_or_else(|| self.mips(), Vec::as_slice))[3]
     }
 
     /// Sample at (`u`, `v`) with `sampling`; `footprint` = image texels per surface texel (1 or less = not shrunk)
     pub fn sample_filtered(&self, u: f32, v: f32, sampling: Sampling, footprint: f32) -> [f32; 4] {
+        self.sample_filtered_with(u, v, sampling, footprint, std::convert::identity, || self.mips())
+    }
+
+    fn sample_filtered_with<'a>(
+        &'a self,
+        u: f32,
+        v: f32,
+        sampling: Sampling,
+        footprint: f32,
+        decode_full: impl Fn([f32; 4]) -> [f32; 4],
+        mips: impl FnOnce() -> &'a [MipLevel],
+    ) -> [f32; 4] {
         if !u.is_finite() || !v.is_finite() {
             return [0.0; 4];
         }
 
         let repeat = sampling.wrap.repeats();
-        let full = |u: f32, v: f32| bilinear(&self.rgba, self.width, self.height, u, v, repeat);
+        let full = || decode_full(bilinear(&self.rgba, self.width, self.height, u, v, repeat));
         match sampling.filtering {
-            Filtering::Nearest => self.nearest(u, v, repeat),
-            Filtering::BilinearSharp => full(u, v),
+            Filtering::Nearest => decode_full(self.nearest(u, v, repeat)),
+            Filtering::BilinearSharp => full(),
             Filtering::BilinearHq => {
-                // Not shrunk: the full image alone, without building mips it does not read
-                if !(footprint.is_finite() && footprint > 1.0) {
-                    return full(u, v);
+                if !uses_mips(footprint) {
+                    return full();
                 }
 
-                let lod = footprint.log2();
+                let levels = mips();
+                let level_of_detail = footprint.log2().min(levels.len() as f32);
+                let finer_level = level_of_detail.floor() as usize;
+                let toward_coarser = level_of_detail - finer_level as f32;
 
-                // Level 0 is the full image, level n the nth mip (the smallest past the last)
-                let mips = self.mips();
-                let level = |index: usize| match index.checked_sub(1) {
-                    None => full(u, v),
-                    Some(mip_index) => {
-                        mips.get(mip_index).or(mips.last()).map_or_else(|| full(u, v), |mip| bilinear(&mip.rgba, mip.width, mip.height, u, v, repeat))
-                    }
+                // Level zero uses the file image; the first stored level is half-sized
+                let level = |index: usize| {
+                    index
+                        .checked_sub(1)
+                        .and_then(|mip_index| levels.get(mip_index))
+                        .map_or_else(full, |mip| bilinear(&mip.rgba, mip.width, mip.height, u, v, repeat))
                 };
-                let finer_level = lod.floor() as usize;
-                let toward_coarser = lod - lod.floor();
                 let finer = level(finer_level);
                 if toward_coarser <= 0.0 {
                     return finer;
@@ -239,6 +284,18 @@ mod tests {
     }
 
     #[test]
+    fn high_quality_mips_keep_odd_trailing_rows_and_columns() {
+        let mut pixels = vec![[0.0; 4]; 9];
+        pixels[8] = [1.0, 0.0, 0.0, 1.0];
+        let image = ImageRes::new(3, 3, pixels, false);
+
+        let [red, _, _, alpha] = image.sample_filtered(0.5, 0.5, sampling(Filtering::BilinearHq, UvWrap::None), 8.0);
+
+        assert!((red - 1.0 / 9.0).abs() < 1e-6);
+        assert_eq!(red, alpha);
+    }
+
+    #[test]
     fn high_quality_bilinear_reads_the_mip_the_footprint_asks_for() {
         let image = ramp();
         let hq = sampling(Filtering::BilinearHq, UvWrap::Repeat);
@@ -264,5 +321,36 @@ mod tests {
 
         assert_eq!(full, [1.0; 4]);
         assert!(image.mips.get().is_none(), "a footprint of 1 reads only the full image");
+    }
+
+    #[test]
+    fn srgb_mip_transition_blends_linear_color_and_keeps_coverage() {
+        let image = ImageRes::new(2, 1, vec![[0.0; 4], [1.0; 4]], true);
+        let hq = sampling(Filtering::BilinearHq, UvWrap::None);
+        let half_level_footprint = 2.0_f32.sqrt();
+
+        let full = image.sample_srgb_color(0.25, 0.5, hq, 1.0);
+        let midpoint = image.sample_srgb_color(0.25, 0.5, hq, half_level_footprint);
+        let coverage = image.sample_alpha(0.25, 0.5, hq, half_level_footprint);
+
+        assert_eq!(full, [0.0; 4], "full resolution reads the center of the black texel");
+        assert!((midpoint[0] - 0.25).abs() < 1e-6, "mix linear black and the half-bright mip: {midpoint:?}");
+        assert_eq!(midpoint[3], coverage);
+        assert!(image.mips.get().is_none(), "coverage can use the same mip chain as color");
+    }
+
+    #[test]
+    fn a_mixed_use_image_reports_the_texels_held_by_both_mip_chains() {
+        let image = ImageRes::new(4, 4, vec![[0.5; 4]; 16], true);
+        let hq = sampling(Filtering::BilinearHq, UvWrap::None);
+        let base = image.retained_texel_bytes();
+
+        image.sample_srgb_color(0.5, 0.5, hq, 4.0);
+        let color_only = image.retained_texel_bytes();
+        image.sample_filtered(0.5, 0.5, hq, 4.0);
+        let mixed = image.retained_texel_bytes();
+
+        assert!(color_only > base);
+        assert_eq!(mixed - color_only, color_only - base);
     }
 }

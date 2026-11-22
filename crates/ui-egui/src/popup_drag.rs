@@ -1,22 +1,62 @@
-//! A press outside the popups that turns into a drag closes them: egui closes a popup only on a click, so a paint stroke or slider drag left it open
+//! Dismisses popups when a primary press outside them becomes a drag
 
-use egui::{Order, PointerButton};
+use std::sync::Arc;
 
-/// Whether a primary press outside every popup has just been held or moved past a click: it starts a stroke, a slider drag or a panel move
-pub(crate) fn drag_outside_popups(ctx: &egui::Context) -> bool {
-    let (dragging, origin, orbiting) = ctx.input(|input| {
-        let dragging = input.pointer.button_down(PointerButton::Primary) && input.pointer.is_decidedly_dragging();
-        (dragging, input.pointer.press_origin(), input.modifiers.alt)
-    });
+use egui::{Event, Id, Order, PointerButton, ViewportId};
 
-    // Alt+drag orbits the camera, which keeps popups open like the colour picker; a drag in a popup or a dropdown it opened stays in it
-    let over_popup = |at| ctx.layer_id_at(at).is_some_and(|layer| matches!(layer.order, Order::Foreground | Order::Tooltip | Order::Debug));
-    dragging && !orbiting && origin.is_some_and(|at| !over_popup(at))
+/// Installs dismissal before drawing popups in the main and native floating windows
+pub(crate) fn install(ctx: &egui::Context) {
+    ctx.on_begin_pass("dismiss popups on outside drag", Arc::new(|ui| update(ui.ctx())));
 }
 
-/// Closes egui's open popup, menu or dropdown when [`drag_outside_popups`]; a plain click outside is egui's own close
-pub(crate) fn close_on_drag_outside(ctx: &egui::Context) {
-    if egui::Popup::is_any_open(ctx) && drag_outside_popups(ctx) {
+/// Tracks the primary press across frames, including the frame that releases it
+fn update(ctx: &egui::Context) {
+    let viewport = ctx.viewport_id();
+    let press_id = Id::unique("popup-drag-press");
+    let result_id = Id::unique("popup-drag-result");
+    let (press, down, drag) = ctx.input(|input| {
+        let pointer = &input.pointer;
+        let press = pointer
+            .button_pressed(PointerButton::Primary)
+            .then(|| {
+                input.events.iter().rev().find_map(|event| match event {
+                    Event::PointerButton { pos, button: PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                    _ => None,
+                })
+            })
+            .flatten();
+        let down = input.focused && pointer.button_down(PointerButton::Primary);
+        let released_without_click = pointer.button_released(PointerButton::Primary) && !pointer.button_clicked(PointerButton::Primary);
+        let drag = input.focused && !input.modifiers.alt && (released_without_click || (down && pointer.is_decidedly_dragging()));
+        (press, down, drag)
+    });
+
+    let started_outside =
+        press.map(|position| ctx.layer_id_at(position).is_none_or(|layer| !matches!(layer.order, Order::Foreground | Order::Tooltip | Order::Debug)));
+    let dismiss = ctx.data_mut(|data| {
+        let previous = data.get_temp::<(ViewportId, bool)>(press_id).filter(|(owner, _)| *owner == viewport);
+        let outside = started_outside.or(previous.map(|(_, outside)| outside)).unwrap_or(false);
+        if let Some(started_outside) = started_outside.filter(|_| down) {
+            data.insert_temp(press_id, (viewport, started_outside));
+        } else if !down && previous.is_some() {
+            data.remove::<(ViewportId, bool)>(press_id);
+        }
+
+        let dismiss = outside && drag;
+        if viewport == ViewportId::ROOT {
+            data.insert_temp(result_id, dismiss);
+        }
+
+        dismiss
+    });
+
+    if dismiss && egui::Popup::is_any_open(ctx) {
         egui::Popup::close_all(ctx);
     }
+}
+
+/// Whether the main window's current pass has an outside drag for its app-owned popups
+pub(crate) fn drag_outside_popups(ctx: &egui::Context) -> bool {
+    let id = Id::unique("popup-drag-result");
+    ctx.data(|data| data.get_temp::<bool>(id).unwrap_or(false))
 }

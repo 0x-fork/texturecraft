@@ -615,6 +615,7 @@ mod tests {
         execute(&mut s, "viewport.view", &json!({"mode": "image", "image": name})).unwrap();
 
         let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
+
         assert_eq!(out.image_aux.len(), 1, "equal resolutions share a single pixel buffer");
         let (targets, bytes) = out.image_aux.values().next().unwrap();
         assert!(targets.len() > 1);

@@ -118,7 +118,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set fill source",
             [],
             None,
-            "{layer? | effect?: content fill effect id, channel, color?: ([r,g,b] linear or \"#rrggbb\" sRGB)|value?|procedural?: kind, scale?, seed?, contrast?, balance?, invert?, low?, high? (the same kind keeps what is not given), resolution?: auto|textureSet|uvTile|custom, customResolution?, resolutionFactor?: -3..3, tile?: {Tile Generator settings in camelCase, as project.inspect shows them}, tileDefaults?: true (alone, they edit the channel's pattern)|image?|alpha?: library alpha id or name (its picture becomes the image resource alpha_<id>.png), normalFormat?: openGl|directX (the image's normal map convention; alone, it changes the channel's image)|anchor?: anchor effect id, anchorChannel?, colors?: gradient map of a color channel's procedural or anchor, 1 to 16 colors dark to light ([r, g, b] linear or \"#rrggbb\" sRGB; [] removes it; absent keeps it; alone, it changes the channel's source)|gradientMap?: true (turns the color stops on from the channel's current procedural or anchor: a procedural's low, their midpoint and high; an anchor's black, gray and white; stops already there stay), enabled?, solo?: true (this channel on, every other one off)}",
+            "{layer? | effect?: content fill effect id, channel, color?: ([r,g,b] linear or \"#rrggbb\" sRGB)|value?|procedural?: kind, scale?, seed?, contrast?, balance?, invert?, low?, high? (the same kind keeps what is not given), resolution?: auto|textureSet|uvTile|custom, customResolution?, resolutionFactor?: -3..3, tile?: {Tile Generator settings in camelCase, as project.inspect shows them}, tileDefaults?: true (alone, they edit the channel's pattern)|image?|alpha?: library alpha id or name (its picture becomes a project image, normally alpha_<id>.png), normalFormat?: openGl|directX (the image's normal map convention; alone, it changes the channel's image)|anchor?: anchor effect id, anchorChannel?, colors?: gradient map of a color channel's procedural or anchor, 1 to 16 colors dark to light ([r, g, b] linear or \"#rrggbb\" sRGB; [] removes it; absent keeps it; alone, it changes the channel's source)|gradientMap?: true (turns the color stops on from the channel's current procedural or anchor: a procedural's low, their midpoint and high; an anchor's black, gray and white; stops already there stay), enabled?, solo?: true (this channel on, every other one off)}",
             has_layer,
             fill_set
         ),
@@ -127,7 +127,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Set fill projection",
             [],
             None,
-            "{layer? | effect?: content fill effect id, projection?: uvTile (Fill (Match per UV Tile))|uv|triplanar|planar|spherical|cylindrical|warp (default: the current one; a new warp's frame sits around the mesh, seen from the front), tiling?: number | [u, v] (UV transformations, every projection; uv: same as scale), rotation?: degrees (UV transformations), uvOffset?: [u, v] (UV transformations of a 3D projection), scale?: number | [u, v] (uv: the tiling; 3D projections but warp: one number), offset?: [u, v] (uv) | [x, y, z] (3D projections but warp; a warp is placed by its frame with layer.decal.set, and refuses either), projectorRotation?: [x, y, z] degrees, projectorScale?: number | [x, y, z] (3D projection settings; a negative axis mirrors it), shapeCrop?: cropped|extendsOutside (3D projections), backfaceCulling?: bool, backfaceAngle?: degrees, backfaceHardness?: 0..1 (planar, cylindrical), depthCulling?: bool, depthCullingHardness?: 0..1 (planar, warp; surfaces hidden from the projector behind others get none of it; new planar and warp projections start with it on at 0.75), sharpness?: 1..64 (triplanar), warpCorners?: [[x, y] × 4] (warp: top left, top right, bottom right, bottom left, across and up in frame sizes from its centre; unpulled = ±0.5), projectionDepth?: lengths of the frame's longer side it reaches in front of and behind it when cropped (warp), angle?: 1..360 degrees one repeat spans (cylindrical), axis?: 0|1|2 (planar, cylindrical), filtering?: bilinearHq|bilinearSharp|nearest (how images are read), wrap?: repeat|repeatHorizontally|repeatVertically|none (past the 0..1 tile; not tri-planar), symmetry?: bool (copies of a 3D projection; UV projections have none), symmetryType?: mirror|radial, symmetryAxis?: 0|1|2 or x|y|z (the mirror plane's normal or the turning axis), flipCopy?: [u, v] (turn the copies' images over), axisPosition?: number | [x, y, z] (where the plane or axis passes, -1..1 mesh radii from the mesh's centre), symmetryCount?: 2..64 (radial copies, the original included), angleSpan?: 1..360 degrees (radial copies spread over it; 360 spaces them evenly)} — what is not given keeps its value",
+            "{layer? | effect?: content fill effect id, projection?: uvTile (Fill (Match per UV Tile))|uv|triplanar|planar|spherical|cylindrical|warp (default: the current one; a new warp's frame sits around the mesh, seen from the front), tiling?: number | [u, v] (UV transformations except on uvTile; uv: same as scale), rotation?: degrees (UV transformations), uvOffset?: [u, v] (UV transformations of a 3D projection), scale?: number | [u, v] (uv: the tiling; 3D projections but warp: one number), offset?: [u, v] (uv) | [x, y, z] (3D projections but warp; a warp is placed by its frame with layer.decal.set, and refuses either), projectorRotation?: [x, y, z] degrees, projectorScale?: number | [x, y, z] (3D projection settings; a negative axis mirrors it), shapeCrop?: cropped|extendsOutside (3D projections), backfaceCulling?: bool, backfaceAngle?: degrees, backfaceHardness?: 0..1 (planar, cylindrical), depthCulling?: bool, depthCullingHardness?: 0..1 (planar, warp; surfaces hidden from the projector behind others get none of it; new planar and warp projections start with it on at 0.75), sharpness?: 1..64 (triplanar), warpCorners?: [[x, y] × 4] (warp: top left, top right, bottom right, bottom left, across and up in frame sizes from its centre; unpulled = ±0.5), projectionDepth?: lengths of the frame's longer side it reaches in front of and behind it when cropped (warp), angle?: 1..360 degrees one repeat spans (cylindrical), axis?: 0|1|2 (planar, cylindrical), filtering?: bilinearHq|bilinearSharp|nearest (how images are read), wrap?: repeat|repeatHorizontally|repeatVertically|none (past the 0..1 tile; not tri-planar), symmetry?: bool (copies of a 3D projection; UV projections have none), symmetryType?: mirror|radial, symmetryAxis?: 0|1|2 or x|y|z (the mirror plane's normal or the turning axis), flipCopy?: [u, v] (turn the copies' images over), axisPosition?: number | [x, y, z] (where the plane or axis passes, -1..1 mesh radii from the mesh's centre), symmetryCount?: 2..64 (radial copies, the original included), angleSpan?: 1..360 degrees (radial copies spread over it; 360 spaces them evenly)} — what is not given keeps its value",
             has_layer,
             fill_projection
         ),
@@ -576,28 +576,31 @@ fn fill_set(session: &mut Session, params: &Value) -> Result<Value> {
 
     // Changing only the normal format or gradient stops leaves the layer channel on or off
     let touches_channel = source.is_some() || enabled.is_some();
+    let format_existing_image = normal_format.filter(|_| source.is_none());
+    let replaces_material = source.is_some() || colors.is_some() || init_ramp;
+    let current = fill_mut(session, target)?.sources.get(&channel);
+    let colors = if init_ramp { initial_ramp(channel, source.as_ref(), current)? } else { colors };
+    let mut source = with_ramp(channel, current, source, colors)?;
+
     session.edit("Set fill", |session| {
-        if let Some(alpha) = library_alpha {
-            session.add_library_alpha(alpha)?;
+        if let (Some(alpha), Some(Source::Image { name, .. })) = (library_alpha, &mut source) {
+            *name = session.add_library_alpha(alpha)?;
         }
+
         let fill = fill_mut(session, target)?;
 
         // `normalFormat` alone: the convention of the channel's image
-        if let (None, Some(format)) = (&source, normal_format) {
-            match fill.sources.get_mut(&channel) {
+        if let Some(format) = format_existing_image {
+            match source.as_mut().or_else(|| fill.sources.get_mut(&channel)) {
                 Some(Source::Image { normal_format, .. }) => *normal_format = format,
                 _ => return Err(bad(FILL_SET, "`normalFormat` needs an image on the channel")),
             }
         }
 
         // A channel set on its own (its source or its gradient map): the sources are no longer one whole material
-        if source.is_some() || colors.is_some() || init_ramp {
+        if replaces_material {
             fill.material = None;
         }
-
-        let current = fill.sources.get(&channel);
-        let colors = if init_ramp { initial_ramp(channel, source.as_ref(), current)? } else { colors };
-        let source = with_ramp(channel, current, source, colors)?;
 
         match target {
             // A fill effect's channel is on while it has a source
@@ -606,7 +609,7 @@ fn fill_set(session: &mut Session, params: &Value) -> Result<Value> {
             }
 
             // Removing stops (`colors: []`) from a channel the fill does not have adds nothing
-            FillTarget::Effect(_) if source.is_none() && enabled != Some(true) && current.is_none() => {}
+            FillTarget::Effect(_) if source.is_none() && enabled != Some(true) && !fill.sources.contains_key(&channel) => {}
             FillTarget::Effect(_) => {
                 let source = source.unwrap_or_else(|| fill.source(channel));
                 fill.sources.insert(channel, source);
@@ -659,9 +662,10 @@ fn fill_source_from(
 
     if let Some(name) = strp(params, "procedural") {
         let kind = ProceduralKind::parse(name).ok_or_else(|| bad(FILL_SET, format!("unknown procedural `{name}`")))?;
+
         // A pattern of the same kind keeps what `params` do not give; another kind starts from its defaults
-        let current = fill_mut(session, target)?.sources.get(&channel).cloned();
-        return Ok(Some(procedural_from(params, kind, current.as_ref(), [low, high])?));
+        let current = fill_mut(session, target)?.sources.get(&channel);
+        return Ok(Some(procedural_from(params, kind, current, [low, high])?));
     }
 
     if let Some(color) = uniform {
@@ -687,20 +691,19 @@ fn fill_source_from(
         return Ok(Some(crate::mask_cmds::anchor_source(session, FILL_SET, reader, LayerId(anchor), anchor_channel)?));
     }
 
-    if !crate::procedural_params::has_pattern_settings(params) {
+    if !crate::procedural_params::has_pattern_settings(params)
+        && !["scale", "seed", "contrast", "balance", "invert", "low", "high"].iter().any(|key| params.get(key).is_some())
+    {
         return Ok(None);
     }
 
     // Pattern settings alone edit the channel's current pattern
-    let Some(Source::Procedural { pattern, low, high, .. }) = fill_mut(session, target)?.sources.get(&channel) else {
+    let current = fill_mut(session, target)?.sources.get(&channel);
+    let Some(Source::Procedural { pattern, .. }) = current else {
         return Err(bad(FILL_SET, "the channel has no pattern: give `procedural` with its settings"));
     };
 
-    let mut pattern = pattern.clone();
-    crate::procedural_params::pattern_basics_from(params, &mut pattern);
-    crate::procedural_params::pattern_settings_from(FILL_SET, params, &mut pattern)?;
-
-    Ok(Some(Source::Procedural { pattern, low: *low, high: *high, ramp: Vec::new() }))
+    Ok(Some(procedural_from(params, pattern.kind, current, [low, high])?))
 }
 
 /// The gradient map stops from `colors` (None when absent, empty to remove).

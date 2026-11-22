@@ -40,7 +40,7 @@ impl FillCopies {
     }
 
     /// Copy `index`: the original at 0, then the mirror or the radial copies in turn
-    fn copy(&self, index: u32) -> FillCopy {
+    pub(crate) fn copy(&self, index: u32) -> FillCopy {
         let flip = if index == 0 { [false; 2] } else { self.symmetry.flip };
         let turn = match self.symmetry.kind {
             _ if index == 0 => Mat3::IDENTITY,
@@ -54,6 +54,16 @@ impl FillCopies {
             SymmetryKind::Radial => Mat3::from_axis_angle(Vec3::AXES[self.axis], -(index as f32 * self.step).to_radians()),
         };
         FillCopy::new(turn, self.pivot, flip)
+    }
+
+    pub(crate) fn next_indexed(&mut self) -> Option<(usize, FillCopy)> {
+        if self.next >= self.count {
+            return None;
+        }
+
+        let index = (self.first + self.next) % self.count;
+        self.next += 1;
+        Some((index as usize, self.copy(index)))
     }
 }
 
@@ -79,13 +89,7 @@ impl Iterator for FillCopies {
     type Item = FillCopy;
 
     fn next(&mut self) -> Option<FillCopy> {
-        if self.next >= self.count {
-            return None;
-        }
-
-        let index = (self.first + self.next) % self.count;
-        self.next += 1;
-        Some(self.copy(index))
+        self.next_indexed().map(|(_, copy)| copy)
     }
 }
 
@@ -148,6 +152,7 @@ mod tests {
                     past_copy.min(FULL_TURN_DEGREES - past_copy)
                 };
                 let searched = (0..count).min_by(|a, b| gap(*a).total_cmp(&gap(*b))).unwrap_or(0);
+
                 assert_eq!(nearest_copy(turned, step, count, span), searched, "{count} copies over {span} at {turned}");
             }
         }

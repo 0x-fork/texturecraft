@@ -60,6 +60,7 @@ impl SetCache {
     pub(crate) fn new(mesh: &Mesh, ts: &TextureSet) -> SetCache {
         let (w, h) = ts.size();
         let gbuf = UvGBuffer::new(mesh, ts.material, w, h);
+
         // Padding stays inside each UV tile
         let dilation = DilationMap::in_blocks(&gbuf.coverage_mask(), w, h, Some(DISPLAY_PADDING), ts.block_resolution());
         let covered = covered_tiles(&gbuf);
@@ -451,6 +452,8 @@ pub struct Session {
     pub clipboard: Option<(Document, LayerId)>,
     /// Decoded image resources (rebuilt from `doc.resources` by `Session::sync_images`).
     pub images: texturecraft_compose::ImageStore,
+    /// Resource names whose decoded pixels match a library alpha.
+    pub(crate) library_alphas: BTreeSet<String>,
     /// Temporary texel mask limiting paint strokes (not saved, not in the history).
     pub quick_mask: crate::quick_mask::QuickMask,
     /// A path sublayer is being repainted from its paths (the only way to paint into one).
@@ -534,6 +537,7 @@ impl Session {
             stroke: None,
             clipboard: None,
             images: Default::default(),
+            library_alphas: BTreeSet::new(),
             quick_mask: Default::default(),
             painting_paths: false,
             path_cache: None,

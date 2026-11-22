@@ -35,6 +35,7 @@ const QUICK_BELOW_PX: usize = 48;
 #[derive(Default)]
 pub struct OrbPreviews {
     pictures: HashMap<u64, Picture>,
+    next_request: u64,
     /// The picture last drawn at each place and the pass it was drawn in, shown while that place's new one renders
     shown: HashMap<Id, (TextureHandle, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -50,11 +51,13 @@ impl OrbPreviews {
         let mut previews = shared.lock().ok()?;
         previews.take_results(ctx);
         let pass = ctx.cumulative_pass_nr();
+        let request = previews.next_request;
         if let Entry::Vacant(slot) = previews.pictures.entry(key) {
-            let job = job();
-            slot.insert(Picture { texture: None, full: false, drawn: pass, _images: job.material.image_handles() });
+            let job = OrbJob { request, ..job() };
+            slot.insert(Picture { request, texture: None, full: false, drawn: pass, _images: job.material.image_handles() });
             #[cfg(not(target_arch = "wasm32"))]
             let job = OrbJob { place, ..job };
+            previews.next_request = request.wrapping_add(1);
             previews.start(ctx, job);
         }
         let ready = previews.pictures.get_mut(&key).and_then(|picture| {
@@ -93,8 +96,9 @@ impl OrbPreviews {
         previews.shown.get(&Id::unique(("material_orb", place))).map(|(texture, _)| texture.size())
     }
 
-    fn store(&mut self, ctx: &Context, key: u64, full: bool, image: ColorImage) {
+    fn store(&mut self, ctx: &Context, key: u64, request: u64, full: bool, image: ColorImage) {
         if let Some(picture) = self.pictures.get_mut(&key)
+            && picture.request == request
             && !picture.full
         {
             picture.texture = Some(ctx.load_texture("material-orb", image, TextureOptions::LINEAR));
@@ -120,7 +124,7 @@ impl OrbPreviews {
     #[cfg(target_arch = "wasm32")]
     fn start(&mut self, ctx: &Context, job: OrbJob) {
         let job = OrbJob { quick: false, ..job };
-        self.store(ctx, job.key, true, job.picture());
+        self.store(ctx, job.key, job.request, true, job.picture());
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -136,7 +140,7 @@ impl OrbPreviews {
                 None => {
                     // No thread: render here rather than show nothing
                     let job = OrbJob { quick: false, ..job };
-                    self.store(ctx, key, true, job.picture());
+                    self.store(ctx, key, job.request, true, job.picture());
                     return;
                 }
             },
@@ -145,7 +149,7 @@ impl OrbPreviews {
             Ok(()) => self.worker = Some(worker),
             Err(std::sync::mpsc::SendError((job, _))) => {
                 let job = OrbJob { quick: false, ..job };
-                self.store(ctx, key, true, job.picture());
+                self.store(ctx, key, job.request, true, job.picture());
             }
         }
     }
@@ -156,10 +160,13 @@ impl OrbPreviews {
         let results: Vec<OrbResult> = worker.results.try_iter().collect();
         for result in results {
             match result {
-                OrbResult::Picture { key, full, image } => self.store(ctx, key, full, image),
-                OrbResult::Dropped { key } => {
-                    // Asked for again the next time it is drawn (its place keeps showing what it last showed)
-                    self.pictures.remove(&key);
+                OrbResult::Picture { key, request, full, image } => self.store(ctx, key, request, full, image),
+                OrbResult::Dropped { key, request } => {
+                    if let Entry::Occupied(entry) = self.pictures.entry(key)
+                        && entry.get().request == request
+                    {
+                        entry.remove();
+                    }
                 }
             }
         }
@@ -168,7 +175,7 @@ impl OrbPreviews {
 
 /// Keep only the newest job per place (others than [`Id::NULL`]); returns the keys of the jobs dropped
 #[cfg(not(target_arch = "wasm32"))]
-fn newest_per_place(waiting: &mut Vec<OrbJob>) -> Vec<u64> {
+fn newest_per_place(waiting: &mut Vec<OrbJob>) -> Vec<(u64, u64)> {
     let mut seen = std::collections::HashSet::new();
     let mut dropped = Vec::new();
     let mut kept: Vec<OrbJob> = Vec::with_capacity(waiting.len());
@@ -176,7 +183,7 @@ fn newest_per_place(waiting: &mut Vec<OrbJob>) -> Vec<u64> {
         if job.place == Id::NULL || seen.insert(job.place) {
             kept.push(job);
         } else {
-            dropped.push(job.key);
+            dropped.push((job.key, job.request));
         }
     }
     kept.reverse();
@@ -245,7 +252,7 @@ mod tests {
 
         let sizes = draw_until_settled(&ctx, place, &job);
 
-        // A fast render can bring both pictures between two frames, so only the full one is sure to show; the quick one never comes after it
+        // Both pictures can arrive between frames, so only the full picture is guaranteed to appear
         let quick_then_full: &[[usize; 2]] = &[[50, 50], [200, 200]];
         assert!(sizes == quick_then_full || sizes == quick_then_full[1..], "the quick picture, if shown, then the full one: {sizes:?}");
         assert!(OrbPreviews::settled(&ctx));
@@ -303,6 +310,41 @@ mod tests {
         let dropped = newest_per_place(&mut waiting);
         assert_eq!(dropped.len(), 2);
         assert_eq!(waiting.iter().map(|job| job.key).collect::<Vec<_>>(), vec![other.key, job(0.3).key]);
+    }
+
+    #[test]
+    fn a_delayed_drop_keeps_the_replacement_render_for_an_evicted_look() {
+        let ctx = Context::default();
+        let (jobs, submitted) = std::sync::mpsc::channel();
+        let (completed, results) = std::sync::mpsc::channel();
+        let previews = OrbPreviews { worker: Some(Worker { jobs, results }), ..Default::default() };
+        ctx.data_mut(|data| data.insert_temp(Id::unique("orb_previews"), Arc::new(Mutex::new(previews))));
+        let first = OrbJob::new(copper(0.0), 16, Color32::BLACK);
+        let place = Id::unique("changing material");
+        let request = |job: &OrbJob| {
+            run(&ctx, |ctx| {
+                OrbPreviews::texture(ctx, place, job.key, || job.clone());
+            })
+        };
+
+        request(&first);
+        let (old_job, _) = submitted.try_recv().unwrap();
+        for index in 1..=MAX_PICTURES {
+            let other = OrbJob::new(copper(index as f32 / MAX_PICTURES as f32), 16, Color32::BLACK);
+            request(&other);
+            submitted.try_recv().unwrap();
+        }
+        request(&first);
+        let (replacement, _) = submitted.try_recv().expect("eviction requested a new render");
+
+        completed.send(OrbResult::Dropped { key: old_job.key, request: old_job.request }).unwrap();
+        completed
+            .send(OrbResult::Picture { key: replacement.key, request: replacement.request, full: true, image: ColorImage::filled([16, 16], Color32::WHITE) })
+            .unwrap();
+        let texture = OrbPreviews::texture(&ctx, place, first.key, || first.clone());
+
+        assert!(texture.is_some(), "the new render should be visible after the old job was dropped");
+        assert!(submitted.try_recv().is_err(), "the completed look needs no third render");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use texturecraft_engine::core::MAX_SWATCHES;
 
 use super::slider::KNOB_RADIUS;
 use super::value_text_draft::ValueTextDraft;
-use super::{CONTROL_HEIGHT, CONTROL_RADIUS, GLYPH_SIZE, GLYPH_TARGET, PAD, PropertySheet, ROW_HEIGHT, SMALL_TEXT_SIZE, TEXT_SIZE};
+use super::{CONTROL_HEIGHT, CONTROL_RADIUS, GLYPH_SIZE, GLYPH_TARGET, PropertySheet, ROW_HEIGHT, SIDE_PADDING_POINTS, SMALL_TEXT_SIZE, TEXT_SIZE};
 use crate::color_picker::{ColorModel, ColorPick, ColorSpace, PickerState, SwatchEdit, eight_bit, hex, parse_hex};
 use crate::drawn_icon::DrawnIcon;
 use crate::fill_material_panel::shown_color as screen_color;
@@ -188,7 +188,7 @@ impl PropertySheet<'_> {
         let painter = self.ui.painter();
         gradient(painter, field, |x, y| space.display(rgb_from_hsv((hue, x, 1.0 - y))));
         painter.circle_stroke(field.lerp_inside(vec2(saturation, 1.0 - value)), FIELD_KNOB_RADIUS, Stroke::new(RING_STROKE, Color32::WHITE));
-        gradient(painter, strip, |_, y| rgb_from_hsv((y, 1.0, 1.0)));
+        gradient(painter, strip, |_, y| space.display(rgb_from_hsv((y, 1.0, 1.0))));
         let marker_y = strip.top() + hue * strip.height();
         let marker = Rect::from_min_max(
             pos2(strip.left() - HUE_MARKER_OVERHANG, marker_y - HUE_MARKER_HALF_HEIGHT),
@@ -401,7 +401,7 @@ impl PropertySheet<'_> {
         let tokens = self.tokens;
         self.space(SWATCHES_RULE_AIR);
         let rule_y = self.cursor_y();
-        self.ui.painter().hline((self.left - PAD)..=(self.right + PAD), rule_y, Stroke::new(1.0, tokens.separator));
+        self.ui.painter().hline((self.left - SIDE_PADDING_POINTS)..=(self.right + SIDE_PADDING_POINTS), rule_y, Stroke::new(1.0, tokens.separator));
         self.space(SWATCHES_RULE_AIR);
         let caption = self.take(SWATCHES_CAPTION);
         self.ui.painter().text(pos2(self.left, caption.center().y), Align2::LEFT_CENTER, tr("Swatches"), semibold(SMALL_TEXT_SIZE), tokens.text);

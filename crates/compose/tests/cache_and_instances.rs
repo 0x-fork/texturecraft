@@ -663,6 +663,7 @@ fn kept_filter_fields_are_not_used_after_an_edit_or_under_a_live_stroke() {
     // Keep fields for the remaining tiles
     cache.ahead = rest.to_vec();
     let mut out = run(&fixture, 0, first, Some(&mut cache));
+
     assert!(cache.holds_fields());
 
     // Changing the hot mask must invalidate the retained fields
@@ -916,4 +917,52 @@ fn generator_input_image_changes_invalidate_stack_key() {
     images.remove("used");
 
     assert!(key(&images) != original, "removing a generator input must invalidate the cache");
+}
+
+fn cache_after_changing_mesh(owned: bool) {
+    use std::sync::Arc;
+    use texturecraft_compose::{ProjectorDepthCache, composite_tiles_with_projectors};
+
+    let mut fixture = fixture();
+    let lower = add(&mut fixture, 0, fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]), None);
+    fixture.project.layer_mut(lower).unwrap().geometry_mask = Some(vec!["Lid".into()]);
+    let hot = add(&mut fixture, 0, LayerKind::Paint, None);
+    let mut named = fixture.mesh.clone();
+    named.submeshes[0].name = "Lid".into();
+    let first = Arc::new(named);
+    let second = Arc::new(fixture.mesh.clone());
+    let images = Default::default();
+    let baked = Default::default();
+    let mut projectors = ProjectorDepthCache::default();
+    let mut cache = BelowCache::default();
+    cache.set_hot(Some(hot));
+    let mut render = |mesh: &Arc<Mesh>, cache: Option<&mut BelowCache>| {
+        let mut input = inputs(&fixture, 0, &images, &baked);
+        input.mesh = mesh;
+        let mut output = Composite::new(&fixture.project.texture_sets[0].channel_list(), RES);
+        if owned {
+            composite_tiles_with_projectors(&input, mesh, &mut projectors, &mut output, &[(1, 1)], cache);
+        } else {
+            composite_tiles_cached(&input, &mut output, &[(1, 1)], cache);
+        }
+        output
+    };
+
+    let before = render(&first, Some(&mut cache));
+    assert!(!cache.is_empty());
+    let expected = render(&second, None);
+    let actual = render(&second, Some(&mut cache));
+
+    assert!(before != expected, "the lower fill applies only to the named part");
+    assert!(actual == expected, "the previous mesh's cached fill was reused");
+}
+
+#[test]
+fn a_borrowed_mesh_change_invalidates_cached_fills() {
+    cache_after_changing_mesh(false);
+}
+
+#[test]
+fn a_projector_rebind_without_below_cache_invalidates_cached_fills() {
+    cache_after_changing_mesh(true);
 }

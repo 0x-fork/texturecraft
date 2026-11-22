@@ -36,8 +36,7 @@ impl OrbEnvironment {
 
         let rgb = decoded.into_rgb32f();
         let (pixels, _) = rgb.as_raw().as_chunks::<3>();
-        let rgba: Vec<[f32; 4]> = pixels.iter().map(|&[red, green, blue]| [red, green, blue, 1.0]).collect();
-        let env = EnvImage::from_rgba(rgb.width(), rgb.height(), &rgba, false)?;
+        let env = EnvImage::from_linear_rgb(rgb.width(), rgb.height(), pixels)?;
         drop(rgb);
 
         Some(OrbEnvironment::of(&env))

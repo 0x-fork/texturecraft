@@ -14,8 +14,8 @@ pub(crate) struct PickerState {
     pub(crate) hsv: [f32; 3],
     pub(crate) space: ColorSpace,
     pub(crate) model: ColorModel,
-    /// Height measured while the picker is visible, in points
-    pub(crate) height: Option<f32>,
+    /// Height of the picker outside its resizable colour field, in points
+    pub(crate) fixed_height: Option<f32>,
     /// Where its title bar's drag left the window's top left corner; None while it stands beside the panel
     pub(crate) moved_to: Option<egui::Pos2>,
 }

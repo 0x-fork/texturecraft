@@ -7,10 +7,12 @@
 //! identical to a full evaluation.
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::Arc;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, Weak};
 
 use texturecraft_core::project::MAX_DEPTH;
 use texturecraft_core::{BakedMap, Channel, EffectKind, Layer, LayerId, LayerKind, Project, Source, TextureSet};
+use texturecraft_geom::Mesh;
 use texturecraft_texel::TileImage;
 
 use crate::eval::{Inputs, PaintTarget};
@@ -25,6 +27,8 @@ pub const BELOW_BUDGET: usize = 256 << 20;
 /// See the module docs. One per texture set.
 #[derive(Debug)]
 pub struct BelowCache {
+    mesh: Weak<Mesh>,
+    borrowed_mesh_key: Option<u64>,
     hot: Option<LayerId>,
     key: Option<StackKey>,
     /// Tiles with the stamp of their last use.
@@ -52,6 +56,8 @@ pub struct BelowCache {
 impl Default for BelowCache {
     fn default() -> Self {
         BelowCache {
+            mesh: Weak::new(),
+            borrowed_mesh_key: None,
             hot: None,
             key: None,
             tiles: HashMap::new(),
@@ -260,6 +266,48 @@ fn render_view(l: &Layer) -> Layer {
 }
 
 impl BelowCache {
+    pub(crate) fn bind_mesh(&mut self, mesh: &Arc<Mesh>) {
+        if !std::ptr::eq(self.mesh.as_ptr(), mesh.as_ref()) {
+            self.clear();
+            self.borrowed_mesh_key = None;
+            self.mesh = Arc::downgrade(mesh);
+        }
+    }
+
+    pub(crate) fn bind_borrowed_mesh(&mut self, mesh: &Mesh) {
+        if std::ptr::eq(self.mesh.as_ptr(), mesh) {
+            return;
+        }
+
+        // A borrow alone cannot distinguish in-place edits or reuse of the same address
+        let mut key = DefaultHasher::new();
+        for attribute in [&mesh.positions, &mesh.normals] {
+            attribute.len().hash(&mut key);
+            for value in attribute {
+                value.to_array().map(f32::to_bits).hash(&mut key);
+            }
+        }
+        mesh.tangents.len().hash(&mut key);
+        for value in &mesh.tangents {
+            value.to_array().map(f32::to_bits).hash(&mut key);
+        }
+        mesh.uvs.len().hash(&mut key);
+        for value in &mesh.uvs {
+            value.to_array().map(f32::to_bits).hash(&mut key);
+        }
+        mesh.indices.hash(&mut key);
+        for part in &mesh.submeshes {
+            (&part.name, part.start, part.count, part.material).hash(&mut key);
+        }
+
+        let key = key.finish();
+        if self.borrowed_mesh_key != Some(key) {
+            self.clear();
+            self.mesh = Weak::new();
+            self.borrowed_mesh_key = Some(key);
+        }
+    }
+
     /// Cache the stack around `hot` from now on (a different layer empties the cache).
     pub fn set_hot(&mut self, hot: Option<LayerId>) {
         if self.hot != hot {

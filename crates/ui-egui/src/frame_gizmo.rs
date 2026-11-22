@@ -104,7 +104,7 @@ impl FrameGizmo {
 
         let placed = placed_from_axis(projection, app.viewport_mesh_bounds.get(&app.session.mesh));
 
-        // Where the projection lands: a projector's own turn and scale moved into the frame, as the panel's 3D projection settings show it
+        // Match the panel by folding the projector transform into the frame first
         let landed = folded(placed.as_ref().unwrap_or(projection))?;
         let decal = *landed.frame()?;
         let warp = match projection {
@@ -299,7 +299,9 @@ impl Gizmo for FrameGizmo {
             }
             FrameGrab::Corner(corner) => {
                 let mut corners = self.warp?;
-                *corners.get_mut(corner)? = self.on_plane(app, rect, to)?;
+                let dragged_corner = *self.corners.get(corner)? + delta;
+                *corners.get_mut(corner)? = self.on_plane(app, rect, dragged_corner)?;
+
                 return Some(("layer.fill.projection", json!({"layer": self.layer.0, "warpCorners": corners})));
             }
         };
@@ -379,9 +381,8 @@ const OUTLINE_GAP: f32 = 4.0;
 
 /// A gizmo's dashed outline through `points`, light over a dark shadow so it reads on any model
 pub(crate) fn dashed_outline(painter: &egui::Painter, points: &[Pos2]) {
-    for stroke in [Stroke::new(OUTLINE_SHADOW_WIDTH, OUTLINE_SHADOW), Stroke::new(OUTLINE_WIDTH, OUTLINE_COLOR)] {
-        painter.add(egui::Shape::dashed_line(points, stroke, OUTLINE_DASH, OUTLINE_GAP));
-    }
+    let strokes = [Stroke::new(OUTLINE_SHADOW_WIDTH, OUTLINE_SHADOW), Stroke::new(OUTLINE_WIDTH, OUTLINE_COLOR)];
+    crate::viewport::paint_dashed_outline(painter, points, OUTLINE_DASH, OUTLINE_GAP, strokes);
 }
 
 /// An arrow head's half width, as a share of its length
@@ -530,6 +531,7 @@ pub(crate) mod tests {
         // Repeating three times across the mesh, the frame is smaller than the ball
         let (mut harness, layer) = fill_app_with(json!({"projection": "planar", "scale": 3}));
         let axis = gizmo(&harness);
+
         assert!(matches!(projection(&harness, layer), Projection::Planar { placed: None, .. }), "a new planar projects along its axis");
         assert!(axis.warp.is_none() && axis.arrows.iter().all(Option::is_some), "a planar frame with its three arrows: {axis:?}");
 
@@ -558,6 +560,7 @@ pub(crate) mod tests {
         let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut harness, layer) = fill_app("warp");
         let warp = gizmo(&harness);
+
         assert_eq!(warp.warp, Some(Projection::FRAME_CORNERS));
 
         let to = warp.corners[1] + vec2(-40.0, 30.0);
@@ -566,6 +569,22 @@ pub(crate) mod tests {
         assert_eq!((frame, corners[0], corners[2], corners[3]), (warp.decal, [-0.5, 0.5], [0.5, -0.5], [-0.5, -0.5]), "only that corner moves");
         assert!(corners[1][0] < 0.45 && corners[1][1] < 0.45, "top right pulled in: {corners:?}");
         assert!(gizmo(&harness).corners[1].distance(to) < 1.5, "the corner sits under the pointer");
+    }
+
+    #[test]
+    fn grabbing_the_side_of_a_warp_corner_does_not_snap_it_to_the_pointer() {
+        let (mut harness, _) = fill_app("warp");
+        let warp = gizmo(&harness);
+        let corner = warp.corners[1];
+        let press = corner + vec2(6.0, 2.0);
+        let movement = vec2(-40.0, 30.0);
+
+        assert_eq!(warp.grab(press), Some(FrameGrab::Corner(1)));
+
+        drag(&mut harness, press, press + movement, Modifiers::NONE);
+
+        let moved = gizmo(&harness).corners[1];
+        assert!(moved.distance(corner + movement) < 1.5, "the original grab offset is kept: {moved:?}");
     }
 
     /// A move that arrives in the same frame as the release still moves the corner: it ends under the pointer, not one step short
@@ -605,6 +624,7 @@ pub(crate) mod tests {
             drag(&mut harness, tip, tip + along * 25.0, Modifiers::NONE);
 
             let moved = gizmo(&harness);
+
             assert!(
                 (moved.center - start.center).dot(along) > 15.0,
                 "arrow {axis}: the centre follows the pointer along it: {:?} -> {:?}",
@@ -641,6 +661,7 @@ pub(crate) mod tests {
             let pointer = sweep(on_ring - start.center, quarter - start.center);
             let corner = sweep(start.corners[1] - start.center, turned.corners[1] - turned.center);
             let off = (corner - pointer + 180.0).rem_euclid(360.0) - 180.0;
+
             assert!(off.abs() < 6.0, "{kind}: the frame turns a quarter with the pointer: corner {corner}°, pointer {pointer}°");
             assert!(turned.center.distance(start.center) < 1.0, "{kind}: round its centre");
             assert_eq!(harness.state().session.history_labels().len(), steps + 1, "{kind}: one undo step");
@@ -762,6 +783,7 @@ pub(crate) mod tests {
     #[test]
     fn an_axis_planar_reading_a_pattern_has_no_frame() {
         let (mut harness, layer) = fill_app("planar");
+
         assert!(FrameGizmo::of(harness.state(), harness.state().viewport_rect).is_some(), "a uniform fill places as its frame");
 
         harness.state_mut().run("layer.fill.set", json!({"layer": layer.0, "channel": "roughness", "procedural": "Checker"})).unwrap();
@@ -813,6 +835,7 @@ pub(crate) mod tests {
         let shown = gizmo(&harness);
         let eye = harness.get_by_label("Hide projection gizmos").rect();
         let projection_row = harness.get_by_label("Planar projection").rect();
+
         assert!(eye.left() > projection_row.right() && (eye.center().y - projection_row.center().y).abs() < 0.5, "the eye ends the Projection row");
 
         click(&mut harness, eye.center());
@@ -846,6 +869,7 @@ pub(crate) mod tests {
         let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         for projection in ["uv", "triplanar", "spherical", "cylindrical"] {
             let (harness, _) = fill_app(projection);
+
             assert!(FrameGizmo::of(harness.state(), harness.state().viewport_rect).is_none(), "{projection}");
         }
     }
@@ -934,7 +958,7 @@ pub(crate) mod tests {
         harness.run_steps(3);
         harness.render().unwrap().save(directory.join("sync-sphere-mid-drag.png")).unwrap();
 
-        // The round projections with their fill selected: the shape round it, a ring hovered (a sphere: its one dot; a cylinder: its height arrow)
+        // Show the sphere size dot and cylinder height arrow on selected round projectors
         for kind in ["triplanar", "spherical", "cylindrical"] {
             let (mut harness, layer) = fill_app_rendered(json!({"projection": kind}), true);
             checker(&mut harness, layer);

@@ -19,18 +19,30 @@ pub fn resource_name(alpha: &LibraryAlpha) -> String {
     texturecraft_formats::sanitize_resource_name(&format!("{PREFIX}{}{EXTENSION}", alpha.id))
 }
 
-/// The library alpha resource `name` holds, if it is one (library ids are safe resource names already, so a name is matched without building one)
+/// Matches a reserved library name, including numbered alternatives for projects with a pre-existing import.
 pub fn library_alpha_of(name: &str) -> Option<&'static LibraryAlpha> {
     let id = name.strip_prefix(PREFIX)?.strip_suffix(EXTENSION)?;
+    let id = id.rsplit_once('.').map_or(id, |(id, discriminator)| if discriminator.parse::<usize>().is_ok() { id } else { "" });
     alphas::library().iter().find(|alpha| alpha.id == id)
 }
 
 impl Session {
+    /// A resource identified as a generated library picture when it was added or decoded.
+    pub fn library_alpha(&self, name: &str) -> Option<&'static LibraryAlpha> {
+        if self.library_alphas.contains(name) { library_alpha_of(name) } else { None }
+    }
+
     /// Puts library alpha `alpha` in the project as an image resource unless it is there already, inside the caller's edit; returns its name
     pub(crate) fn add_library_alpha(&mut self, alpha: &LibraryAlpha) -> Result<String> {
-        let name = resource_name(alpha);
-        if self.doc.resources.contains_key(&name) {
-            return Ok(name);
+        let mut name = resource_name(alpha);
+        let mut discriminator = 2;
+        while self.doc.resources.contains_key(&name) {
+            if self.library_alpha(&name).is_some() {
+                return Ok(name);
+            }
+
+            name = format!("{PREFIX}{}.{discriminator}{EXTENSION}", alpha.id);
+            discriminator += 1;
         }
 
         let bytes = png(alpha)?;
@@ -38,9 +50,24 @@ impl Session {
 
         self.doc.resources.insert(name.clone(), Arc::new(bytes));
         self.images.insert(name.clone(), decoded(image));
+        self.library_alphas.insert(name.clone());
 
         Ok(name)
     }
+}
+
+/// Recognize legacy generated pixels without treating a same-named import as a library picture.
+pub(crate) fn matches_saved_picture(name: &str, image: &texturecraft_formats::DecodedImage) -> bool {
+    let Some(alpha) = library_alpha_of(name) else { return false };
+    if image.width as usize != alphas::BASE || image.height as usize != alphas::BASE || !image.srgb {
+        return false;
+    }
+
+    let samples = alpha.render(alphas::BASE, SUPERSAMPLING);
+    samples.len() == image.rgba.len()
+        && samples.into_iter().zip(&image.rgba).all(|(sample, &[red, green, blue, opacity])| {
+            opacity == 1.0 && red == green && red == blue && texturecraft_texel::to_u16(red) == texturecraft_texel::to_u16(sample)
+        })
 }
 
 /// The alpha's picture as a 16-bit grayscale PNG at the library's base size

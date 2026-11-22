@@ -108,13 +108,14 @@ impl Default for HeightMask {
 }
 
 impl HeightMask {
-    /// The mask `m` combined with height `h` (see [`HeightMask`]).
-    pub fn apply(&self, m: f32, h: f32) -> f32 {
-        if !self.enabled || !h.is_finite() {
-            return m;
+    /// Combines a mask value with height (see [`HeightMask`]).
+    pub fn apply(&self, mask: f32, height: f32) -> f32 {
+        if !self.enabled || !height.is_finite() {
+            return mask;
         }
 
-        (m + self.contrast * 4.0 * m * (1.0 - m) * (h + self.offset)).clamp(0.0, 1.0)
+        // The height response peaks at the mask midpoint and vanishes at both ends
+        (mask + self.contrast * 4.0 * mask * (1.0 - mask) * (height + self.offset)).clamp(0.0, 1.0)
     }
 }
 

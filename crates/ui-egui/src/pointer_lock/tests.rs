@@ -39,6 +39,7 @@ fn scrub_past_the_edge(harness: &mut Harness<'static, Vec2>) -> SystemPointer {
 fn a_put_back_pointer_never_reaches_the_edge_and_comes_back_where_the_press_began() {
     let mut harness = scrub_strip(Hold::PutBack);
     let mut pointer = scrub_past_the_edge(&mut harness);
+
     assert!(pointer.put_backs >= 30, "the pointer went back after every move: {}", pointer.put_backs);
     assert!(pointer.at.distance(PRESS) < 1.0, "it never strayed from the press: {:?}", pointer.at);
 
@@ -78,6 +79,7 @@ fn a_folded_put_back_counts_every_move_from_the_press() {
 fn a_locked_pointer_reads_raw_motion_and_is_let_go_where_the_press_began() {
     let mut harness = scrub_strip(Hold::Locked);
     let mut pointer = scrub_past_the_edge(&mut harness);
+
     assert!(pointer.locked, "the system holds the pointer");
     assert_eq!(pointer.at, PRESS, "it never moved");
 

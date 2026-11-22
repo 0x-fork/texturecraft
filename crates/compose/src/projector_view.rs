@@ -3,7 +3,7 @@
 use texturecraft_core::{Decal, Projection, Projector};
 use texturecraft_geom::glam::{Vec2, Vec3};
 
-use crate::pattern::{Coords, frame_local, mesh_frame, projector_local};
+use crate::pattern::{Coords, frame_local, mesh_frame, nonzero_stretch, projector_local};
 
 /// The view of a depth-culled planar or warp projection: points in it run across, up and towards the projector
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -50,8 +50,8 @@ impl ProjectorView {
     /// The mesh radius in the view's nearness units
     pub fn unit(&self) -> f32 {
         match self {
-            ProjectorView::Axis { .. } => 1.0,
-            ProjectorView::Frame { radius, .. } => *radius,
+            ProjectorView::Axis { axis, projector, .. } => 1.0 / nonzero_stretch(projector.scale[usize::from((*axis).min(2))]).abs(),
+            ProjectorView::Frame { projector, radius, .. } => radius / nonzero_stretch(projector.scale[2]).abs(),
         }
     }
 }
