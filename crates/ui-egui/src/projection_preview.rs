@@ -17,6 +17,7 @@ use texturecraft_engine::geom::glam::{Vec2, Vec3, Vec4};
 use rayon::prelude::*;
 
 use crate::projector_outline::ProjectorOutline;
+use crate::slot_thumbnail::FULL_UV;
 use crate::theme::Tokens;
 
 mod preview_shape;

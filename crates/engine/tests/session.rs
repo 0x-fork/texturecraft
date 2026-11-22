@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use texturecraft_engine::core::Channel;
+use texturecraft_engine::geom::glam::Vec2;
 use texturecraft_engine::geom::primitives;
 use texturecraft_engine::{Session, command_specs, execute};
 
@@ -184,6 +185,24 @@ fn polygon_fill_and_color_picker() {
 }
 
 #[test]
+fn color_at_reads_the_surface_without_changing_the_brush() {
+    let mut s = session();
+    execute(&mut s, "tool.material", &json!({"channel": "roughness", "value": 0.9})).unwrap();
+    execute(&mut s, "tool.polygonFill", &Value::Null).unwrap();
+    execute(&mut s, "tool.fillMode", &json!({"mode": "mesh"})).unwrap();
+    execute(&mut s, "tool.click", &json!({"x": 200, "y": 200})).unwrap();
+    execute(&mut s, "tool.material", &json!({"channel": "roughness", "value": 0.2})).unwrap();
+    let viewport = s.viewport;
+
+    let read = s.color_at(Vec2::new(200.0, 200.0), viewport).unwrap();
+
+    let surface = read.get(&Channel::Roughness).unwrap();
+    assert!((surface[0] - 0.9).abs() < 0.01, "{surface:?}");
+    let brush = s.tool.values.get(&Channel::Roughness).unwrap();
+    assert!((brush[0] - 0.2).abs() < 0.01, "the brush keeps its own value: {brush:?}");
+}
+
+#[test]
 fn polygon_fill_boxes_survive_hostile_params() {
     let hostile = [
         json!({"x0": 1e30, "y0": -1e30, "x1": f64::MAX, "y1": 0, "viewport": [1e9, 1e9]}),
@@ -245,6 +264,56 @@ fn panic_hunt() {
             s.update();
         }
     }
+}
+
+/// A 4 × 4 gray PNG, the image the hunted decals project
+fn gray_png() -> Vec<u8> {
+    let mut out = Vec::new();
+    image::RgbaImage::from_pixel(4, 4, image::Rgba([128, 128, 128, 255])).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+    out
+}
+
+#[test]
+fn panic_hunt_frames_and_transforms() {
+    let mut s = session();
+    let image = s.import_resource_bytes("gray.png", gray_png()).unwrap();
+    let planar = execute(&mut s, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+    execute(&mut s, "layer.fill.projection", &json!({"layer": planar, "projection": "planar"})).unwrap();
+    let warp = execute(&mut s, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();
+    execute(&mut s, "layer.fill.projection", &json!({"layer": warp, "projection": "warp"})).unwrap();
+    let decal = execute(&mut s, "layer.add.decal", &json!({"image": image, "channel": "mask", "position": [0, 0, 1], "normal": [0, 0, 1]})).unwrap();
+    let mask_effect = decal["maskEffect"].as_u64().unwrap();
+    s.update();
+
+    let hostile_values =
+        [json!(1e30), json!(-1e30), json!(0), json!(null), json!("x"), json!([]), json!([1e30, -1e30]), json!([0, 0, 0]), json!([-1e30, 1e30, 0, 5])];
+    let targets = [json!({"layer": planar}), json!({"layer": warp}), json!({"effect": mask_effect})];
+    let keys = ["frameOffset", "frameRotation", "frameScale", "size", "offset", "depth", "rotation", "up"];
+    for target in &targets {
+        for key in keys {
+            for value in &hostile_values {
+                let mut params = target.clone();
+                params[key] = value.clone();
+                hunt_refused_changes_nothing(&mut s, "layer.decal.set", &params);
+            }
+        }
+    }
+
+    for target in &targets {
+        for command in ["layer.fill.resetFrame", "layer.fill.resetProjection"] {
+            let _ = execute(&mut s, command, target);
+            s.update();
+        }
+    }
+}
+
+/// Run `command` with `params` and render; refused, it must leave the project and the undo history as they were
+fn hunt_refused_changes_nothing(s: &mut Session, command: &str, params: &Value) {
+    let (before, steps) = (s.doc.project.clone(), s.history_labels().len());
+    if execute(s, command, params).is_err() {
+        assert!(s.doc.project == before && s.history_labels().len() == steps, "a refused {command} {params} changes nothing");
+    }
+    s.update();
 }
 
 /// A colour param is `[r, g, b]` in linear 0..1 or `"#rrggbb"` in sRGB, and the same digits differ
@@ -871,4 +940,20 @@ fn blending_set_gives_each_channel_its_own_mode_and_opacity_in_one_undo_step() {
     }
     execute(&mut s, "layer.blending.set", &json!({"layer": layer, "channels": {"baseColor": {"opacity": 2.0}, "roughness": {"opacity": -1.0}}})).unwrap();
     assert_eq!((read(&s)[&Channel::BaseColor].opacity, read(&s)[&Channel::Roughness].opacity), (1.0, 0.0), "opacity is clamped");
+}
+
+#[test]
+fn a_new_session_forgets_the_projector_depth_maps_built_before_it() {
+    use texturecraft_engine::compose::projector_depth::ProjectorDepth;
+    use texturecraft_engine::core::{Projection, Projector, UvTransform};
+
+    let mesh = primitives::sphere(1.0, 16, 8);
+    let projection =
+        Projection::Planar { scale: 1.0, axis: 2, offset: [0.0; 3], uv: UvTransform::default(), projector: Projector::depth_culled(), placed: None };
+    let built = ProjectorDepth::of(&mesh, mesh.bounds(), &projection).unwrap();
+
+    Session::new_project("t", primitives::sphere(1.0, 16, 8), "builtin:sphere", None, 128).unwrap();
+
+    let after = ProjectorDepth::of(&mesh, mesh.bounds(), &projection).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&built, &after), "a mesh sharing the old one's fingerprint must not take its map");
 }
