@@ -7,9 +7,12 @@ use std::collections::BTreeMap;
 use texturecraft_compose::{
     BelowCache, Composite, Inputs, MaskGray, PaintTarget, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached,
 };
+use texturecraft_core::project::ENV_RESOURCE_PREFIX;
 use texturecraft_core::{
     BakedMap, BlendMode, Channel, ColorSelection, CompareOp, CompareSource, ContentsOffset, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind,
     HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
+    GrayscaleConversion, HeightMask, ImageInput, Layer, LayerId, LayerKind, Mask, MaskBackground, Procedural, ProceduralKind, Project, Projection, Source,
+    TextureSet,
 };
 use texturecraft_geom::{Mesh, UvGBuffer, primitives};
 use texturecraft_texel::{TILE, TileImage, to_u16};
@@ -69,7 +72,7 @@ fn heavy_stack(f: &mut Fixture) -> LayerId {
     );
     let mut mask = Mask::new(MaskBackground::Black);
     mask.effects.push(effect(f, EffectKind::Generator(Generator::new(GeneratorKind::Position))));
-    mask.effects.push(effect(f, EffectKind::Filter(Filter::Blur { radius: 40.0 })));
+    mask.effects.push(effect(f, EffectKind::Filter(Filter::Blur { radius: 40.0, wrap: false })));
     add(f, 0, fill(&[(Channel::Roughness, procedural(ProceduralKind::Grunge, 0.0, 1.0))]), Some(mask));
     let group = add(f, 0, LayerKind::Group { children: vec![], collapsed: false, contents: Default::default(), randomized: Vec::new() }, None);
     for b in f.project.layer_mut(group).unwrap().channels.values_mut() {
@@ -83,7 +86,7 @@ fn heavy_stack(f: &mut Fixture) -> LayerId {
         f,
         EffectKind::Fill { source: procedural(ProceduralKind::Checker, 0.0, 1.0), projection: Projection::default(), sampling: Default::default() },
     ));
-    blurred.effects.push(effect(f, EffectKind::Filter(Filter::Blur { radius: 24.0 })));
+    blurred.effects.push(effect(f, EffectKind::Filter(Filter::Blur { radius: 24.0, wrap: false })));
     let top = add(f, 0, LayerKind::Paint, Some(blurred));
     let img = f.pixels.layer_mut(top, Channel::BaseColor, (RES, RES));
     for y in 40..200 {
@@ -248,7 +251,7 @@ fn generator_mask(f: &mut Fixture, kind: GeneratorKind, blur: Option<f32>) -> Ma
     let mut mask = Mask::new(MaskBackground::Black);
     mask.effects.push(effect(f, EffectKind::Generator(g)));
     if let Some(radius) = blur {
-        mask.effects.push(effect(f, EffectKind::Filter(Filter::Blur { radius })));
+        mask.effects.push(effect(f, EffectKind::Filter(Filter::Blur { radius, wrap: false })));
     }
     mask
 }
@@ -312,8 +315,8 @@ fn nested_stack(f: &mut Fixture) -> Nested {
     blend(f, g2_above, BlendMode::Overlay, 0.7);
     put(f, 0, Some(g2), LayerKind::Instance { source: base }, Some(Mask::new(MaskBackground::White)));
     let g1_above = put(f, 0, Some(g1), fill(&[(Channel::BaseColor, procedural(ProceduralKind::Wood, 0.2, 0.8))]), None);
-    let hsl = effect(f, EffectKind::Filter(Filter::Hsl { hue: 0.2, saturation: 0.1, lightness: 0.0 }));
-    let blur = effect(f, EffectKind::Filter(Filter::Blur { radius: 20.0 }));
+    let hsl = effect(f, EffectKind::Filter(Filter::Hsl { hue: 0.2, saturation: 0.1, lightness: 0.0, perceptive: false }));
+    let blur = effect(f, EffectKind::Filter(Filter::Blur { radius: 20.0, wrap: false }));
     f.project.layer_mut(g1_above).unwrap().content_effects.extend([hsl, blur]);
     blend(f, g1_above, BlendMode::Screen, 0.5);
     let mask = generator_mask(f, GeneratorKind::Position, Some(30.0));
@@ -544,7 +547,7 @@ fn anchors_inside_a_content_stack_record_the_content_up_to_them() {
     assert!(check_cached(&f, 0, top).is_empty(), "anchor readers evaluate everything");
 
     // Behind a blur the cut reads the filtered field; before it, the unfiltered content
-    let blur = effect(&mut f, EffectKind::Filter(Filter::Blur { radius: 30.0 }));
+    let blur = effect(&mut f, EffectKind::Filter(Filter::Blur { radius: 30.0, wrap: false }));
     f.project.layer_mut(low).unwrap().content_effects.insert(0, blur);
     let blurred = reference(&f, 0);
     assert!((blurred.value(Channel::Roughness, 128, 128)[0] - 0.2).abs() < 2e-3, "a flat height stays flat");
@@ -572,12 +575,12 @@ fn gathering_filters_composite_identically_in_any_grouping_and_cached() {
         &mut f,
         EffectKind::Fill { source: procedural(ProceduralKind::Checker, 0.0, 1.0), projection: Projection::default(), sampling: Default::default() },
     ));
-    slope.effects.push(effect(&mut f, EffectKind::Filter(Filter::SlopeBlur { radius: 24.0, scale: 3.0, seed: 1 })));
+    slope.effects.push(effect(&mut f, EffectKind::Filter(Filter::SlopeBlur { radius: 24.0, scale: 3.0, seed: 1, divider: 1 })));
     let streaks = add(&mut f, 0, fill(&[(Channel::Metallic, procedural(ProceduralKind::Stripes, 0.0, 1.0))]), Some(slope));
     let top = add(&mut f, 0, LayerKind::Paint, None);
     paint_rect(&mut f, top, (30, 40), (150, 100), 0.4);
     let plain = reference(&f, 0);
-    let warp = effect(&mut f, EffectKind::Filter(Filter::Warp { intensity: 30.0, scale: 4.0, seed: 3 }));
+    let warp = effect(&mut f, EffectKind::Filter(Filter::Warp { intensity: 30.0, scale: 4.0, seed: 3, divider: 1 }));
     f.project.layer_mut(base).unwrap().content_effects.push(warp);
     let line = effect(&mut f, EffectKind::Filter(Filter::DirectionalBlur { radius: 40.0, angle: 30.0 }));
     f.project.layer_mut(streaks).unwrap().content_effects.push(line);
@@ -671,6 +674,7 @@ fn kept_filter_fields_are_not_used_after_an_edit_or_under_a_live_stroke() {
     let mask = fixture.project.layer_mut(top).unwrap().mask.as_mut().unwrap();
     let blur = mask.effects.iter_mut().find(|effect| matches!(effect.kind, EffectKind::Filter(Filter::Blur { .. }))).unwrap();
     blur.kind = EffectKind::Filter(Filter::Blur { radius: 6.0 });
+    blur.kind = EffectKind::Filter(Filter::Blur { radius: 6.0, wrap: false });
     let (images, baked) = (Default::default(), Default::default());
     cache.ahead = Vec::new();
     composite_tiles_cached(&inputs(&fixture, 0, &images, &baked), &mut out, &all, Some(&mut cache));
@@ -709,7 +713,7 @@ fn tiles_the_cache_drops_during_a_kept_run_are_filtered_again() {
         &mut fixture,
         EffectKind::Fill { source: procedural(ProceduralKind::Checker, 0.0, 1.0), projection: Projection::default(), sampling: Default::default() },
     ));
-    blurred.effects.push(effect(&mut fixture, EffectKind::Filter(Filter::Blur { radius: 40.0 })));
+    blurred.effects.push(effect(&mut fixture, EffectKind::Filter(Filter::Blur { radius: 40.0, wrap: false })));
     add(&mut fixture, 0, fill(&[(Channel::Roughness, procedural(ProceduralKind::Grunge, 0.0, 1.0))]), Some(blurred));
 
     // Keep the blurred layer visible under the hot layer
@@ -958,22 +962,58 @@ fn flat_image(value: f32) -> std::sync::Arc<texturecraft_compose::ImageRes> {
 
 #[test]
 fn id_map_image_changes_invalidate_stack_key() {
+fn filter_input_and_id_map_image_changes_invalidate_stack_key() {
     let mut fixture = fixture();
     heavy_stack(&mut fixture);
     let bottom_layer = fixture.project.texture_sets[0].stack[0];
+    let conversion = GrayscaleConversion { custom_input: true, ..GrayscaleConversion::LIBRARY };
+    let mut filter = effect(&mut fixture, EffectKind::Filter(Filter::GrayscaleConversion(conversion)));
+    filter.inputs.insert(ImageInput::CUSTOM_INPUT.id.into(), Source::image("input"));
     let mut selection = ColorSelection::new(vec![[1.0, 0.0, 0.0]], 0.1);
     selection.id_map = Some("id".into());
     let selection = effect(&mut fixture, EffectKind::ColorSelection(selection));
     let layer = fixture.project.layer_mut(bottom_layer).unwrap();
+    layer.content_effects.push(filter);
     layer.mask = Some(Mask::new(MaskBackground::White));
     layer.mask.as_mut().unwrap().effects.push(selection);
     let mut images = texturecraft_compose::ImageStore::default();
+    images.insert("input".into(), flat_image(0.1));
     images.insert("id".into(), flat_image(0.1));
 
-    let original = stack_key(&fixture, &images);
     images.insert("id".into(), flat_image(0.9));
+    for name in ["input", "id"] {
+        let original = stack_key(&fixture, &images);
+        images.insert(name.into(), flat_image(0.9));
+        assert!(stack_key(&fixture, &images) != original, "replacing the {name} image must invalidate the cache");
+    }
+}
 
     assert!(stack_key(&fixture, &images) != original, "replacing the id image must invalidate the cache");
+#[test]
+fn the_environment_keys_the_stack_only_while_environment_lighting_reads_it() {
+    let mut fixture = fixture();
+    heavy_stack(&mut fixture);
+    let bottom_layer = fixture.project.texture_sets[0].stack[0];
+    let mut images = texturecraft_compose::ImageStore::default();
+    images.insert("sky".into(), flat_image(0.5));
+    fixture.project.display.environment = format!("{ENV_RESOURCE_PREFIX}sky");
+    let unlit = stack_key(&fixture, &images);
+
+    fixture.project.display.env_rotation += 90.0;
+    assert_eq!(stack_key(&fixture, &images), unlit, "without Baked Lighting Environment the turn changes nothing");
+
+    let lighting =
+        Filter::EnvironmentLighting { horizontal: 0.0, vertical: 0.0, exposure: 0.0, height_intensity: 0.0, ambient_occlusion: 0.0, specular_occlusion: 0.0 };
+    let lighting = effect(&mut fixture, EffectKind::Filter(lighting));
+    fixture.project.layer_mut(bottom_layer).unwrap().content_effects.push(lighting);
+    let lit = stack_key(&fixture, &images);
+    fixture.project.display.env_rotation += 90.0;
+    let turned = stack_key(&fixture, &images);
+    assert!(turned != lit, "turning the environment invalidates the cache");
+    assert_eq!(lit.changed_tiles(&turned), None, "and recomposites every tile");
+
+    images.insert("sky".into(), flat_image(0.9));
+    assert!(stack_key(&fixture, &images) != turned, "replacing the environment image invalidates the cache");
 }
 
 /// Where a blur lies on the layer inside the instanced folder
@@ -988,6 +1028,7 @@ fn folder_of_blurred_clouds(f: &mut Fixture, ts: usize, folder: Option<LayerId>,
     let held = put(f, ts, folder, LayerKind::Group { children: vec![], collapsed: false, contents: Default::default(), randomized: Vec::new() }, None);
     let clouds = put(f, ts, Some(held), fill(&[(Channel::BaseColor, procedural(ProceduralKind::Clouds, 0.1, 0.9))]), None);
     let blur = effect(f, EffectKind::Filter(Filter::Blur { radius: 8.0 }));
+    let blur = effect(f, EffectKind::Filter(Filter::Blur { radius: 8.0, wrap: false }));
     match blur_on {
         BlurOn::Content => f.project.layer_mut(clouds).unwrap().content_effects.push(blur),
         BlurOn::Mask => {

@@ -51,12 +51,10 @@ pub(crate) fn images_used(project: &Project, id: LayerId, out: &mut Vec<String>,
             out.extend(link.outputs.values().cloned());
         }
     }
-
     for effect in layer.mask.iter().flat_map(|mask| mask.effects.iter()).chain(&layer.content_effects) {
-        out.extend(effect.kind.images_read().map(str::to_string));
+        out.extend(effect.images_read().map(str::to_string));
         out.extend(crate::path_tool::path_images(&effect.kind));
     }
-
     for child in layer.children() {
         images_used(project, *child, out, depth + 1);
     }

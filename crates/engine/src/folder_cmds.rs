@@ -217,6 +217,8 @@ fn layer_seeds(layer: &mut Layer) -> Vec<&mut u32> {
             EffectKind::Material(fill) => seeds.extend(fill.sources.values_mut().filter_map(source_seed)),
             EffectKind::Generator(generator) => seeds.push(&mut generator.seed),
             EffectKind::Filter(Filter::Warp { seed, .. } | Filter::SlopeBlur { seed, .. } | Filter::DirectionalWarp { seed, .. }) => seeds.push(seed),
+            EffectKind::Filter(Filter::SourceWarp(warp)) => seeds.push(&mut warp.seed),
+            EffectKind::Filter(Filter::SourceSlopeBlur(slope)) => seeds.push(&mut slope.seed),
             _ => {}
         }
     }
@@ -236,6 +238,10 @@ fn seed_count(layer: &Layer) -> usize {
             EffectKind::Fill { source, .. } => usize::from(matches!(source, Source::Procedural { .. })),
             EffectKind::Material(fill) => fill_seeds(fill),
             EffectKind::Generator(_) | EffectKind::Filter(Filter::Warp { .. } | Filter::SlopeBlur { .. } | Filter::DirectionalWarp { .. }) => 1,
+            EffectKind::Generator(_)
+            | EffectKind::Filter(
+                Filter::Warp { .. } | Filter::SlopeBlur { .. } | Filter::DirectionalWarp { .. } | Filter::SourceWarp(_) | Filter::SourceSlopeBlur(_),
+            ) => 1,
             _ => 0,
         })
         .sum();

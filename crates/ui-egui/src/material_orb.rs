@@ -5,6 +5,7 @@
 use egui::{Color32, ColorImage, Painter, Rect, pos2};
 use rayon::prelude::*;
 use texturecraft_engine::core::Channel;
+use texturecraft_engine::core::{Channel, DIELECTRIC_REFLECTANCE};
 use texturecraft_engine::geom::glam::Vec3;
 use texturecraft_engine::texel::linear_to_srgb;
 
@@ -125,6 +126,7 @@ fn shade(material: &OrbMaterial, env: &OrbEnvironment, direction: Vec3, pixel: f
     for (channel, value) in out.iter_mut().enumerate() {
         let base = sample.base[channel].clamp(0.0, 1.0);
         let f0 = DIELECTRIC_F0 + (base - DIELECTRIC_F0) * metallic;
+        let f0 = DIELECTRIC_REFLECTANCE + (base - DIELECTRIC_REFLECTANCE) * metallic;
         let specular = f0 * scale + bias;
         *value = diffuse_light[channel] * base * (1.0 - metallic) * (1.0 - specular) + specular_light[channel] * specular + sample.emissive[channel].max(0.0);
     }

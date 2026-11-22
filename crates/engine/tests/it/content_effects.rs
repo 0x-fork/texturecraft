@@ -33,54 +33,39 @@ fn id(reply: Value, key: &str) -> u64 {
 fn content_effects_commands_inspect_and_round_trip() {
     let mut s = session();
     let layer = id(execute(&mut s, "layer.add.fill", &json!({"color": [1.0, 0.0, 0.0], "roughness": 0.2})).unwrap(), "layer");
-    let hsl = id(execute(&mut s, "effect.add.filter", &json!({"target": "content", "filter": "hsl", "hue": 1.0 / 3.0})).unwrap(), "effect");
-
+    let hsl = id(execute(&mut s, "effect.add.filter", &json!({"target": "content", "filter": "hsl", "mode": "regular", "hue": 1.0 / 3.0})).unwrap(), "effect");
     assert!(close(center(&mut s, Channel::BaseColor), [0.0, 1.0, 0.0]), "{:?}", center(&mut s, Channel::BaseColor));
     assert!(s.doc.project.layer(LayerId(layer)).unwrap().mask.is_none(), "content effects don't create a mask");
     assert_eq!(s.target, StackTarget::Effect(LayerId(hsl)));
-    // Mask-only effects refuse the content, unknown targets are errors
+    // Mask-only effects refuse the content, unknown targets are errors.
     assert!(execute(&mut s, "effect.add.generator", &json!({"target": "content"})).is_err());
     assert!(execute(&mut s, "effect.add.filter", &json!({"target": "nope"})).is_err());
-
     execute(&mut s, "effect.set", &json!({"effect": hsl, "hue": 0.0, "lightness": -1.0})).unwrap();
-
     assert!(close(center(&mut s, Channel::BaseColor), [0.0; 3]));
-
     execute(&mut s, "effect.set", &json!({"effect": hsl, "visible": false})).unwrap();
 
-    // A content fill effect, edited through layer.fill.set
+    // A content fill effect, edited through layer.fill.set.
     let fill = id(execute(&mut s, "effect.add.fill", &json!({"target": "content", "roughness": 0.7})).unwrap(), "effect");
-
     assert!(close(center(&mut s, Channel::Roughness), [0.7; 3]));
     assert!(close(center(&mut s, Channel::BaseColor), [1.0, 0.0, 0.0]), "channels without a source stay");
-
     execute(&mut s, "layer.fill.set", &json!({"effect": fill, "channel": "roughness", "value": 0.9})).unwrap();
-
     assert!(close(center(&mut s, Channel::Roughness), [0.9; 3]));
-
     execute(&mut s, "layer.fill.set", &json!({"effect": fill, "channel": "roughness", "enabled": false})).unwrap();
-
     assert!(close(center(&mut s, Channel::Roughness), [0.2; 3]));
     assert!(execute(&mut s, "layer.fill.set", &json!({"effect": hsl, "channel": "roughness", "value": 0.5})).is_err(), "not a fill effect");
 
-    // Inspect shows the content stack; the project survives a save/load round trip
+    // Inspect shows the content stack; the project survives a save/load round trip.
     let inspect = execute(&mut s, "project.inspect", &Value::Null).unwrap();
     let row = inspect["layers"].as_array().unwrap().iter().find(|row| row["id"] == layer).unwrap().clone();
     let kinds: Vec<&str> = row["contentEffects"].as_array().unwrap().iter().map(|effect| effect["kind"].as_str().unwrap()).collect();
-
     assert_eq!(kinds, ["HSL Perceptive", "Fill"], "{row}");
-
     let back = Session::from_project_bytes(&s.to_project_bytes().unwrap()).unwrap();
-
     assert_eq!(back.doc.project, s.doc.project);
 
     execute(&mut s, "layer.select", &json!({"layer": layer, "target": fill})).unwrap();
     execute(&mut s, "effect.remove", &json!({"effect": fill})).unwrap();
-
     assert_eq!(s.target, StackTarget::Content);
-
     execute(&mut s, "edit.undo", &Value::Null).unwrap();
-
     assert_eq!(s.doc.project.layer(LayerId(layer)).unwrap().content_effects.len(), 2);
 }
 
