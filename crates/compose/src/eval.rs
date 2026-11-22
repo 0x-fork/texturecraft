@@ -1532,10 +1532,11 @@ fn filter_region(
         .par_iter()
         .map(|&(tile_x, tile_y)| {
             // A base colour lit by its material below the filter lights it as the full render does
-            let lit_layer = if lit_prefix { plan(inputs, &[id], channels, tile_x, tile_y, 0, Some(below)).into_iter().find(|node| node.lights) } else { None };
+            let lit_layer =
+                if lit_prefix { plan_in(inputs, &[id], channels, tile_x, tile_y, 0, Some(below), around).into_iter().find(|node| node.lights) } else { None };
             let anchor_nodes = below_plan(inputs, id, channels, (tile_x, tile_y), Some(below), lit_layer.is_some());
             let preview_tile = inputs.preview.and_then(|preview| preview.alpha.tile(tile_x, tile_y));
-            let height_nodes = if heights { plan(inputs, &[id], &[Channel::Height], tile_x, tile_y, 0, Some(below)) } else { Vec::new() };
+            let height_nodes = if heights { plan_in(inputs, &[id], &[Channel::Height], tile_x, tile_y, 0, Some(below), around) } else { Vec::new() };
             let mut mask = None;
             let mut nodes = Vec::new();
             let mut generator_sizes = None;
@@ -6039,7 +6040,10 @@ soft {soft:?}"
 
         let shared = shared_histogram_fields(&inputs, &channels, &all_tiles(64, 64));
 
-        assert!(shared.is_some_and(|fields| fields.contains_key(&FieldKey::Content(id, Channel::BaseColor))), "every sampled tile reads one field");
+        assert!(
+            shared.is_some_and(|fields| fields.contains_key(&FieldKey::content(id, Channel::BaseColor, ContentsOffset::NONE))),
+            "every sampled tile reads one field"
+        );
     }
 
     #[test]
