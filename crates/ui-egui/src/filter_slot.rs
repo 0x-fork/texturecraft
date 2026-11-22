@@ -8,11 +8,13 @@ use texturecraft_engine::filter_lib::{filter_effects, find};
 
 use crate::TextureCraftApp;
 use crate::i18n::tr;
+use crate::picker_group::PickerGroup;
+use crate::picker_tab::PickerTab;
 use crate::resource_picker;
 use crate::resource_picker_item::ResourcePickerItem;
-use crate::shelf_preview::ShelfPreview;
 use crate::theme::Tokens;
 use crate::thumbs::Thumbs;
+use crate::tile_picture::TilePicture;
 use crate::widgets::elided;
 
 pub(crate) const SLOT_HEIGHT: f32 = 52.0;
@@ -50,12 +52,9 @@ pub(crate) fn show(app: &mut TextureCraftApp, ui: &mut Ui, effect: u64, filter: 
     let highlighted = response.hovered() || egui::Popup::is_id_open(&ctx, popup);
     paint(ui, rect, (highlighted, response.has_focus()), thumbnail.as_ref().map(egui::TextureHandle::id), (tr("Filter"), name));
 
-    let items = |thumbs: &mut Thumbs| {
-        filter_effects()
-            .iter()
-            .filter(|def| def.mask || !on_mask)
-            .map(|def| ResourcePickerItem { id: def.id, label: tr(def.label), group: tr(def.group), thumbnail: thumbs.filter(&ctx, def.id) })
-            .collect()
+    let tabs = |thumbs: &mut Thumbs| {
+            }
+        }
     };
     let picked = resource_picker::show(&response, popup, &mut app.thumbs, current, items, ShelfPreview::Filter);
     if let Some(id) = picked.filter(|id| Some(*id) != current) {
