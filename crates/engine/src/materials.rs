@@ -842,6 +842,7 @@ pub fn apply_at(s: &mut Session, id: &str, place: Place) -> Result<LayerId> {
         } else {
             let folder_id = s.doc.project.alloc_id();
             let mut folder = Layer::new(folder_id, material.label, LayerKind::Group { children: Vec::new(), collapsed: false }, &channels);
+            let mut folder = Layer::new(folder_id, material.label, LayerKind::folder(), &channels);
             for blend in folder.channels.values_mut() {
                 *blend = ChannelBlend { mode: BlendMode::Passthrough, opacity: 1.0 };
             }

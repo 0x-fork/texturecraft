@@ -60,9 +60,21 @@ pub(crate) fn show(app: &mut TextureCraftApp, ui: &mut Ui, effect: u64, filter: 
             match groups.last_mut() {
                 Some(group) if group.header == Some(tr(def.group)) => group.items.push(item),
                 _ => groups.push(PickerGroup { header: Some(tr(def.group)), items: vec![item] }),
-            }
-        }
         vec![PickerTab { icon: ic::FUNNEL, name: tr("Filter"), groups }]
+        let mut items: Vec<ResourcePickerItem<&'static str>> = filter_effects()
+            .iter()
+            .filter(|def| def.mask || !on_mask)
+            .map(|def| ResourcePickerItem {
+                id: def.id,
+                label: tr(def.label).to_owned(),
+                caption: None,
+                picture: TilePicture::Texture(thumbs.filter(&ctx, def.id)),
+            })
+            .collect();
+
+        // One kind of resource: one grid in name order, no group captions
+        items.sort_by_cached_key(|item| item.label.to_lowercase());
+        vec![PickerTab { icon: ic::FUNNEL, name: tr("Filters"), groups: vec![PickerGroup { header: None, items }] }]
     };
     let picked = resource_picker::show(&response, popup, &mut app.thumbs, current.as_ref(), current.is_some(), tabs);
     if let Some(id) = picked.filter(|id| Some(*id) != current) {

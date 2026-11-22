@@ -9,6 +9,8 @@ use crate::i18n::tr;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SourceSlot {
     Channel(Channel),
+    /// A mask fill's source, read as gray 0..1
+    Grayscale,
 }
 
 impl SourceSlot {
@@ -16,6 +18,7 @@ impl SourceSlot {
     pub(crate) fn name(self) -> &'static str {
         match self {
             SourceSlot::Channel(channel) => tr(channel.label()),
+            SourceSlot::Grayscale => tr("Grayscale"),
         }
     }
 
@@ -27,9 +30,11 @@ impl SourceSlot {
     }
 
     /// The value Uniform and the slot's × give it
+    /// The value Uniform and the slot's × give it: a new mask fill's white for a grayscale
     pub(crate) fn default_value(self) -> [f32; 3] {
         match self {
             SourceSlot::Channel(channel) => channel.default_value(),
+            SourceSlot::Grayscale => [1.0; 3],
         }
     }
 
@@ -39,6 +44,7 @@ impl SourceSlot {
     }
 
     /// A procedural's two ends when it is picked: a softer part of the channel's range
+    /// A procedural's two ends when it is picked: a gray fill spans the whole range, a channel a softer part of it
     pub(crate) fn procedural_ends(self) -> ([f32; 3], [f32; 3]) {
         /// Base color stays off pure black and white, which read as unlit or blown out
         const BASE_COLOR_ENDS: ([f32; 3], [f32; 3]) = ([0.15; 3], [0.85; 3]);
@@ -57,9 +63,11 @@ impl SourceSlot {
     }
 
     /// The fill command's fields naming the slot
+    /// The fill command's fields naming the slot (a grayscale has no channel)
     pub(crate) fn fields(self) -> Value {
         match self {
             SourceSlot::Channel(channel) => json!({"channel": channel.id()}),
+            SourceSlot::Grayscale => json!({}),
         }
     }
 
@@ -67,6 +75,7 @@ impl SourceSlot {
     pub(crate) fn key(self) -> &'static str {
         match self {
             SourceSlot::Channel(channel) => channel.id(),
+            SourceSlot::Grayscale => "grayscale",
         }
     }
 }

@@ -276,6 +276,7 @@ impl PropertySheet<'_> {
 
         if dice_response.clicked() {
             *seed = next_seed(*seed);
+            *seed = texturecraft_engine::folder_cmds::next_seed(*seed);
             changed = true;
         }
         changed
