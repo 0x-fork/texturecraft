@@ -62,6 +62,28 @@ content-only filters. `filter.list` lists the available IDs; levels and material
 must be added separately with `effect.add.filter`. A successful replacement is one undo step;
 a rejected replacement changes nothing.
 
+Warp (`warp`) and Blur Slope (`blurSlope`) work on layer content or masks. Use these IDs with
+`effect.add.filter` and `effect.set`, including when replacing a saved filter. They share
+normalized `intensity` (0..1), `divider` (1, 10, 100, 1000), and `seed`.
+
+- Warp accepts `warpMode: "warp" | "directional" | "multiDirectional"`. The directional
+  modes take `angle` in degrees. Multidirectional Warp also takes `directions` (1, 2, 4)
+  and `blendingMode: "average" | "min" | "max" | "chain"`.
+- Blur Slope accepts `blendingMode: "blur" | "min" | "max"` and normalized `quality` (0..1).
+- Both take `sourceMode: "defaultNoise" | "previousInput" | "customNoise"`, normalized
+  `sourceBlur`, `sourceBalance` and `sourceContrast`, and `sourceTiling` (0.01..16).
+  Source Tiling sets the noise frequency or repeats a sampled source within each UV tile.
+  In Custom Noise mode, set the grayscale source through `layer.fill.set
+  {effect, input: "customNoise", ...}`. Blur Slope can read an anchor through that slot.
+
+For directional Warp, use `effect.add.filter {target: "content", filter: "warp",
+warpMode: "directional", angle: 45, intensity: 0.05, divider: 1}`. To replace that effect,
+use `effect.set {effect, filter: "blurSlope", quality: 0.5}`.
+
+This changes the automation contract. `warp` uses normalized intensity, and the
+`warpDirectional` and `slopeBlur` selectors return an unknown-filter error. Saved filter
+settings still load as stored. Restore Defaults applies to the current catalog entries.
+
 `edit.undo {steps?}` and `edit.redo {steps?}` go back or forward several steps at once (as far
 as the history reaches); `edit.history` lists the steps done and the undone ones, next first. Step names are English; a stroke is named by tool and layer (`Paint on Rust`,
 `Clone on Rust`, `Erase mask of Rust`).
@@ -589,13 +611,16 @@ with `material.apply` instead. The command rejects linked MaterialCraft fills. T
 - `effect.blending.modeToEveryChannel`, `opacityToEveryChannel` and `bothToEveryChannel {effect?, channel?}`
   give every channel of a content effect one channel's blend mode, opacity or both; `effect.blending.copy`
   and `effect.blending.paste {effect?}` carry every channel's blending between effects (a mask effect takes
-  the shared one). `effect.set {effect, channel, blend?, opacity?}` sets one channel's blending.
+  the shared one). `effect.set {effect, channel, blend?, opacity?}` sets one channel's blending and
+  `effect.set {effect, channels: {roughness: false}}` switches a content effect's channels on or off.
 - `mask.add.bitmap {layer?, image | alpha, projection?}` adds a mask fill reading an image's gray;
   `effect.set {effect, idMap: image resource | null}` gives a colour selection its own ID map in place of
   the baked one; `tool.material {maskImage: image resource | null}` paints an image's gray into masks.
 - `effect.add.colorSelection {layer?, color?, tolerance?}` and `mask.add.heightCombination {layer?}` add a
   colour selection or a compare mask (this layer's height against the layers below) to a layer's mask,
   making the mask first when it has none; both return `{effect}`.
+- `effect.filter.restoreDefaults {effect?}` puts a filter's parameters back to its defaults (name,
+  channels and blending stay) and returns `{changed}`.
 - `layer.fill.resetProjection {layer? | effect?}` puts the Fill section back to a new fill's (same
   projection kind; a placed frame, the symmetry and the sources stay); `layer.fill.resetFrame` puts a
   warp's frame back around the mesh with its corners unpulled. Each is one undo step, or none when

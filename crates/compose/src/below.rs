@@ -11,11 +11,11 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::{Arc, Weak};
 
 use texturecraft_core::project::MAX_DEPTH;
-use texturecraft_core::{BakedMap, Channel, EffectKind, Layer, LayerId, LayerKind, Project, Source, TextureSet};
+use texturecraft_core::{BakedMap, Channel, EffectKind, Filter, Layer, LayerId, LayerKind, Project, Source, TextureSet};
 use texturecraft_geom::Mesh;
 use texturecraft_texel::TileImage;
 
-use crate::eval::{Inputs, PaintTarget};
+use crate::eval::{Inputs, PaintTarget, lights_material};
 use crate::held_fields::HeldFields;
 use crate::image_identity::ImageIdentity;
 use crate::store::{BakedMaps, ImageStore, PixelStore};
@@ -104,6 +104,8 @@ pub struct StackKey {
     pixels: Vec<(LayerId, Option<Channel>, Shared)>,
     baked: (u32, Vec<(BakedMap, usize)>),
     images: Vec<(String, ImageIdentity)>,
+    /// The viewport environment, its rotation (bits) and its image when it is an imported one, where Baked Lighting Environment lights with them
+    environment: Option<(String, u32, Option<ImageIdentity>)>,
 }
 
 impl StackKey {
@@ -158,6 +160,8 @@ impl StackKey {
                     fill.sources.values().flat_map(Source::images).for_each(&mut record_image_name);
                 }
                 for effect in layer.mask.iter().flat_map(|mask| &mask.effects).chain(&layer.content_effects) {
+                    // A filter's image inputs, also one its mode leaves unread: that only empties the cache more often
+                    effect.inputs.values().flat_map(Source::images).for_each(&mut record_image_name);
                     match &effect.kind {
                         EffectKind::Fill { source, .. } => source.images().into_iter().for_each(&mut record_image_name),
                         EffectKind::Material(fill) => fill.sources.values().flat_map(Source::images).for_each(&mut record_image_name),
@@ -172,6 +176,16 @@ impl StackKey {
         let image_identities =
             referenced_images.into_iter().filter_map(|name| images.get(name).map(|image| (name.clone(), ImageIdentity::new(image)))).collect();
 
+        let lit = render_tree
+            .iter()
+            .filter_map(|id| project.layers.get(id))
+            .flat_map(|layer| layer.content_effects.iter())
+            .any(|effect| matches!(effect.kind, EffectKind::Filter(Filter::EnvironmentLighting { .. })));
+        let environment = lit.then(|| {
+            let image = project.display.environment_resource().and_then(|name| images.get(name)).map(ImageIdentity::new);
+            (project.display.environment.clone(), project.display.env_rotation.to_bits(), image)
+        });
+
         Some(StackKey {
             set,
             roots,
@@ -179,6 +193,7 @@ impl StackKey {
             pixels: pixel_handles,
             baked: (baked.resolution, baked.maps.iter().map(|(map, data)| (*map, Arc::as_ptr(data) as usize)).collect()),
             images: image_identities,
+            environment,
         })
     }
 }
@@ -188,7 +203,13 @@ impl StackKey {
     /// changed (same set, roots, layers, baked maps and images; the same images by id, channel
     /// and size). None when anything else differs: the caller recomposites everything.
     pub fn changed_tiles(&self, other: &StackKey) -> Option<BTreeSet<(u32, u32)>> {
-        if self.set != other.set || self.roots != other.roots || self.layers != other.layers || self.baked != other.baked || self.images != other.images {
+        if self.set != other.set
+            || self.roots != other.roots
+            || self.layers != other.layers
+            || self.baked != other.baked
+            || self.images != other.images
+            || self.environment != other.environment
+        {
             return None;
         }
 
@@ -417,8 +438,17 @@ impl BelowCache {
         let project = inp.project;
         let set = project.texture_set(inp.ts).ok()?;
 
-        // Anchor readers and compare masks reading layers depend on the stack below them
-        if project.render_tree(&set.stack).iter().any(|id| project.layers.get(id).is_some_and(Layer::reads_stack)) {
+        // Replaying cached colors would reuse the material below a lighting or validation effect
+        if project
+            .render_tree(&set.stack)
+            .iter()
+            .filter_map(|id| project.layers.get(id))
+            .any(|layer| layer.reads_stack() || layer.content_effects.iter().any(|effect| effect.visible && lights_material(&effect.kind)))
+        {
+            if self.key.is_some() {
+                self.clear();
+            }
+
             return None;
         }
 

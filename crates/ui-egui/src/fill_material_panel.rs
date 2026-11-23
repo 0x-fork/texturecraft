@@ -233,9 +233,11 @@ pub(crate) fn source_card(
         app.run("layer.fill.set", set(json!({"image": name})));
     }
 
-    // Keep mode cards together by showing only Scale and Contrast
+    // Embedded procedural slots share the surrounding mode card
     if in_card {
-        if let Source::Procedural { pattern, .. } = source {
+        if let Source::Uniform(value) = source {
+            uniform_rows(app, sheet, slot_of, value, &set);
+        } else if let Source::Procedural { pattern, .. } = source {
             let mut edited = pattern.clone();
             if let Some((key, value, merge)) = scale_and_contrast(sheet, &mut edited) {
                 let mut settings = json!({"procedural": pattern.kind.label(), "merge": merge});
@@ -426,8 +428,8 @@ fn procedural_rows(
     let mut edited = pattern.clone();
     let mut edit = scale_and_contrast(sheet, &mut edited);
 
-    // Only grayscale cards edit Balance and Seed here
-    let gray = matches!(slot_of, SourceSlot::Grayscale);
+    // Grayscale source cards show Balance and Seed alongside Scale and Contrast
+    let gray = matches!(slot_of, SourceSlot::Grayscale | SourceSlot::Input(_));
     if gray {
         edit = edit.or(balance_and_seed(sheet, &mut edited));
     }

@@ -59,11 +59,10 @@ fn filter_library_adds_every_filter_and_edits_its_parameters() {
         "gradientMap",
         "posterize",
         "clamp",
-        "slopeBlur",
+        "blurSlope",
         "matFinishGrind",
         "highPass",
         "edgeDetect",
-        "warpDirectional",
         "grayscale",
         "normalInvert",
         "bevel",
@@ -110,7 +109,7 @@ fn filter_library_adds_every_filter_and_edits_its_parameters() {
     execute(&mut s, "effect.set", &json!({"effect": post.0, "levels": 500})).unwrap();
 
     assert!(s.doc.project.layer(layer).unwrap().mask.as_ref().is_some_and(|m| m.effects.iter().any(|e| e.id == post)));
-    assert!(matches!(s.doc.project.effect(post).unwrap().1.kind, EffectKind::Filter(Filter::Posterize { levels }) if levels == 64.0));
+    assert!(matches!(s.doc.project.effect(post).unwrap().1.kind, EffectKind::Filter(Filter::Posterize { levels, .. }) if levels == 64.0));
 
     // Material finishes also write roughness and height
     let fin = id(execute(&mut s, "effect.add.filter", &json!({"filter": "MatFinish Hammered"})).unwrap(), "effect");
@@ -122,9 +121,9 @@ fn filter_library_adds_every_filter_and_edits_its_parameters() {
     // Exercise neighbourhood filters on curved geometry
     for (fid, extra) in [
         ("blurDirectional", json!({"radius": 40, "angle": 45})),
-        ("slopeBlur", json!({"radius": 30})),
-        ("warp", json!({"intensity": 50})),
-        ("warpDirectional", json!({"intensity": 50, "angle": 30})),
+        ("blurSlope", json!({"intensity": 0.5, "divider": 1})),
+        ("warp", json!({"intensity": 0.05})),
+        ("warp", json!({"warpMode": "directional", "intensity": 0.05, "angle": 30})),
         ("highPass", json!({"radius": 20})),
         ("edgeDetect", json!({"width": 4})),
         ("bevel", json!({"width": 20})),

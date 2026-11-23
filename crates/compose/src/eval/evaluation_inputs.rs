@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
-use texturecraft_core::{FillSymmetry, LayerId, Project, Projection, Sampling};
+use texturecraft_core::{FillSymmetry, Filter, LayerId, PreparedGradient, Project, Projection, Sampling};
 
 use super::Inputs;
 use crate::ProjectorDepthCache;
+use crate::environment_sh::EnvironmentSh;
 use crate::fill_depth::FillDepth;
 use crate::pattern::mesh_frame;
 use crate::projector_depth_cache::ViewDepth;
@@ -17,13 +18,33 @@ const MAX_EVALUATION_VIEWS: usize = 10;
 pub(super) struct EvaluationInputs<'a> {
     inputs: &'a Inputs<'a>,
     projectors: &'a ProjectorDepthCache,
+    environment: OnceLock<EnvironmentSh>,
     instance_draws: OnceLock<HashMap<(usize, LayerId), usize>>,
     depth_maps: Mutex<Vec<ViewDepth>>,
+    gradients: Mutex<HashMap<usize, Arc<PreparedGradient>>>,
 }
 
 impl<'a> EvaluationInputs<'a> {
     pub(super) fn new(inputs: &'a Inputs<'a>, projectors: &'a ProjectorDepthCache) -> Self {
-        Self { inputs, projectors, instance_draws: OnceLock::new(), depth_maps: Mutex::new(Vec::new()) }
+        Self {
+            inputs,
+            projectors,
+            environment: OnceLock::new(),
+            instance_draws: OnceLock::new(),
+            depth_maps: Mutex::new(Vec::new()),
+            gradients: Mutex::default(),
+        }
+    }
+
+    pub(super) fn environment(&self) -> EnvironmentSh {
+        if let Some(environment) = self.environment.get() {
+            return *environment;
+        }
+
+        // Rayon may enter another plan while taking samples for the first one
+        let environment = EnvironmentSh::of(&self.project.display, self.images);
+        let _ = self.environment.set(environment);
+        environment
     }
 
     /// Each path through nested folder instances gets a stable identity within an evaluation.
@@ -64,6 +85,23 @@ impl<'a> EvaluationInputs<'a> {
         let depth = self.projectors.get(self.mesh, key);
         depth_maps.push((key, depth.clone()));
         depth
+    }
+
+    pub(super) fn gradient(&self, filter: &'a Filter) -> Option<Arc<PreparedGradient>> {
+        if !matches!(filter, Filter::GradientMap { linear: false, .. }) {
+            return None;
+        }
+
+        // The borrowed project keeps filter addresses stable for this evaluation
+        let key = std::ptr::from_ref(filter) as usize;
+        let mut gradients = self.gradients.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(prepared) = gradients.get(&key) {
+            return Some(Arc::clone(prepared));
+        }
+
+        let prepared = Arc::new(PreparedGradient::of(filter)?);
+        gradients.insert(key, Arc::clone(&prepared));
+        Some(prepared)
     }
 }
 

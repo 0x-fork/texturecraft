@@ -33,7 +33,6 @@ mod fill_projection_rows;
 mod fill_support;
 mod fill_symmetry_rows;
 mod filter_picker;
-mod filter_support;
 mod folder_properties;
 mod frame_selection;
 mod generator_panel;
@@ -66,6 +65,7 @@ mod pen_pressure;
 mod polygon_fill;
 mod popup_press_close;
 mod project_config;
+mod properties_lists;
 mod properties_min_width;
 mod properties_popup;
 mod properties_scroll;
@@ -101,6 +101,16 @@ mod view2d_tiles;
 mod view_mode_picker;
 mod window_menu_684;
 
+mod filter_card;
+mod filter_colour;
+mod filter_gradient;
+mod filter_inputs;
+mod filter_light;
+mod filter_shape;
+mod filter_simple;
+mod filter_stylize;
+mod filter_support;
+mod filter_transform;
 mod stencil;
 mod symmetry;
 mod symmetry_2d;
@@ -166,6 +176,8 @@ fn assert_list_leaves_the_wheel_and_closes(harness: &mut Harness<'_, TextureCraf
     assert!(!egui::Popup::is_any_open(&harness.ctx), "Escape closes the list");
 
     let button = open(harness);
+    assert!(egui::Popup::is_any_open(&harness.ctx), "the list reopens before the outside click");
+
     click_at(harness, egui::pos2(button.min.x - OUTSIDE_OFFSET, button.min.y));
     assert!(!egui::Popup::is_any_open(&harness.ctx), "a click outside closes the list");
 }

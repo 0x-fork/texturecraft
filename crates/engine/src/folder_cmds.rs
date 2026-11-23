@@ -153,7 +153,7 @@ fn randomize_seeds(s: &mut Session, p: &Value) -> Result<Value> {
             for (index, (target, seed)) in (0u32..).zip(seeds) {
                 let before = originals.get(&target).filter(|record| record.after == *seed).map_or(*seed, |record| record.before);
                 let after = next_seed(*seed ^ key);
-                randomized.push(RandomizedSeed { layer: *id, target: Some(target), index, before, after });
+                randomized.push(RandomizedSeed { layer: *id, target: Some((target.0, target.1)), input: target.2, index, before, after });
                 *seed = after;
             }
         }
@@ -164,7 +164,7 @@ fn randomize_seeds(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({ "seeds": seeds }))
 }
 
-type SeedTarget = (LayerId, Option<Channel>);
+type SeedTarget = (LayerId, Option<Channel>, Option<String>);
 
 fn take_seed_records(project: &mut Project, folder: LayerId) -> HashMap<LayerId, Vec<RandomizedSeed>> {
     let mut by_layer = HashMap::<_, Vec<_>>::new();
@@ -180,7 +180,10 @@ fn original_seeds<'a>(seeds: &[(SeedTarget, &mut u32)], records: &'a [Randomized
         .iter()
         .filter_map(|record| {
             // Old records identified a seed by its position in the layer
-            let target = record.target.or_else(|| seeds.get(record.index as usize).map(|(target, _)| *target))?;
+            let target = record
+                .target
+                .map(|(id, channel)| (id, channel, record.input.clone()))
+                .or_else(|| seeds.get(record.index as usize).map(|(target, _)| target.clone()))?;
             Some((target, record))
         })
         .collect()
@@ -224,22 +227,36 @@ fn layer_seeds(layer: &mut Layer) -> Vec<(SeedTarget, &mut u32)> {
     let Layer { id, kind, content_effects, mask, .. } = layer;
     let mut seeds = Vec::new();
     if let LayerKind::Fill(fill) = kind {
-        seeds.extend(fill.sources.iter_mut().filter_map(|(&channel, source)| Some(((*id, Some(channel)), source_seed(source)?))));
+        seeds.extend(fill.sources.iter_mut().filter_map(|(&channel, source)| Some(((*id, Some(channel), None), source_seed(source)?))));
     }
+
+    let mut inputs = Vec::new();
     let effects = content_effects.iter_mut().chain(mask.iter_mut().flat_map(|mask| mask.effects.iter_mut()));
     for effect in effects {
+        if matches!(effect.kind, EffectKind::Filter(_)) {
+            inputs.extend(effect.inputs.iter_mut().filter_map(|(name, source)| {
+                let seed = source_seed(source)?;
+                Some(((effect.id, None, Some(name.clone())), seed))
+            }));
+        }
+
         match &mut effect.kind {
-            EffectKind::Fill { source, .. } => seeds.extend(source_seed(source).map(|seed| ((effect.id, None), seed))),
+            EffectKind::Fill { source, .. } => seeds.extend(source_seed(source).map(|seed| ((effect.id, None, None), seed))),
             EffectKind::Material(fill) => {
-                seeds.extend(fill.sources.iter_mut().filter_map(|(&channel, source)| Some(((effect.id, Some(channel)), source_seed(source)?))))
+                seeds.extend(fill.sources.iter_mut().filter_map(|(&channel, source)| Some(((effect.id, Some(channel), None), source_seed(source)?))))
             }
-            EffectKind::Generator(generator) => seeds.push(((effect.id, None), &mut generator.seed)),
+            EffectKind::Generator(generator) => seeds.push(((effect.id, None, None), &mut generator.seed)),
             EffectKind::Filter(Filter::Warp { seed, .. } | Filter::SlopeBlur { seed, .. } | Filter::DirectionalWarp { seed, .. }) => {
-                seeds.push(((effect.id, None), seed))
+                seeds.push(((effect.id, None, None), seed))
             }
+            EffectKind::Filter(Filter::SourceWarp(warp)) => seeds.push(((effect.id, None, None), &mut warp.seed)),
+            EffectKind::Filter(Filter::SourceSlopeBlur(slope)) => seeds.push(((effect.id, None, None), &mut slope.seed)),
             _ => {}
         }
     }
+
+    // Legacy positional records count only the layer and effect seeds
+    seeds.extend(inputs);
     seeds
 }
 
@@ -252,11 +269,23 @@ fn seed_count(layer: &Layer) -> usize {
     };
     let effects = layer.content_effects.iter().chain(layer.mask.iter().flat_map(|mask| mask.effects.iter()));
     let effect_seeds: usize = effects
-        .map(|effect| match &effect.kind {
-            EffectKind::Fill { source, .. } => usize::from(matches!(source, Source::Procedural { .. })),
-            EffectKind::Material(fill) => fill_seeds(fill),
-            EffectKind::Generator(_) | EffectKind::Filter(Filter::Warp { .. } | Filter::SlopeBlur { .. } | Filter::DirectionalWarp { .. }) => 1,
-            _ => 0,
+        .map(|effect| {
+            let inputs = if matches!(effect.kind, EffectKind::Filter(_)) {
+                effect.inputs.values().filter(|source| matches!(source, Source::Procedural { .. })).count()
+            } else {
+                0
+            };
+
+            inputs
+                + match &effect.kind {
+                    EffectKind::Fill { source, .. } => usize::from(matches!(source, Source::Procedural { .. })),
+                    EffectKind::Material(fill) => fill_seeds(fill),
+                    EffectKind::Generator(_)
+                    | EffectKind::Filter(
+                        Filter::Warp { .. } | Filter::SlopeBlur { .. } | Filter::DirectionalWarp { .. } | Filter::SourceWarp(_) | Filter::SourceSlopeBlur(_),
+                    ) => 1,
+                    _ => 0,
+                }
         })
         .sum();
     own + effect_seeds

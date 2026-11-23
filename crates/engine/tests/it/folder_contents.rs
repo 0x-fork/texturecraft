@@ -129,6 +129,27 @@ fn randomize_seeds_gives_every_pattern_inside_a_new_seed_in_one_undo_step() {
     assert_eq!(s.history_labels().len(), steps);
 }
 
+#[test]
+fn reset_restores_a_procedural_filter_input_by_name_after_reopening() {
+    let (mut session, folder, fill) = folder_with_fill();
+    let filter = id(execute(&mut session, "effect.add.filter", &json!({"layer": fill.0, "target": "content", "filter": "colorMatch"})).unwrap(), "effect");
+    for (slot, seed) in [("input", 23), ("imageInput", 41)] {
+        execute(&mut session, "layer.fill.set", &json!({"effect": filter.0, "input": slot, "procedural": "Clouds", "seed": seed})).unwrap();
+    }
+    let seed = |session: &Session, slot: &str| match &session.doc.project.effect(filter).unwrap().1.inputs[slot] {
+        Source::Procedural { pattern, .. } => pattern.seed,
+        other => panic!("expected procedural input, got {other:?}"),
+    };
+
+    execute(&mut session, "folder.randomizeSeeds", &json!({"layer": folder.0})).unwrap();
+    assert_ne!(seed(&session, "imageInput"), 41);
+    execute(&mut session, "layer.fill.set", &json!({"effect": filter.0, "input": "input", "clear": true})).unwrap();
+    session.doc.project = serde_json::from_slice(&serde_json::to_vec(&session.doc.project).unwrap()).unwrap();
+    execute(&mut session, "folder.contents.reset", &json!({"layer": folder.0})).unwrap();
+
+    assert_eq!(seed(&session, "imageInput"), 41);
+}
+
 /// The seeds of fill layer `id`'s base color and roughness patterns and of its mask's warp filter
 fn fill_seeds(s: &Session, id: LayerId) -> (u32, u32, u32) {
     let layer = s.doc.project.layer(id).unwrap();
@@ -138,7 +159,7 @@ fn fill_seeds(s: &Session, id: LayerId) -> (u32, u32, u32) {
         other => panic!("not a pattern: {other:?}"),
     };
     let warp = layer.mask.as_ref().unwrap().effects.iter().find_map(|effect| match effect.kind {
-        EffectKind::Filter(Filter::Warp { seed, .. }) => Some(seed),
+        EffectKind::Filter(Filter::SourceWarp(warp)) => Some(warp.seed),
         _ => None,
     });
     (pattern(Channel::BaseColor), pattern(Channel::Roughness), warp.unwrap())
@@ -213,8 +234,8 @@ fn reset_restores_original_effects_after_a_randomized_effect_is_duplicated() {
     let duplicate = |session: &mut Session| id(execute(session, "effect.duplicate", &json!({"effect": original.0})).unwrap(), "effect");
     let second = duplicate(&mut session);
     let seed = |session: &Session, effect| match session.doc.project.effect(effect).unwrap().1.kind {
-        EffectKind::Filter(Filter::Warp { seed, .. }) => seed,
-        _ => panic!("expected warp"),
+        EffectKind::Filter(Filter::SourceWarp(warp)) => warp.seed,
+        _ => panic!("expected a library Warp filter"),
     };
     let before = seed(&session, original);
     execute(&mut session, "folder.randomizeSeeds", &json!({"layer": folder.0})).unwrap();
