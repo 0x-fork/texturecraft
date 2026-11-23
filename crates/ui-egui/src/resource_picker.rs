@@ -98,7 +98,7 @@ pub(crate) fn show<K: Clone + PartialEq>(
     thumbs: &mut Thumbs,
     current: Option<&K>,
     reveal_current: bool,
-    tabs: impl FnOnce(&mut Thumbs) -> Vec<PickerTab<K>>,
+    tabs: impl FnOnce() -> Vec<PickerTab<K>>,
 ) -> Option<K> {
     let ctx = slot.ctx.clone();
     if !egui::Popup::is_id_open(&ctx, popup_id) {
@@ -106,7 +106,7 @@ pub(crate) fn show<K: Clone + PartialEq>(
     }
 
     let tokens = Tokens::get(&ctx);
-    let tabs = tabs(thumbs);
+    let tabs = tabs();
     let width = slot.rect.width() - 2.0 * BORDER;
     let frame = Frame::NONE
         .fill(tokens.panel)
@@ -114,7 +114,7 @@ pub(crate) fn show<K: Clone + PartialEq>(
         .corner_radius(CornerRadius::same(POPUP_ROUNDING))
         .shadow(Shadow { offset: SHADOW_OFFSET, blur: 0, spread: 0, color: HARD_SHADOW });
 
-    // Always its full size, under the slot or above it where the window ends first; only a window too short for it anywhere gets a shorter grid
+    // Shorten the grid only when it cannot fit above or below the slot
     let head = if tabs.len() > 1 { STRIP_HEIGHT } else { 0.0 } + SEARCH_ROW;
     let room = ctx.content_rect().height() - head - BOTTOM - 2.0 * BORDER - 2.0 * WINDOW_MARGIN;
     let grid_height = room.clamp(ROW_HEIGHT, GRID_HEIGHT);
@@ -382,9 +382,11 @@ fn tile_ui<K>(ui: &mut Ui, thumbs: &mut Thumbs, rect: Rect, (place, item): (usiz
     let picture = Rect::from_min_size(pos2(rect.center().x - PICTURE_SIZE / 2.0, rect.top() + PICTURE_TOP), vec2(PICTURE_SIZE, PICTURE_SIZE));
     let rounding = CornerRadius::same(PICTURE_ROUNDING);
 
-    // A project image's or a pattern's thumbnail is made only once its tile is drawn
+    // Offscreen tiles must leave the thumbnail budget available to visible tiles
     let texture = match &item.picture {
-        TilePicture::Texture(texture) => texture.clone(),
+        TilePicture::Material(id) => thumbs.material(ui.ctx(), id),
+        TilePicture::Filter(id) => thumbs.filter(ui.ctx(), id),
+        TilePicture::Alpha(alpha) => thumbs.alpha(ui.ctx(), alpha),
         TilePicture::Image(name, image) => Some(thumbs.image(ui.ctx(), name, image)),
         TilePicture::Procedural(kind) => thumbs.procedural(ui.ctx(), *kind),
         TilePicture::Swatch(_) | TilePicture::Glyph(_) | TilePicture::Import => None,
@@ -394,7 +396,7 @@ fn tile_ui<K>(ui: &mut Ui, thumbs: &mut Thumbs, rect: Rect, (place, item): (usiz
         (_, Some(texture)) => {
             egui::Image::from_texture((texture.id(), picture.size())).corner_radius(rounding).paint_at(ui, picture);
         }
-        (TilePicture::Texture(_) | TilePicture::Image(..) | TilePicture::Procedural(_), None) => {
+        (TilePicture::Material(_) | TilePicture::Filter(_) | TilePicture::Alpha(_) | TilePicture::Image(..) | TilePicture::Procedural(_), None) => {
             painter.text(
                 picture.center(),
                 Align2::CENTER_CENTER,

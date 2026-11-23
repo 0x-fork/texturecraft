@@ -71,19 +71,14 @@ impl PropertySheet<'_> {
         }
     }
 
-    /// One value's parts on lettered signed sliders (Axis position X, Y): the label on the first row, each part's axis letter in its colour; returns the part edited and whether it merges
-    pub(crate) fn lettered_sliders(
-        &mut self,
-        label: &str,
-        parts: &mut [(&str, Color32, f32)],
-        range: RangeInclusive<f32>,
-        decimals: usize,
-    ) -> Option<(usize, bool)> {
+    /// Draw lettered sliders and report whether their combined edit continues the previous undo step.
+    pub(crate) fn lettered_sliders(&mut self, label: &str, parts: &mut [(&str, Color32, f32)], range: RangeInclusive<f32>, decimals: usize) -> Option<bool> {
         let (control, first) = self.row(label);
         let extra = parts.len().saturating_sub(1) as f32 * PART_LINE;
         if extra > 0.0 {
             self.take(extra);
         }
+
         let mut edit = None;
         for (index, (letter, color, value)) in parts.iter_mut().enumerate() {
             let center_y = first + index as f32 * PART_LINE;
@@ -94,15 +89,16 @@ impl PropertySheet<'_> {
             let dragged = self.track(id, name, &track, value, &range);
             let typed = self.value_field(id, name, center_y, *value, &range, decimals, "");
             if let Some(merge) = Self::apply_typed(value, typed, dragged) {
-                edit = Some((index, merge));
+                edit = Some(edit.unwrap_or(true) && merge);
             }
             self.drawn(center_y + super::CONTROL_HEIGHT / 2.0);
         }
+
         edit
     }
 
-    /// A picture at the left edge beside captioned sliders in the controls column, as tall as their stack; returns the slider edited and whether it merges
-    pub(crate) fn picture_sliders(&mut self, picture: &dyn Fn(&Painter, Rect), sliders: &mut [StackSlider<'_>]) -> Option<(usize, bool)> {
+    /// Draw a picture beside captioned sliders and report the edit on each slider.
+    pub(crate) fn picture_sliders<const N: usize>(&mut self, picture: &dyn Fn(&Painter, Rect), sliders: &mut [StackSlider<'_>; N]) -> [Option<bool>; N] {
         let count = sliders.len().max(1) as f32;
         let height = count * (STACK_CAPTION_LINE + STACK_PART_LINE) + (count - 1.0) * STACK_GAP;
         self.space(BLOCK_MARGIN);
@@ -113,9 +109,9 @@ impl PropertySheet<'_> {
         picture(self.ui.painter(), square);
         self.ui.painter().rect_stroke(square, 0, Stroke::new(1.0, self.tokens.field_border), StrokeKind::Inside);
 
-        let mut edit = None;
+        let mut edits = [None; N];
         let mut y = block.top();
-        for (index, slider) in sliders.iter_mut().enumerate() {
+        for (edit, slider) in edits.iter_mut().zip(sliders) {
             let dim = self.tokens.text_dim;
             let caption = pos2(x0, y + STACK_CAPTION_LINE / 2.0);
             self.ui.painter().text(caption, Align2::LEFT_CENTER, slider.label, FontId::proportional(SMALL_TEXT_SIZE), dim);
@@ -124,13 +120,12 @@ impl PropertySheet<'_> {
             let track = Track { start: x0 + KNOB_RADIUS, end: self.track_end(), center_y, zero: None, ramp: false };
             let dragged = self.track(id, slider.label, &track, slider.value, &slider.range);
             let typed = self.value_field(id, slider.label, center_y, *slider.value, &slider.typed, slider.decimals, slider.suffix);
-            if let Some(merge) = Self::apply_typed(slider.value, typed, dragged) {
-                edit = Some((index, merge));
-            }
+            *edit = Self::apply_typed(slider.value, typed, dragged);
             y += STACK_CAPTION_LINE + STACK_PART_LINE + STACK_GAP;
         }
+
         self.drawn(square.bottom().max(block.bottom() - STACK_PART_LINE / 2.0 + KNOB_RADIUS));
         self.space(BLOCK_MARGIN);
-        edit
+        edits
     }
 }

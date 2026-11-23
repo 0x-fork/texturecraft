@@ -56,9 +56,34 @@ fn each_projection_shows_its_own_rows() {
     let (harness, _) = app_with_fill("triplanar");
     assert!(shows(&harness, "Hardness") && !shows(&harness, "UV Wrap") && !shows(&harness, "Backface culling"));
 
-    let (harness, _) = app_with_fill("uvTile");
+    let (mut harness, layer) = app_with_fill("uvTile");
     assert!(shows(&harness, "Fill (Match per UV Tile)"));
-    assert!(!shows(&harness, "Rotation") && !shows(&harness, "Filtering and edges"), "per UV tile there is nothing to place");
+    assert!(!shows(&harness, "Rotation"), "per UV tile there is nothing to place");
+    assert!(shows(&harness, "Filtering and edges"));
+
+    let at = harness.get_by_role_and_label(egui::Role::ComboBox, "Bilinear | HQ").rect().center();
+    click_at(&mut harness, at);
+    harness.run_steps(SETTLE_FRAMES);
+    click_label(&mut harness, "Nearest");
+
+    assert_eq!(fill(&harness, layer).sampling.filtering, texturecraft_engine::core::Filtering::Nearest);
+}
+
+#[test]
+fn changing_one_physical_size_preserves_the_other_axes_tiling() {
+    let (mut harness, layer) = app_with_fill("planar");
+    let tiling = [1.23456, 2.34567];
+    harness.state_mut().run("layer.fill.projection", json!({"layer": layer, "tiling": tiling}));
+    harness.run_steps(SETTLE_FRAMES);
+    click_label(&mut harness, "Physical size");
+
+    let track = harness.get_by_role_and_label(egui::Role::Slider, "Size (cm)").rect();
+    click_at(&mut harness, track.center());
+
+    let Projection::Planar { uv, .. } = projection(&harness, layer) else { panic!("still planar") };
+
+    assert_ne!(uv.tiling[0], tiling[0]);
+    assert_eq!(uv.tiling[1], tiling[1]);
 }
 
 #[test]
@@ -67,6 +92,7 @@ fn culling_toggles_change_the_projection() {
     click_label(&mut harness, "Depth culling");
     click_label(&mut harness, "Backface culling");
     let Projection::Planar { projector, .. } = projection(&harness, layer) else { panic!("still planar") };
+
     assert!(!projector.depth.on, "a new planar starts depth culled; the toggle turns it off");
     assert!(projector.backface.on);
 }
@@ -95,6 +121,7 @@ fn the_culling_rows_i_explains_the_row_on_hover_without_covering_its_values() {
     for (tip, row) in [(DEPTH_CULLING_TIP, "Depth culling"), (BACKFACE_CULLING_TIP, "Backface culling")] {
         let info = harness.get_by_label(tip).rect();
         let switch = harness.get_by_label(row).rect();
+
         assert!(info.left() >= switch.right() && (info.center().y - switch.center().y).abs() < 1.0, "{row}: the i sits at its row's end");
         assert_eq!(info.right(), panel_right, "{row}: on the panel's right edge");
         assert_eq!(harness.query_all_by_label(tip).count(), 1, "{row}: no tooltip before the hover");
@@ -128,6 +155,7 @@ fn shape_crop_sits_beside_its_label_and_a_warps_depth_explains_itself() {
     // Beside its label like Filtering, not under a stacked label at the panel's full width
     let crop = harness.get_by_label("Extends Outside Shape").rect();
     let filtering = harness.get_by_label("Bilinear | HQ").rect();
+
     assert!((crop.left() - filtering.left()).abs() < 0.5, "Shape crop's list starts on the controls column: {crop:?} vs {filtering:?}");
     assert!((crop.width() - filtering.width()).abs() < 0.5, "and is as wide as Filtering's");
 
@@ -145,6 +173,7 @@ fn shape_crop_is_picked_from_its_list() {
     click_label(&mut harness, "Extends Outside Shape");
     click_label(&mut harness, "Cropped to Shape");
     let Projection::Triplanar { projector, .. } = projection(&harness, layer) else { panic!("still tri-planar") };
+
     assert_eq!(projector.crop, ShapeCrop::Cropped);
 }
 
@@ -154,6 +183,7 @@ fn triplanar_hardness_runs_from_soft_to_the_hardest_blend() {
     let track = harness.get_by_label("Hardness").rect();
     click_at(&mut harness, egui::pos2(track.right() - 1.0, track.center().y));
     let Projection::Triplanar { sharpness, .. } = projection(&harness, layer) else { panic!("still tri-planar") };
+
     assert!(sharpness > 48.0, "Hardness 1 is the hardest blend, 64: {sharpness}");
 
     click_at(&mut harness, egui::pos2(track.left() + 1.0, track.center().y));
@@ -170,12 +200,14 @@ fn reset_frame_puts_a_warps_corners_back() {
 
     click_label(&mut harness, "Reset frame");
     let Projection::Warp { corners, .. } = projection(&harness, layer) else { panic!("still a warp") };
+
     assert_eq!(corners, Projection::FRAME_CORNERS);
 }
 
 #[test]
 fn the_3d_projection_settings_fold_away() {
     let (mut harness, _) = app_with_fill("spherical");
+
     assert!(harness.query_by_label("Scale X").is_some(), "the band starts open");
 
     click_label(&mut harness, "3D projection settings");
@@ -197,6 +229,7 @@ fn the_fill_caption_resets_the_whole_fill_section_to_its_projections_defaults_in
     // The band's reset puts back only Filtering and edges, through a real pointer click
     click_at(&mut harness, edges);
     let after_band = fill(&harness, layer);
+
     assert_eq!((after_band.sampling.filtering, crop(&after_band.projection)), (Filtering::default(), Some(ShapeCrop::default())));
     assert!(matches!(after_band.projection, Projection::Planar { .. }), "the projection stays planar");
     assert!(harness.get_by_label("Restore defaults").accesskit_node().is_disabled(), "at its defaults the band's reset is inert");

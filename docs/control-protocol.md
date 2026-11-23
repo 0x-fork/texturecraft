@@ -575,7 +575,7 @@ its Material section). `layer.fill.material {layer? | effect?, material}` sets e
 material writes from it, turns those channels on and the others off, and keeps the fill's projection;
 `material: null` returns the channels to their defaults (a content fill effect keeps the channels it
 changes, at their defaults); setting what the fill already holds adds no undo step. Smart materials (folders of layers) are added
-with `material.apply` instead. The fill remembers the material (`Fill.material`, saved only when set;
+with `material.apply` instead. The command rejects linked MaterialCraft fills. The fill remembers the material (`Fill.material`, saved only when set;
 `project.inspect` shows it as `material`) until a channel's source is set on its own with
 `layer.fill.set`. A plain material added from the shelf names its fill the same way.
 

@@ -108,13 +108,14 @@ impl Default for HeightMask {
 }
 
 impl HeightMask {
-    /// The mask `m` combined with height `h` (see [`HeightMask`]).
-    pub fn apply(&self, m: f32, h: f32) -> f32 {
-        if !self.enabled || !h.is_finite() {
-            return m;
+    /// Combines a mask value with height (see [`HeightMask`]).
+    pub fn apply(&self, mask: f32, height: f32) -> f32 {
+        if !self.enabled || !height.is_finite() {
+            return mask;
         }
 
-        (m + self.contrast * 4.0 * m * (1.0 - m) * (h + self.offset)).clamp(0.0, 1.0)
+        // The height response peaks at the mask midpoint and vanishes at both ends
+        (mask + self.contrast * 4.0 * mask * (1.0 - mask) * (height + self.offset)).clamp(0.0, 1.0)
     }
 }
 
@@ -1912,13 +1913,13 @@ mod tests {
     fn point_filters_map_values_and_skip_neighbourhood_filters() {
         let c = ChannelKind::Color;
         let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-4);
-        let cl = Filter::ContrastLuminosity { contrast: 1.0, luminosity: 0.0 };
-        assert!(close(cl.point(c, [0.25, 0.5, 0.75]).unwrap(), [0.0, 0.5, 1.0]));
+        let contrast = Filter::ContrastLuminosity { contrast: 1.0, luminosity: 0.0 };
+        assert!(close(contrast.point(c, [0.25, 0.5, 0.75]).unwrap(), [0.0, 0.5, 1.0]));
         assert!(close(Filter::ContrastLuminosity { contrast: 0.0, luminosity: 0.2 }.point(ChannelKind::Scalar, [0.5; 3]).unwrap(), [0.7; 3]));
 
-        let gm = Filter::GradientMap { colors: vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] };
-        assert!(close(gm.point(c, [0.0; 3]).unwrap(), [1.0, 0.0, 0.0]));
-        assert!(close(gm.point(c, [1.0; 3]).unwrap(), [0.0, 0.0, 1.0]));
+        let gradient_map = Filter::GradientMap { colors: vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] };
+        assert!(close(gradient_map.point(c, [0.0; 3]).unwrap(), [1.0, 0.0, 0.0]));
+        assert!(close(gradient_map.point(c, [1.0; 3]).unwrap(), [0.0, 0.0, 1.0]));
         assert_eq!(Filter::GradientMap { colors: vec![] }.point(c, [0.3; 3]), None, "an empty gradient changes nothing");
 
         assert!(close(Filter::Posterize { levels: 2.0 }.point(c, [0.2, 0.6, 0.9]).unwrap(), [0.0, 1.0, 1.0]));
@@ -1941,8 +1942,8 @@ mod tests {
         assert!(close(shift(0.0), [0.0, 0.5, 1.0]), "no offset keeps white white");
         assert!(close(shift(0.25), [0.25, 0.75, 0.25]) && close(shift(-0.25), [0.75, 0.25, 0.75]));
 
-        let cb = Filter::ColorBalance { shadows: [0.2, 0.0, 0.0], midtones: [0.0; 3], highlights: [0.0, 0.0, 0.2] };
-        assert!(cb.point(c, [0.05; 3]).unwrap()[0] > 0.2 && cb.point(c, [0.95; 3]).unwrap()[2] > 0.99);
+        let color_balance = Filter::ColorBalance { shadows: [0.2, 0.0, 0.0], midtones: [0.0; 3], highlights: [0.0, 0.0, 0.2] };
+        assert!(color_balance.point(c, [0.05; 3]).unwrap()[0] > 0.2 && color_balance.point(c, [0.95; 3]).unwrap()[2] > 0.99);
         assert!(close(Filter::Invert.point(ChannelKind::Signed, [0.5; 3]).unwrap(), [-0.5; 3]));
         assert_eq!(Filter::Invert.point(ChannelKind::NormalMap, [0.5, 0.5, 1.0]), Some([0.5, 0.5, 1.0]));
 

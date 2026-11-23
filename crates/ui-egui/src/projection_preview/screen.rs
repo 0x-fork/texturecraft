@@ -24,7 +24,8 @@ impl Screen {
 
     /// Whether `shape` hides `point` from the camera
     pub(super) fn hidden(&self, shape: PreviewShape, point: Vec3) -> bool {
-        let origin = point + self.view.eye * CAMERA_DISTANCE;
+        let camera_offset = CAMERA_DISTANCE - point.dot(self.view.eye);
+        let origin = point + self.view.eye * camera_offset;
         intersect(shape, origin, self.view.forward).is_some_and(|hit| (hit.pos - point).dot(self.view.eye) > OWN_SURFACE_DEPTH)
     }
 }

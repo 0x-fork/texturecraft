@@ -19,7 +19,7 @@ pub fn specs() -> Vec<CommandSpec> {
         "Pick ID color",
         [],
         None,
-        "{effect?: a color selection (default: the selected effect), x?, y?: viewport pixels, viewport?: [w,h] | uv?: [u,v] texture set atlas UV (the 2D view), index?: replace this color instead of adding one} → {color: [r,g,b] as the ID map stores it, index} — samples the ID mesh map under the point",
+        "{effect?: a color selection (default: the selected effect), x?, y?: viewport pixels, viewport?: [w,h] | uv?: [u,v] texture set atlas UV (the 2D view), index?: replace this color instead of adding one} → {color: [r,g,b] as the ID map stores it, index} — samples the selected ID image or the texture set’s baked ID mesh map under the point",
         has_layer,
         pick
     )]

@@ -2,13 +2,16 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::layer::LayerId;
+use crate::{Channel, LayerId};
 
-/// A seed inside a folder that the folder's Randomize seeds changed: the `index`-th seed of layer `layer` (its fill's, then its content and mask effects', in stack order) went from `before` to `after`
+/// A seed changed by a folder, identified by its layer or effect and optional material channel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RandomizedSeed {
     pub layer: LayerId,
+    /// Position used by older files that did not identify the source.
     pub index: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<(LayerId, Option<Channel>)>,
     pub before: u32,
     pub after: u32,
 }

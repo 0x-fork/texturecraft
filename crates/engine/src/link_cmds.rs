@@ -521,7 +521,7 @@ impl Session {
 
         let mut images = std::collections::HashSet::new();
         for image in self.images.values().filter(|image| images.insert(Arc::as_ptr(image))) {
-            retained_bytes = retained_bytes.saturating_add(image_texel_bytes(image));
+            retained_bytes = retained_bytes.saturating_add(image.retained_texel_bytes());
         }
 
         budget.set_retained(retained_bytes);
@@ -631,13 +631,7 @@ impl Session {
 }
 
 fn material_bytes(material: &CookedMaterial) -> u64 {
-    material.maps.iter().fold(0u64, |total, map| total.saturating_add(map.bytes.capacity() as u64).saturating_add(image_texel_bytes(&map.image)))
-}
-
-fn image_texel_bytes(image: &texturecraft_compose::ImageRes) -> u64 {
-    let texel_bytes = |capacity: usize| (capacity as u64).saturating_mul(std::mem::size_of::<[f32; 4]>() as u64);
-    let full_image = texel_bytes(image.rgba.capacity());
-    image.mips.get().into_iter().flatten().fold(full_image, |bytes, mip| bytes.saturating_add(texel_bytes(mip.rgba.capacity())))
+    material.maps.iter().fold(0u64, |total, map| total.saturating_add(map.bytes.capacity() as u64).saturating_add(map.image.retained_texel_bytes()))
 }
 
 /// A resource name that preserves its suffix through a project round trip.

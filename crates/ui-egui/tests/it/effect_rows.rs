@@ -118,6 +118,7 @@ fn an_opacity_drag_starting_without_a_change_is_its_own_undo_step() {
 
     let history = harness.state().session.history_labels().len();
     let opacity_at = harness.get_by_label("Opacity of Effect A").rect().center();
+
     // Equal right and down movement adds nothing to the value: the drag starts without a change
     harness.drag_at(opacity_at);
     harness.run_steps(2);

@@ -27,7 +27,7 @@ pub(crate) fn warp_checker(quad: [Pos2; 4], placement: Placement) -> Vec<(Vec<Po
     let (sin, cos) = rotation.to_radians().sin_cos();
     let [middle_u, middle_v] = FRAME_UV_CENTER.to_array();
 
-    // The frame (0..1 across and down) → image coordinates in cells: turn round the frame's centre, tile, offset, as the compositor places a warp's image
+    // Match the compositor's cell coordinates after turning, tiling and offsetting the frame
     let to_cells = |[u, v]: [f32; 2]| -> [f32; 2] {
         let (u, v) = (u - middle_u, v - middle_v);
         let (x, y) = (u * cos - v * sin + middle_u, u * sin + v * cos + middle_v);
@@ -109,6 +109,7 @@ mod tests {
     #[test]
     fn an_untouched_image_shows_four_by_four_cells_filling_the_frame() {
         let cells = warp_checker(QUAD, STILL);
+
         assert_eq!(cells.len(), 16);
         assert!(cells.iter().all(|(outline, _)| outline.len() == 4), "whole cells");
         assert_eq!(cells.iter().filter(|(_, light)| *light).count(), 8, "a checker");
@@ -120,6 +121,7 @@ mod tests {
     fn rotation_turns_the_checker_inside_the_frame() {
         let still = rounded(&warp_checker(QUAD, STILL));
         let turned = warp_checker(QUAD, Placement { rotation: 30.0, ..STILL });
+
         assert_ne!(rounded(&turned), still, "a turned image turns the checker");
         assert!(turned.iter().any(|(outline, _)| outline.len() != 4), "cells cut by the frame's sides");
         assert!(
@@ -148,6 +150,7 @@ mod tests {
             points.dedup();
             points
         };
+
         assert_eq!(corners(&turned), corners(&still), "half turned round the centre: the same cut lines, mirrored through it");
     }
 
@@ -163,6 +166,7 @@ mod tests {
             Placement { tiling: [0.0, -5.0], ..STILL },
         ] {
             let cells = warp_checker(QUAD, placement);
+
             assert!(cells.len() <= most_cells, "{placement:?}: {} cells", cells.len());
         }
     }

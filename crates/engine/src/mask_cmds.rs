@@ -233,9 +233,11 @@ pub(crate) fn content_target(p: &Value, cmd: &str) -> Result<bool> {
     }
 }
 
+const MAX_EFFECT_NAME_CHARS: usize = 256;
+
 /// A valid `name` param.
 fn name_param(p: &Value) -> Option<&str> {
-    strp(p, "name").filter(|n| !n.trim().is_empty() && n.chars().count() <= 256)
+    strp(p, "name").filter(|n| !n.trim().is_empty() && n.chars().count() <= MAX_EFFECT_NAME_CHARS)
 }
 
 /// Add an effect to the selected layer's mask (creating a mask if there is none) or, with `target: "content"` or a content-only effect, to its content stack
@@ -325,7 +327,7 @@ pub(crate) fn anchor_source(s: &Session, cmd: &str, reader: LayerId, anchor: Lay
 
 /// A source reading image resource `name`, which must be imported and decoded: the compositor
 /// would otherwise fill with a flat gray without saying why
-fn image_source(session: &Session, command: &str, name: &str) -> Result<Source> {
+pub(crate) fn image_source(session: &Session, command: &str, name: &str) -> Result<Source> {
     if !session.images.contains_key(name) {
         return Err(bad(command, format!("no image resource `{name}` (import it first)")));
     }
@@ -457,7 +459,9 @@ fn add_anchor(session: &mut Session, params: &Value) -> Result<Value> {
     fields.insert("target".into(), json!(if content { "content" } else { "mask" }));
     if name_param(params).is_none() {
         let layer = session.doc.project.layer(layer_param(session, "effect.add.anchor", params)?)?;
-        let name = if content { layer.name.clone() } else { format!("{} mask", layer.name) };
+        let suffix = if content { "" } else { " mask" };
+        let mut name: String = layer.name.chars().take(MAX_EFFECT_NAME_CHARS - suffix.len()).collect();
+        name.push_str(suffix);
         fields.insert("name".into(), json!(name));
     }
     push_effect(session, &Value::Object(fields), EffectKind::Anchor, BlendMode::Normal)
@@ -743,7 +747,7 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
         _ => None,
     };
 
-    // `input` names a generator input that `inputImage`, `inputValue` or `inputAnchor` replaces, or `inputBaked` puts back
+    // The input key identifies the generator slot to replace or restore
     let input = match session.doc.project.effect(effect) {
         Some((owner, Effect { kind: EffectKind::Generator(_), .. })) => generator_input_param(session, owner, params)?,
         _ => None,
@@ -831,16 +835,9 @@ fn set(session: &mut Session, params: &Value) -> Result<Value> {
                     *source = Source::Uniform([value.clamp(0.0, 1.0); 3]);
                 }
 
-                // While the fill reads a pattern, `scale` is the pattern's and leaves the projection alone
-                let mut placement = params.clone();
-                if matches!(source, Source::Procedural { .. })
-                    && let Some(fields) = placement.as_object_mut()
-                {
-                    fields.remove("scale");
-                }
-
-                // Preserve projection fields that the edit does not supply
-                *projection = projection_from(&placement, CMD, Some(&*projection), || crate::warp_cmds::fitted_frame(&mesh))?;
+                // A scalar changes pattern frequency while an array places the projection
+                let pattern_scale = matches!(source, Source::Procedural { .. }) && params.get("scale").is_some_and(Value::is_number);
+                *projection = projection_from_fields(params, CMD, Some(&*projection), !pattern_scale, || crate::warp_cmds::fitted_frame(&mesh))?;
             }
             EffectKind::ColorSelection(selection) => crate::color_selection_cmds::apply_params(params, selection, id_map)?,
             kind @ EffectKind::Compare { .. } => compare_from(CMD, params, kind)?,
@@ -866,7 +863,9 @@ fn fill_pattern(command: &str, params: &Value, current: &Source) -> Result<Optio
         }
         None => {
             let has_settings = crate::procedural_params::has_pattern_settings(params);
-            let edits_pattern = has_settings || ["scale", "seed", "contrast", "balance", "invert"].iter().any(|key| params.get(key).is_some());
+            let edits_pattern = has_settings
+                || params.get("scale").is_some_and(Value::is_number)
+                || ["seed", "contrast", "balance", "invert"].iter().any(|key| params.get(key).is_some());
             match current {
                 Some(pattern) if edits_pattern => pattern.clone(),
                 None if has_settings => {

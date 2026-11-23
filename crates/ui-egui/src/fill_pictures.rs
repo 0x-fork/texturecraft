@@ -165,7 +165,7 @@ pub(crate) fn lattice_preview(painter: &Painter, rect: Rect, (columns, shift): (
         let (dark, light) = (lerp_color(tokens.field, tokens.text, PREVIEW_DARK), lerp_color(tokens.field, tokens.text, PREVIEW_LIGHT));
         let border = Stroke::new(LINE_WIDTH, tokens.accent);
 
-        // Repeating past the most tiles drawn, a tile is about a pixel: the window reads as the checker's mean, so the undrawn tiles leave no bare field
+        // Subpixel repeats use the mean checker shade across the window
         if repeat && (0..2).any(|axis| high(axis).saturating_sub(low(axis)) > PREVIEW_MAX_SPAN) {
             painter.rect_filled(rect, 0, lerp_color(dark, light, CHECKER_MEAN));
         }
@@ -347,7 +347,7 @@ pub(crate) fn ring_picture(painter: &Painter, rect: Rect, symmetry: &FillSymmetr
         center + vec2(turn.cos(), turn.sin()) * radius
     };
 
-    // The ring runs over the span the engine spreads the copies over: a stored span past a full turn or below none reads as the engine reads it
+    // Use the engine's clamped span for the radial ring
     let ring_end = symmetry.span.clamp(0.0, FULL_TURN_DEGREES);
     let ring: Vec<Pos2> = (0..=RING_SEGMENTS).map(|k| at(ring_end * k as f32 / RING_SEGMENTS as f32)).collect();
     painter.add(Shape::line(ring, Stroke::new(LINE_WIDTH, tokens.separator)));
@@ -385,6 +385,7 @@ mod tests {
     fn the_uv_view_stands_still_and_the_dot_slides_with_the_checker() {
         let placement = |offset: [f32; 2]| Placement { tiling: [2.0, 2.0], rotation: 30.0, offset };
         let (still, rest) = slid_window(placement([0.0, 0.0]));
+
         assert_eq!(rest, [0.5, 0.5], "at Offset 0 the dot sits in the ring");
 
         let slid = placement([-0.25, 0.0]);

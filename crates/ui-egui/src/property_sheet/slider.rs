@@ -43,7 +43,7 @@ impl PropertySheet<'_> {
     /// [`Self::slider_with_suffix`] led by `lead` (a picture row, a child setting)
     pub(crate) fn slider_led(&mut self, lead: RowLead<'_>, value: &mut f32, range: RangeInclusive<f32>, decimals: usize, suffix: &str) -> Option<bool> {
         let (control, center_y) = self.row_with(lead);
-        let id = self.next_id();
+        let id = self.named_id("slider", lead.text());
         let track = Track { start: control.left() + KNOB_RADIUS, end: self.track_end(), center_y, zero: None, ramp: false };
         let dragged = self.track(id, lead.text(), &track, value, &range);
         let typed = self.value_field(id, lead.text(), center_y, *value, &range, decimals, suffix);
@@ -131,7 +131,7 @@ impl PropertySheet<'_> {
         response.widget_info(|| WidgetInfo::slider(true, f64::from(*value), &label));
 
         let mut moved = false;
-        if (response.dragged() || response.clicked())
+        if (response.dragged() || response.drag_stopped() || response.clicked())
             && let Some(pointer) = response.interact_pointer_pos()
         {
             let picked = kept_in(minimum + (pointer.x - track.start) / length * span, range);
@@ -159,6 +159,7 @@ impl PropertySheet<'_> {
         }
         let outline = if response.hovered() || response.dragged() { tokens.accent } else { tokens.text };
         painter.circle(pos2(knob_x, track.center_y), KNOB_RADIUS, tokens.panel, Stroke::new(KNOB_STROKE, outline));
+        self.paint_control_focus(&response);
         edit
     }
 
@@ -232,6 +233,7 @@ impl PropertySheet<'_> {
             if response.hovered() {
                 self.value_line(rect.left(), right, center_y, tokens.field_border);
             }
+            self.paint_control_focus(&response);
             if response.clicked() {
                 self.start_typing(field_id, seeded());
             }
@@ -252,7 +254,7 @@ impl PropertySheet<'_> {
             return None;
         }
 
-        // Leaving the field as it opened changes nothing: no undo step, no rounding to the shown decimals, no overwriting a value changed meanwhile
+        // An unchanged draft must preserve full precision and any intervening edit
         if untouched || typed_text == seeded() {
             return None;
         }

@@ -371,14 +371,22 @@ impl Mesh {
 
     /// Mesh units one UV unit covers on material `m`'s triangles: sqrt(surface area / UV area), None without UV area
     pub fn uv_density(&self, m: usize) -> Option<f32> {
-        let (mut surface, mut uv_area) = (0.0_f32, 0.0_f32);
+        let (mut surface_area, mut uv_area) = (0.0_f32, 0.0_f32);
         for [a, b, c] in self.triangles_of(m).filter_map(|t| self.tri(t)) {
             let (Some(pa), Some(pb), Some(pc)) = (self.positions.get(a), self.positions.get(b), self.positions.get(c)) else { continue };
             let (Some(ua), Some(ub), Some(uc)) = (self.uvs.get(a), self.uvs.get(b), self.uvs.get(c)) else { continue };
-            surface += (*pb - *pa).cross(*pc - *pa).length() * 0.5;
+
+            surface_area += (*pb - *pa).cross(*pc - *pa).length() * 0.5;
             uv_area += (*ub - *ua).perp_dot(*uc - *ua).abs() * 0.5;
         }
-        (uv_area > f32::EPSILON && surface.is_finite()).then(|| (surface / uv_area).sqrt())
+
+        if !(uv_area > 0.0 && uv_area.is_finite() && surface_area.is_finite()) {
+            return None;
+        }
+
+        // The area ratio can exceed f32 even when its square root fits
+        let density = (f64::from(surface_area) / f64::from(uv_area)).sqrt() as f32;
+        density.is_finite().then_some(density)
     }
 
     /// Remap the UVs of material `m`'s triangles with `f`. Vertices they share with other
@@ -615,6 +623,20 @@ mod tests {
 
         assert!((plane - 3.0).abs() < 1e-4, "{plane}");
         assert_eq!(quad().uv_density(1), None, "no triangles of that material");
+    }
+
+    #[test]
+    fn a_small_positive_uv_area_still_has_a_density() {
+        let mut mesh = quad();
+        let original = mesh.uv_density(0).unwrap();
+        let scale = 0.0001;
+        mesh.uvs.iter_mut().for_each(|uv| *uv *= scale);
+
+        let density = mesh.uv_density(0).unwrap();
+
+        assert!((density * scale - original).abs() < 1e-5);
+        mesh.uvs.fill(Vec2::ZERO);
+        assert!(mesh.uv_density(0).is_none());
     }
 
     #[test]

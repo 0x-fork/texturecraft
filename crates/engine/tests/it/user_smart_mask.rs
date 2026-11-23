@@ -183,6 +183,7 @@ fn effects_reading_an_anchor_of_the_mask_follow_it() {
         EffectKind::Fill { source: Source::Anchor { anchor, .. }, .. } => Some(*anchor),
         _ => None,
     });
+
     assert_eq!(reads, Some(new_anchor), "the fill reads the copied anchor, not the old one");
 }
 

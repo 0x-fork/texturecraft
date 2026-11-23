@@ -492,6 +492,7 @@ mod tests {
         let mut images: ImageStore = [("alpha.png".into(), image(0.2))].into();
 
         let old_preview = thumbs.saved_brush_preview(&path, &images);
+
         assert!(thumbs.big(&ctx, old_preview, 8).is_none());
 
         images.insert("alpha.png".into(), image(0.8));
@@ -581,6 +582,7 @@ mod tests {
         let other_image = Arc::new(ImageRes::new(IMAGE_SIDE, IMAGE_SIDE, vec![[0.5; 4]; IMAGE_TEXELS], false));
         let old_weak = Arc::downgrade(&old_image);
         let other_weak = Arc::downgrade(&other_image);
+
         assert!(old_image.rgba.iter().map(|pixel| std::hint::black_box(pixel[0])).sum::<f32>() > 0.0);
         assert!(other_image.rgba.iter().map(|pixel| std::hint::black_box(pixel[0])).sum::<f32>() > 0.0);
 
@@ -649,6 +651,7 @@ mod tests {
         let after_pixel_bytes = cached_pixel_bytes(&thumbs);
 
         eprintln!("cached previews: {before_count} -> {after_count}; texture pixel bytes: {before_pixel_bytes} -> {after_pixel_bytes}");
+
         assert_eq!((before_count, after_count), (3, 1));
         assert!(after_pixel_bytes < before_pixel_bytes);
         assert!(thumbs.images.contains_key("image-2"));

@@ -29,7 +29,7 @@ pub(crate) struct ProjectorOutline {
 }
 
 impl ProjectorOutline {
-    /// The outline of `projection`'s projector round an object with half sizes `object` (None for projections without one: UV, warp, placed planars, which the preview shows as axis planars)
+    /// Build an outline for an axis-aligned planar, sphere, cylinder or tri-planar projector around an object with the given half sizes.
     pub(crate) fn of(projection: &Projection, object: Vec3) -> Option<ProjectorOutline> {
         let outline = match projection {
             Projection::Planar { scale, axis, offset, projector, placed: None, .. } => {
@@ -121,6 +121,7 @@ mod tests {
     fn every_3d_projection_has_its_projector_outline() {
         let planar = Projection::Planar { scale: 1.0, axis: 2, offset: [0.0; 3], uv: UvTransform::default(), projector: Projector::default(), placed: None };
         let outline = ProjectorOutline::of(&planar, BALL).unwrap();
+
         assert_eq!(outline.lines.len(), 2, "a frame and its direction line");
         let tip = outline.tip.unwrap();
         assert!(tip.z < BALL.z + FRAME_GAP && outline.lines[0][0].z > BALL.z, "the frame stands in front of the ball, the dot points into it");
@@ -145,6 +146,7 @@ mod tests {
             angle: 360.0,
         };
         let object = Vec3::new(0.55, 0.7, 0.4);
+
         assert_eq!(ProjectorOutline::of(&cylinder(3), object), ProjectorOutline::of(&cylinder(1), object));
     }
 
@@ -152,6 +154,7 @@ mod tests {
     fn the_outline_follows_the_projectors_size_and_centre() {
         let reach = |projection: &Projection| ProjectorOutline::of(projection, BALL).unwrap().points().map(Vec3::length).fold(0.0, f32::max);
         let plain = reach(&spherical(Projector::default(), [0.0; 3]));
+
         assert!((plain - 0.85 * SPHERE_REACH).abs() < 1e-4, "{plain}");
         assert!((reach(&spherical(Projector { scale: [3.0; 3], ..Projector::default() }, [0.0; 3])) - 3.0 * plain).abs() < 1e-3, "x3 is three times as far");
         assert!(reach(&spherical(Projector::default(), [0.5, 0.0, 0.0])) > plain + 0.4, "an offset moves it");

@@ -159,10 +159,14 @@ fn the_contents_reset_puts_back_the_seeds_randomize_seeds_changed_in_one_undo_st
     assert!(randomized.0 != before.0 && randomized.2 != before.2, "{before:?} -> {randomized:?}");
     assert!(texturecraft_engine::folder_cmds::contents_changed(&s.doc.project, folder), "the reset is lit");
 
-    // Old projects: the record is saved with the folder and read back
-    let saved = serde_json::to_value(&s.doc.project).unwrap();
-
-    assert!(saved.to_string().contains("randomized"), "the folder keeps its seeds from before in the project");
+    // A saved positional record from before stable seed targets still resets the original slot
+    let mut saved = serde_json::to_value(&s.doc.project).unwrap();
+    let records = saved["layers"][folder.0.to_string()]["kind"]["Group"]["randomized"].as_array_mut().unwrap();
+    assert!(!records.is_empty());
+    for record in records {
+        record.as_object_mut().unwrap().remove("target");
+    }
+    s.doc.project = serde_json::from_value(saved).unwrap();
 
     let steps = s.history_labels().len();
     execute(&mut s, "folder.contents.reset", &json!({"layer": folder.0})).unwrap();
@@ -200,4 +204,56 @@ fn a_folder_saved_without_randomized_seeds_opens_and_saves_unchanged() {
 
     assert!(matches!(&read.kind, LayerKind::Group { randomized, .. } if randomized.is_empty()));
     assert_eq!(serde_json::to_value(&read).unwrap(), saved);
+}
+
+#[test]
+fn reset_restores_original_effects_after_a_randomized_effect_is_duplicated() {
+    let (mut session, folder, layer) = folder_with_fill();
+    let original = session.doc.project.layer(layer).unwrap().mask.as_ref().unwrap().effects.last().unwrap().id;
+    let duplicate = |session: &mut Session| id(execute(session, "effect.duplicate", &json!({"effect": original.0})).unwrap(), "effect");
+    let second = duplicate(&mut session);
+    let seed = |session: &Session, effect| match session.doc.project.effect(effect).unwrap().1.kind {
+        EffectKind::Filter(Filter::Warp { seed, .. }) => seed,
+        _ => panic!("expected warp"),
+    };
+    let before = seed(&session, original);
+    execute(&mut session, "folder.randomizeSeeds", &json!({"layer": folder.0})).unwrap();
+    let copied = duplicate(&mut session);
+    let randomized = seed(&session, copied);
+
+    execute(&mut session, "folder.contents.reset", &json!({"layer": folder.0})).unwrap();
+
+    assert_ne!(randomized, before);
+    assert_eq!(seed(&session, copied), randomized, "the copy was created after randomization");
+    assert_eq!((seed(&session, original), seed(&session, second)), (before, before));
+}
+
+#[test]
+fn contents_controls_follow_an_instanced_folder_without_randomizing_its_source() {
+    let (mut session, source, _) = folder_with_fill();
+    let project = &mut session.doc.project;
+    let folder = project.alloc_id();
+    let instance = project.alloc_id();
+    let new_layer = |id, kind| texturecraft_engine::core::Layer::new(id, "Layer", kind, &Channel::DEFAULT_SET);
+    project.insert_layer(0, new_layer(folder, LayerKind::folder()), None, false).unwrap();
+    project.insert_layer(0, new_layer(instance, LayerKind::Instance { source }), Some(folder), true).unwrap();
+
+    assert!(texturecraft_engine::folder_cmds::has_contents(&session.doc.project, folder));
+    assert_eq!(execute(&mut session, "folder.randomizeSeeds", &json!({"layer": folder.0})).unwrap()["seeds"], 0);
+}
+
+#[test]
+fn a_copied_folder_resets_only_its_own_randomized_seeds() {
+    let (mut session, folder, fill) = folder_with_fill();
+    let original = fill_seeds(&session, fill);
+    execute(&mut session, "folder.randomizeSeeds", &json!({"layer": folder.0})).unwrap();
+    let changed = fill_seeds(&session, fill);
+    let copy = id(execute(&mut session, "layer.duplicate", &json!({"layer": folder.0})).unwrap(), "layer");
+    let copied_fill = session.doc.project.layers[&copy].children()[0];
+
+    execute(&mut session, "folder.contents.reset", &json!({"layer": copy.0})).unwrap();
+
+    assert_ne!(original, changed);
+    assert_eq!(fill_seeds(&session, copied_fill), original);
+    assert_eq!(fill_seeds(&session, fill), changed);
 }

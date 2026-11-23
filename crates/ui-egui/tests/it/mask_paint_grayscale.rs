@@ -66,6 +66,7 @@ fn the_grayscale_slot_paints_one_gray_its_ramp_drags_and_inverts() {
 #[test]
 fn the_slot_picks_an_image_to_paint_and_clear_goes_back_to_the_gray() {
     let (mut harness, image) = folder_mask_harness();
+    harness.state_mut().run("tool.material", json!({"maskValue": 0.25}));
     click(&mut harness, Role::ComboBox, "Grayscale");
 
     assert!(harness.query_by_role_and_label(Role::ListBoxOption, "Import...").is_some(), "Textures starts with Import...");
@@ -86,4 +87,5 @@ fn the_slot_picks_an_image_to_paint_and_clear_goes_back_to_the_gray() {
 
     assert_eq!(harness.state().session.tool.mask_image, None);
     assert!(harness.query_by_role_and_label(Role::Slider, "Grayscale").is_some(), "the ramp is back");
+    assert_eq!(harness.state().session.tool.mask_value, 0.25);
 }

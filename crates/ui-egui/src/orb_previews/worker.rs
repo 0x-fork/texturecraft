@@ -28,13 +28,16 @@ impl Worker {
                     waiting.push(job);
                     repaint = Some(ctx);
                 }
+                let previous_len = waiting.len();
                 for (job, ctx) in job_rx.try_iter() {
                     waiting.push(job);
                     repaint = Some(ctx);
                 }
-                for key in newest_per_place(&mut waiting) {
-                    if result_tx.send(OrbResult::Dropped { key }).is_err() {
-                        return;
+                if waiting.len() > previous_len {
+                    for (key, request) in newest_per_place(&mut waiting) {
+                        if result_tx.send(OrbResult::Dropped { key, request }).is_err() {
+                            return;
+                        }
                     }
                 }
 
@@ -50,7 +53,7 @@ impl Worker {
                     Err(_) => job.picture(),
                 };
                 let full = !job.quick;
-                if result_tx.send(OrbResult::Picture { key: job.key, full, image }).is_err() {
+                if result_tx.send(OrbResult::Picture { key: job.key, request: job.request, full, image }).is_err() {
                     return;
                 }
 

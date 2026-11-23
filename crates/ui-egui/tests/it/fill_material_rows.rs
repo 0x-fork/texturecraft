@@ -143,6 +143,51 @@ fn searching_the_source_picker_renders_only_the_shown_pattern_thumbnails() {
     assert_eq!(left, 0, "closing the app releases the pattern thumbnails");
 }
 
+#[test]
+fn searching_the_source_picker_does_not_render_hidden_alpha_thumbnails() {
+    let (mut harness, _) = app_with_fill(json!({}));
+    let alpha_thumbnails = |harness: &Harness<'_, TextureCraftApp>| {
+        let texture_manager = harness.ctx.tex_manager();
+        let textures = texture_manager.read();
+        textures
+            .allocated()
+            .filter(|(_, texture)| texture.name.starts_with("thumb_alpha:"))
+            .fold((0, 0), |(count, bytes), (_, texture)| (count + 1, bytes + texture.bytes_used()))
+    };
+    let before = alpha_thumbnails(&harness);
+
+    click(&mut harness, Role::ComboBox, "Metallic");
+    harness.event(egui::Event::Text("Smooth fur".into()));
+    harness.run_steps(THUMBNAIL_FRAMES);
+
+    let after = alpha_thumbnails(&harness);
+    eprintln!("alpha thumbnails and pixel bytes before picker {before:?}, after search {after:?}");
+    assert!(harness.query_by_role_and_label(Role::ListBoxOption, "Smooth fur").is_some());
+    assert_eq!(after, before, "only a matching, visible tile should request its preview");
+
+    let alpha = &texturecraft_engine::paint::alphas::library()[0];
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.event(egui::Event::Text(alpha.label.clone()));
+    harness.run_steps(SETTLE_FRAMES);
+    assert!(harness.query_by_role_and_label(Role::ListBoxOption, &alpha.label).is_some());
+    assert!(alpha_thumbnails(&harness).0 > after.0, "a visible alpha still gets its preview");
+}
+
+#[test]
+fn closing_the_project_stops_its_eyedropper() {
+    let (mut harness, _) = app_with_fill(json!({}));
+    click_bar_eyedropper(&mut harness);
+    let bar = harness.state().picking_color.expect("the eyedropper is armed");
+    harness.state_mut().screen_pick = Some(ScreenPick::waiting(bar));
+
+    texturecraft_engine::execute(&mut harness.state_mut().session, "file.close", &json!({})).unwrap();
+    harness.run_steps(SETTLE_FRAMES);
+
+    assert!(!harness.state().session.project_open);
+    assert!(harness.state().picking_color.is_none(), "a closed project cannot consume the next viewport click");
+    assert!(harness.state().screen_pick.is_none(), "the native pick must be dropped");
+}
+
 /// A project image's thumbnail is made once its tile scrolls into view, not when the picker opens, and goes with the image
 #[test]
 fn source_picker_images_render_on_scroll_and_release_on_removal() {

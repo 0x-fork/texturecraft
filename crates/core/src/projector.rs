@@ -12,13 +12,23 @@ pub struct Projector {
     pub scale: [f32; 3],
     pub crop: ShapeCrop,
     pub backface: Backface,
+    /// Preserve axis-planar coverage when the projection is placed on a frame.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ignore_image_alpha: bool,
     /// Planar and warp projections only
     pub depth: DepthCulling,
 }
 
 impl Default for Projector {
     fn default() -> Self {
-        Projector { rotation: [0.0; 3], scale: [1.0; 3], crop: ShapeCrop::default(), backface: Backface::default(), depth: DepthCulling::default() }
+        Projector {
+            rotation: [0.0; 3],
+            scale: [1.0; 3],
+            crop: ShapeCrop::default(),
+            backface: Backface::default(),
+            ignore_image_alpha: false,
+            depth: DepthCulling::default(),
+        }
     }
 }
 

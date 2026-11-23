@@ -29,7 +29,11 @@ impl Session {
             let texel = ((pixel as f32 + 0.5) / size as f32 * extent as f32).floor().min((extent - 1) as f32);
             (texel + 0.5) / extent as f32
         };
-        let mut rgba = Vec::with_capacity(size as usize * size as usize * 4);
+        let side = size as usize;
+        let byte_count = side.checked_mul(side)?.checked_mul(4)?;
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(byte_count).ok()?;
+
         for y in 0..size {
             let v = texel_centre(y, height);
             for x in 0..size {

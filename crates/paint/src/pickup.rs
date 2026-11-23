@@ -390,6 +390,7 @@ mod tests {
             };
             let mut pickup = Pickup::from_snapshot(PickupMode::Clone { offset: [i64::from(TILE), 0] }, snapshot, gbuf.clone(), [Channel::Roughness]);
             let mut alpha = TileImage::new(size, size, 1);
+
             assert!(pickup.loaded.is_empty());
 
             for x in [8, 12, TILE + 8] {

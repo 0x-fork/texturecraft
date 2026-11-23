@@ -149,28 +149,30 @@ impl EnvImage {
     /// range, and images larger than [`MAX_IMPORT_WIDTH`] are box-downsampled. None when the
     /// pixel count does not match the size.
     pub fn from_rgba(width: u32, height: u32, rgba: &[[f32; 4]], srgb: bool) -> Option<EnvImage> {
-        Self::from_pixels(width, height, rgba, srgb)
+        Self::from_rgb_pixels(width, height, rgba.par_iter().map(|&[r, g, b, _]| [r, g, b]), srgb)
     }
 
-    /// An imported linear RGB equirect image, with the same validation and size limits as [Self::from_rgba].
-    pub fn from_linear_rgb(width: u32, height: u32, rgb: &[[f32; 3]]) -> Option<Self> {
-        Self::from_pixels(width, height, rgb, false)
+    /// An equirectangular linear RGB image with the same radiance and size limits as an RGBA import.
+    pub fn from_linear_rgb(width: u32, height: u32, rgb: &[[f32; 3]]) -> Option<EnvImage> {
+        Self::from_rgb_pixels(width, height, rgb.par_iter().copied(), false)
     }
 
-    fn from_pixels<const COMPONENTS: usize>(width: u32, height: u32, pixels: &[[f32; COMPONENTS]], srgb: bool) -> Option<Self> {
-        if width == 0 || height == 0 || pixels.len() as u64 != width as u64 * height as u64 {
+    fn from_rgb_pixels(width: u32, height: u32, pixels: impl IndexedParallelIterator<Item = [f32; 3]>, srgb: bool) -> Option<EnvImage> {
+        if width == 0 || height == 0 || pixels.len() as u64 != u64::from(width) * u64::from(height) {
             return None;
         }
+
         let lin = |v: f32| {
             let v = if v.is_finite() { v.clamp(0.0, 65_000.0) } else { 0.0 };
             if srgb { texturecraft_texel::srgb_to_linear(v.min(1.0)) } else { v }
         };
-        let data = pixels.par_iter().map(|p| [lin(p[0]), lin(p[1]), lin(p[2])]).collect();
+        let data = pixels.map(|pixel| pixel.map(lin)).collect();
         let mut img = EnvImage { width, height, data };
         while img.width > MAX_IMPORT_WIDTH || img.height > MAX_IMPORT_WIDTH {
             img = img.half();
         }
-        // The mip chain needs at least 4×2 texels at its last level.
+
+        // The mip chain needs at least 4×2 texels at its last level
         if img.width < 128 || img.height < 64 {
             let (w, h) = (img.width.max(128), img.height.max(64));
             let data = (0..w * h).map(|i| img.sample(dir_of(((i % w) as f32 + 0.5) / w as f32, ((i / w) as f32 + 0.5) / h as f32)).to_array()).collect();

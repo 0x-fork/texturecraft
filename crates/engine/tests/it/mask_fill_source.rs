@@ -53,7 +53,7 @@ fn a_mask_fill_takes_a_procedural_an_image_an_alpha_or_a_value_as_its_one_graysc
     assert!(line.iter().any(|value| (value - line[0]).abs() > 1e-3), "the mask follows the pattern: {line:?}");
 
     // A parameter alone keeps the rest of the pattern
-    execute(&mut s, "layer.fill.set", &json!({"effect": effect.0, "procedural": kind.label(), "contrast": 1.5})).unwrap();
+    execute(&mut s, "layer.fill.set", &json!({"effect": effect.0, "contrast": 1.5})).unwrap();
     let Source::Procedural { pattern, .. } = source(&s, effect) else { panic!("not a procedural") };
     assert_eq!((pattern.scale, pattern.contrast), (4.0, 1.5));
 
@@ -91,6 +91,7 @@ fn a_mask_fill_has_no_channels_or_material() {
         json!({"effect": effect.0, "enabled": false}),
         json!({"effect": effect.0}),
         json!({"effect": effect.0, "procedural": "no such pattern"}),
+        json!({"effect": effect.0, "image": "missing.png"}),
     ] {
         assert!(execute(&mut s, "layer.fill.set", &refused).is_err(), "{refused}");
     }

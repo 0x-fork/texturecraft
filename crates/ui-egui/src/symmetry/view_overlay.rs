@@ -135,7 +135,7 @@ pub(crate) fn overlay(app: &TextureCraftApp, ui: &Ui, rect: Rect, cursor: Option
     let line = Stroke::new(INTERSECTION_WIDTH, color(display.color, u8::MAX));
     let project = |point: Vec3| crate::viewport::project(app, rect, point);
 
-    // The planes' lines are drawn in the scene (see scene_overlay); where the radial axis enters the mesh, from either end, is drawn here
+    // The scene draws plane lines; show where either end of the radial axis enters the mesh
     if display.show_intersection && symmetry.radial_mode() {
         let axis = symmetry.radial_axis();
         let reach = diagonal;

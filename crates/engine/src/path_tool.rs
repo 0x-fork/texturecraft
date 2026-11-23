@@ -1181,7 +1181,7 @@ impl Session {
         }
 
         let tiles = canvas.dirty.len();
-        self.commit_fill("Path fill", texture_set, &canvas)?;
+        self.commit_fill("Path fill", texture_set, &canvas, &self.mask_gray())?;
         Ok(tiles)
     }
 }

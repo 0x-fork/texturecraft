@@ -23,9 +23,6 @@ const COUNT_TRACK: RangeInclusive<f32> = *FillSymmetry::COUNTS.start() as f32..=
 /// What a typed Count may reach
 const COUNT_TYPED: RangeInclusive<f32> = *FillSymmetry::COUNTS.start() as f32..=*FillSymmetry::COUNTS.end() as f32;
 
-/// The Angle span slider's place in the stack beside the ring, under Count
-const SPAN_SLIDER: usize = 1;
-
 /// The Symmetry section under the Fill section: its switch on the caption, then Type, Axis, the radial copies beside their picture, Flip copy and Axis position
 pub(crate) fn symmetry_section(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, projection: &Projection, sampling: Sampling, base: &Value) {
     let symmetry = sampling.symmetry;
@@ -68,17 +65,18 @@ pub(crate) fn symmetry_section(app: &mut TextureCraftApp, sheet: &mut PropertySh
         run(app, json!({"flipCopy": flip}));
     }
 
-    // A mirror moves its plane along its axis; radial copies turn round an axis that moves across it
+    // Mirror position moves along its normal and radial position moves across its axis
     let moving: Vec<usize> = match symmetry.kind {
         SymmetryKind::Mirror => vec![axis],
         SymmetryKind::Radial => (0..AXIS_NAMES.len()).filter(|other| *other != axis).collect(),
     };
     let mut parts: Vec<(&str, egui::Color32, f32)> = moving.iter().map(|&moved| (AXIS_NAMES[moved], AXIS_COLORS[moved], symmetry.position[moved])).collect();
-    if let Some((index, merge)) = sheet.lettered_sliders(tr("Axis position"), &mut parts, POSITION_RANGE, 2)
-        && let (Some(&moved), Some((_, _, value))) = (moving.get(index), parts.get(index))
-    {
+    if let Some(merge) = sheet.lettered_sliders(tr("Axis position"), &mut parts, POSITION_RANGE, 2) {
         let mut position = symmetry.position;
-        position[moved] = *value;
+        for (axis, (_, _, value)) in moving.into_iter().zip(parts) {
+            position[axis] = value;
+        }
+
         run(app, json!({"axisPosition": position, "merge": merge}));
     }
 }
@@ -96,17 +94,24 @@ fn radial_rows(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, symmetr
         StackSlider { label: tr("Angle span"), value: &mut span_value, range: FillSymmetry::SPANS, typed: FillSymmetry::SPANS, decimals: 0, suffix: "°" },
     ];
 
-    let edited = sheet.picture_sliders(&picture, &mut sliders);
-    if let Some((SPAN_SLIDER, merge)) = edited {
-        run_projection(app, base, json!({"angleSpan": span_value, "merge": merge}));
-        return;
-    }
+    let [count_edit, span_edit] = sheet.picture_sliders(&picture, &mut sliders);
 
-    // Whole counts: a press's first whole-number change starts its undo step, changes that round to the count it has apply nothing
-    let counted = count_value.round();
+    // Start the count's undo step on the first whole-number change
+    let rounded_count = count_value.round() as u32;
     let press = sheet.ui.make_persistent_id("symmetry_count_press");
-    if let Some(merge) = press_edit(sheet.ui, press, edited.is_some() && counted as u32 != count) {
-        run_projection(app, base, json!({"symmetryCount": counted, "merge": merge}));
+    let count_merge = press_edit(sheet.ui, press, count_edit.is_some() && rounded_count != count);
+    let count_edit = count_edit.zip(count_merge).map(|(track_merge, count_merge)| track_merge && count_merge);
+
+    if let Some(merge) = [count_edit, span_edit].into_iter().flatten().reduce(|first, second| first && second) {
+        let mut fields = json!({"merge": merge});
+        if count_edit.is_some() {
+            fields["symmetryCount"] = json!(rounded_count);
+        }
+        if span_edit.is_some() {
+            fields["angleSpan"] = json!(span_value);
+        }
+
+        run_projection(app, base, fields);
     }
 }
 

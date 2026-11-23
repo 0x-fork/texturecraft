@@ -6,12 +6,12 @@ use std::sync::Arc;
 use egui::{Color32, Painter, Rect};
 use egui_phosphor::regular as ic;
 use serde_json::{Value, json};
-use texturecraft_engine::compose::{ImageRes, ImageStore};
+use texturecraft_engine::Session;
+use texturecraft_engine::compose::ImageRes;
 use texturecraft_engine::core::{
     Channel, ChannelKind, CookResolution, Fill, LayerId, LinkParam, MaterialLink, NormalFormat, OutputResolution, Procedural, ProceduralKind, ResolutionMode,
     Source,
 };
-use texturecraft_engine::fill_alpha::library_alpha_of;
 use texturecraft_engine::fill_material_cmds::whole_materials;
 use texturecraft_engine::materials::find;
 use texturecraft_engine::paint::alphas;
@@ -37,7 +37,6 @@ use crate::source_choice::SourceChoice;
 use crate::source_slot::SourceSlot;
 use crate::state::UiState;
 use crate::theme::Tokens;
-use crate::thumbs::Thumbs;
 use crate::tile_picture::TilePicture;
 use crate::widgets::press_edit;
 
@@ -167,7 +166,7 @@ pub(crate) fn source_line(app: &TextureCraftApp, source: &Source) -> String {
     match source {
         Source::Uniform(_) => tr("Uniform").to_owned(),
         Source::Procedural { pattern, .. } => format!("{} · {}", tr(pattern.kind.label()), tr("procedural")),
-        Source::Image { name, .. } => match library_alpha_of(name) {
+        Source::Image { name, .. } => match app.session.library_alpha(name) {
             Some(alpha) => format!("{} · {}", tr(&alpha.label), tr("alpha")),
             None => format!("{name} · {}", tr("image")),
         },
@@ -205,7 +204,7 @@ pub(crate) fn source_card(
     if slot.pick.clicked() {
         resource_picker::toggle(sheet.ui.ctx(), popup);
     }
-    let current = source_choice(&source);
+    let current = source_choice(&app.session, &source);
 
     // From Uniform the picker opens at the top, not at its Uniform tile at the end
     let reveal = current != SourceChoice::Uniform;
@@ -213,16 +212,15 @@ pub(crate) fn source_card(
         Source::Uniform(value) => value,
         _ => slot_of.default_value(),
     };
-    let ctx = sheet.ui.ctx().clone();
 
-    // The anchors below the reader are listed only while the picker is open; an effect's (an instance's inherited mask fill) must also sit below the effect's owner
+    // Inherited mask fills can only read anchors below both the reader and the effect's owner
     let effect = base.get("effect").and_then(Value::as_u64).map(LayerId);
-    let tabs = |thumbs: &mut Thumbs| {
+    let tabs = || {
         let anchors = match effect {
             Some(effect) => project_effect_anchors_below(&app.session.doc.project, reader, effect),
             None => anchors_below(&app.session.doc.project, reader),
         };
-        source_tabs(thumbs, &ctx, &app.session.images, &anchors, shown_color(uniform))
+        source_tabs(&app.session, &anchors, shown_color(uniform), true)
     };
     let picked = resource_picker::show(&slot.pick, popup, &mut app.thumbs, Some(&current), reveal, tabs);
     if let Some(choice) = picked.filter(|choice| *choice != current) {
@@ -235,7 +233,7 @@ pub(crate) fn source_card(
         app.run("layer.fill.set", set(json!({"image": name})));
     }
 
-    // A slot in a mode's card shows a pattern's Scale and Contrast like every slot; its other rows and Resolution band would split the card
+    // Keep mode cards together by showing only Scale and Contrast
     if in_card {
         if let Source::Procedural { pattern, .. } = source {
             let mut edited = pattern.clone();
@@ -301,32 +299,34 @@ fn pick_source(app: &mut TextureCraftApp, ctx: &egui::Context, slot_of: SourceSl
 }
 
 /// The picker's choice `source` is: a library alpha's image is its alpha
-fn source_choice(source: &Source) -> SourceChoice {
+pub(crate) fn source_choice(session: &Session, source: &Source) -> SourceChoice {
     match source {
         Source::Uniform(_) => SourceChoice::Uniform,
         Source::Procedural { pattern, .. } => SourceChoice::Procedural(pattern.kind),
-        Source::Image { name, .. } => library_alpha_of(name).map_or_else(|| SourceChoice::Image(name.clone()), |alpha| SourceChoice::Alpha(alpha.id.as_str())),
+        Source::Image { name, .. } => {
+            session.library_alpha(name).map_or_else(|| SourceChoice::Image(name.clone()), |alpha| SourceChoice::Alpha(alpha.id.as_str()))
+        }
         Source::Anchor { anchor, .. } => SourceChoice::Anchor(*anchor),
     }
 }
 
 /// The source picker's tabs: Resources (Procedurals, Textures with Import... first, Alphas in their shelf groups, Uniform) and the stack's Anchor points
-fn source_tabs(thumbs: &mut Thumbs, ctx: &egui::Context, images: &ImageStore, anchors: &[(LayerId, String)], uniform: Color32) -> Vec<PickerTab<SourceChoice>> {
+pub(crate) fn source_tabs(session: &Session, anchors: &[(LayerId, String)], uniform: Color32, include_alphas: bool) -> Vec<PickerTab<SourceChoice>> {
     let procedurals =
         ProceduralKind::ALL.into_iter().map(|kind| tile(SourceChoice::Procedural(kind), tr(kind.label()), None, TilePicture::Procedural(kind))).collect();
-    let textures = ResourcePickerItem::textures(images, SourceChoice::Import, |name| SourceChoice::Image(name.to_owned()));
-    let alphas = alphas::library()
-        .iter()
-        .map(|alpha| {
-            let picture = TilePicture::Texture(thumbs.alpha(ctx, alpha));
-            tile(SourceChoice::Alpha(alpha.id.as_str()), tr(&alpha.label), Some(tr(alpha.category)), picture)
-        })
-        .collect();
-    let uniform = vec![tile(SourceChoice::Uniform, tr("Uniform value"), None, TilePicture::Swatch(uniform))];
-    let resources = [(n_("Procedurals"), procedurals), (n_("Textures"), textures), (n_("Alphas"), alphas), (n_("Uniform"), uniform)]
-        .into_iter()
-        .map(|(header, items)| PickerGroup { header: Some(tr(header)), items })
-        .collect();
+    let textures = ResourcePickerItem::textures(session, SourceChoice::Import, |name| SourceChoice::Image(name.to_owned()));
+    let mut resources =
+        vec![PickerGroup { header: Some(tr("Procedurals")), items: procedurals }, PickerGroup { header: Some(tr("Textures")), items: textures }];
+    if include_alphas {
+        let items = alphas::library()
+            .iter()
+            .map(|alpha| tile(SourceChoice::Alpha(alpha.id.as_str()), tr(&alpha.label), Some(tr(alpha.category)), TilePicture::Alpha(alpha)))
+            .collect();
+        resources.push(PickerGroup { header: Some(tr("Alphas")), items });
+    }
+
+    let uniform = tile(SourceChoice::Uniform, tr("Uniform value"), None, TilePicture::Swatch(uniform));
+    resources.push(PickerGroup { header: Some(tr("Uniform")), items: vec![uniform] });
     let anchors = anchors.iter().map(|(anchor, label)| tile(SourceChoice::Anchor(*anchor), label, None, TilePicture::Glyph(ic::ANCHOR))).collect();
     vec![
         PickerTab { icon: ic::SQUARES_FOUR, name: tr("Resources"), groups: resources },
@@ -426,7 +426,7 @@ fn procedural_rows(
     let mut edited = pattern.clone();
     let mut edit = scale_and_contrast(sheet, &mut edited);
 
-    // A grayscale's card (a mask fill's, a filter input's) shows its Balance and Seed with Scale and Contrast; a material channel's keeps them in Attributes
+    // Only grayscale cards edit Balance and Seed here
     let gray = matches!(slot_of, SourceSlot::Grayscale);
     if gray {
         edit = edit.or(balance_and_seed(sheet, &mut edited));
@@ -533,8 +533,7 @@ fn whole_material_card(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>,
         resource_picker::toggle(sheet.ui.ctx(), popup);
     }
     let current = held.map(|material| material.id);
-    let ctx = sheet.ui.ctx().clone();
-    let picked = resource_picker::show(&slot.pick, popup, &mut app.thumbs, current.as_ref(), current.is_some(), |thumbs| material_tabs(&ctx, thumbs));
+    let picked = resource_picker::show(&slot.pick, popup, &mut app.thumbs, current.as_ref(), current.is_some(), material_tabs);
     if let Some(id) = picked.filter(|id| Some(*id) != current) {
         app.run("layer.fill.material", with(base, json!({"material": id})));
     }
@@ -545,15 +544,10 @@ fn whole_material_card(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>,
 }
 
 /// The material picker's one tab: every plain material's preview ball, grouped under its shelf category in library order
-fn material_tabs(ctx: &egui::Context, thumbs: &mut Thumbs) -> Vec<PickerTab<&'static str>> {
+fn material_tabs() -> Vec<PickerTab<&'static str>> {
     let mut groups: Vec<PickerGroup<&'static str>> = Vec::new();
     for material in whole_materials() {
-        let item = ResourcePickerItem {
-            id: material.id,
-            label: tr(material.label).to_owned(),
-            caption: None,
-            picture: TilePicture::Texture(thumbs.material(ctx, material.id)),
-        };
+        let item = ResourcePickerItem { id: material.id, label: tr(material.label).to_owned(), caption: None, picture: TilePicture::Material(material.id) };
         let header = Some(tr(material.category));
         match groups.iter_mut().find(|group| group.header == header) {
             Some(group) => group.items.push(item),
@@ -608,7 +602,7 @@ fn link_input(sheet: &mut PropertySheet<'_>, layer: LayerId, param: &LinkParam, 
             let mut edited = number;
             let moved = sheet.slider(&param.label, &mut edited, low.min(number)..=high.max(number), 0).is_some();
 
-            // Whole numbers: a press's first whole-number change starts its undo step, moves that round to the value it has send nothing (no step, no cook)
+            // Only a new integer starts an edit or schedules another cook
             let whole = edited.round();
             let press = sheet.ui.make_persistent_id(("link_input_press", layer.0, &param.id));
             press_edit(sheet.ui, press, moved && whole != number).map(|merge| (json!(whole), merge))

@@ -419,6 +419,7 @@ impl GpuLink {
         {
             out.aux.push((texture_set, resolution, rgba));
             self.aux.insert(texture_set, key);
+
             // A weak owner keeps the address unique without retaining the decoded pixels
             self.aux_id_mask = Some(Arc::downgrade(image));
         }
@@ -659,6 +660,7 @@ mod tests {
         execute(&mut s, "viewport.view", &json!({"mode": "image", "image": name})).unwrap();
 
         let out = gpu.sync(&mut s, Some(AuxView::Image), None, 0, 0.0);
+
         assert_eq!(out.image_aux.len(), 1, "equal resolutions share a single pixel buffer");
 
         let (targets, bytes) = out.image_aux.values().next().unwrap();
@@ -720,6 +722,7 @@ mod tests {
         assert!(retired.upgrade().is_none(), "upload ownership must drop independently of decoded source pixels");
 
         let replacement = image([0.0, 0.0, 1.0, 1.0]);
+
         // Simulate an allocator returning the previous address for the new image
         gpu.aux.get_mut(&set).unwrap().1 = Arc::as_ptr(&replacement) as u64;
         session.images.insert(resource.into(), replacement);

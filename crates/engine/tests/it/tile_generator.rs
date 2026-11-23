@@ -178,6 +178,7 @@ fn a_pattern_scale_edit_leaves_the_mask_fills_projection_alone() {
 
     let Some((_, edited)) = session.doc.project.effect(LayerId(effect)) else { panic!("the mask fill is gone") };
     let EffectKind::Fill { source: Source::Procedural { pattern, .. }, projection, .. } = &edited.kind else { panic!("the fill reads a pattern") };
+
     assert_eq!(pattern.scale, 3.0);
     assert_eq!(*projection, Projection::default(), "the projection keeps its scale");
 }
@@ -206,6 +207,7 @@ fn a_new_procedural_mask_uses_scalar_scale_only_for_the_pattern() {
     let effect = LayerId(added["effect"].as_u64().unwrap());
     let (_, effect) = session.doc.project.effect(effect).unwrap();
     let EffectKind::Fill { source: Source::Procedural { pattern, .. }, projection, .. } = &effect.kind else { panic!("expected a procedural mask fill") };
+
     assert_eq!(pattern.scale, 3.0);
     assert_eq!(*projection, Projection::default(), "UV placement must not multiply pattern frequency a second time");
 }

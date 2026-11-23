@@ -462,6 +462,7 @@ mod tests {
         commit_layer(&mut base, LayerId(1), (64, 64), &vals, src(&a, &tiles, 1.0, false), &mut Staging::default());
         commit_mask(&mut base, LayerId(2), (64, 64), &MaskGray::Value(0.5), src(&a, &tiles, 1.0, false), &mut Staging::default());
         let carried: BTreeMap<Channel, TileImage> = vals.keys().map(|c| (*c, a.clone())).collect();
+
         // The final unstaged alpha change still belongs in the commit
         for (erase, carry, stage_last) in [(false, false, true), (true, false, true), (false, false, false), (false, true, true)] {
             let mut a = a.clone();
@@ -486,6 +487,7 @@ mod tests {
 
             assert_eq!((&staged.layers, &staged.masks), (&plain.layers, &plain.masks), "erase {erase}, carried {carry}, staged last {stage_last}");
         }
+
         // The commit must read the current tile when its staged values are stale
         let mut px = base.clone();
         let mut staging = Staging::default();

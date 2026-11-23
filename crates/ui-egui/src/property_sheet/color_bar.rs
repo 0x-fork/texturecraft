@@ -6,7 +6,7 @@ use egui::{
 use egui_phosphor::regular as ic;
 
 use super::color_picker_rows::{FIELD_HEIGHT, FIELD_MIN_HEIGHT, hex_took_escape};
-use super::{PAD, PropertySheet};
+use super::{PropertySheet, SIDE_PADDING_POINTS};
 use crate::color_picker::{ColorModel, ColorPick, ColorSpace, PickerState};
 use crate::fill_material_panel::shown_color;
 use crate::i18n::tr;
@@ -75,13 +75,10 @@ fn picker_state(ctx: &egui::Context, state_id: Id) -> PickerState {
 }
 
 /// Opens `state` on `linear` in the colour space and model the user last picked in any picker
-fn open_picker(ctx: &egui::Context, state_id: Id, state: &mut PickerState, linear: [f32; 3]) {
-    let (preferences, moved_to) =
-        ctx.data(|data| (data.get_temp::<(ColorSpace, ColorModel)>(Id::unique(PREFERENCES_KEY)).unwrap_or_default(), data.get_temp::<Pos2>(state_id)));
-    let (space, model) = preferences;
+fn open_picker(ctx: &egui::Context, state: &mut PickerState, linear: [f32; 3]) {
+    let (space, model) = ctx.data(|data| data.get_temp::<(ColorSpace, ColorModel)>(Id::unique(PREFERENCES_KEY)).unwrap_or_default());
     state.space = space;
     state.model = model;
-    state.moved_to = moved_to;
     state.open_on(linear);
 }
 
@@ -141,7 +138,7 @@ impl PropertySheet<'_> {
             if state.open {
                 state.open = false;
             } else {
-                open_picker(&ctx, state_id, &mut state, linear);
+                open_picker(&ctx, &mut state, linear);
             }
         }
 
@@ -151,22 +148,15 @@ impl PropertySheet<'_> {
                 state.set_linear(picked);
             }
 
-            let previous_position = state.moved_to;
             let inside = self.picker_popup(&response, glyph, label, &mut state, waiting, swatches);
             pick.picked = pick.picked.or(inside.picked);
             pick.merge = inside.merge;
             pick.eyedropper |= inside.eyedropper;
             pick.swatch = inside.swatch;
-
-            // Reopening remembers an explicit move without saving an inactive editor
-            if state.moved_to != previous_position
-                && let Some(moved_to) = state.moved_to
-            {
-                ctx.data_mut(|data| data.insert_temp(state_id, moved_to));
-            }
         }
 
-        if was_open || state.open {
+        // Keep a moved position while its bar is visible, including while the picker is closed
+        if was_open || state.open || state.moved_to.is_some() {
             ctx.memory_mut(|memory| memory.caches.cache::<VisiblePickers>().set(state_id, state));
         }
 
@@ -179,14 +169,15 @@ impl PropertySheet<'_> {
         let ctx = self.ui.ctx().clone();
         let size_id = Id::unique(SIZE_KEY);
         let kept = ctx.data_mut(|data| data.get_persisted::<[f32; 2]>(size_id));
-        let [width, field_height] = kept.unwrap_or([self.right - self.left + 2.0 * PAD, FIELD_HEIGHT]);
+        let [width, field_height] = kept.unwrap_or([self.right - self.left + 2.0 * SIDE_PADDING_POINTS, FIELD_HEIGHT]);
         let screen = ctx.content_rect();
 
         // A kept size may come from a bigger screen or a damaged settings file (max/min also turn NaN into a bound)
         let width = width.max(PICKER_MIN_WIDTH).min(screen.width().max(PICKER_MIN_WIDTH));
-        let field_height = field_height.max(FIELD_MIN_HEIGHT).min(screen.height().max(FIELD_MIN_HEIGHT));
-        let height = state.height.unwrap_or(PICKER_HEIGHT_GUESS + field_height - FIELD_HEIGHT);
-        let panel = Rect::from_x_y_ranges(self.ui.clip_rect().left().min(self.left - PAD)..=self.right + PAD, screen.y_range());
+        let fixed_height = state.fixed_height.unwrap_or(PICKER_HEIGHT_GUESS - FIELD_HEIGHT);
+        let field_height = field_height.max(FIELD_MIN_HEIGHT).min((screen.height() - fixed_height).max(FIELD_MIN_HEIGHT));
+        let height = fixed_height + field_height;
+        let panel = Rect::from_x_y_ranges(self.ui.clip_rect().left().min(self.left - SIDE_PADDING_POINTS)..=self.right + SIDE_PADDING_POINTS, screen.y_range());
         let corner = state.moved_to.unwrap_or_else(|| beside(panel, bar.rect.top(), vec2(width, height), screen));
 
         // The title bar stays on screen, so a drag can always bring the window back
@@ -203,7 +194,10 @@ impl PropertySheet<'_> {
         let shown = egui::Area::new(id.with("picker_area")).order(Order::Foreground).fixed_pos(corner).show(&ctx, |ui| {
             let background = ui.painter().add(egui::Shape::Noop);
             let title_bar = Rect::from_min_size(corner, vec2(width, TITLE_HEIGHT));
-            let close = Rect::from_center_size(pos2(title_bar.right() - PAD - CLOSE_INK_HALF_WIDTH, title_bar.center().y), vec2(CLOSE_TARGET, CLOSE_TARGET));
+            let close = Rect::from_center_size(
+                pos2(title_bar.right() - SIDE_PADDING_POINTS - CLOSE_INK_HALF_WIDTH, title_bar.center().y),
+                vec2(CLOSE_TARGET, CLOSE_TARGET),
+            );
             let drag = ui.interact(Rect::from_min_max(title_bar.min, pos2(close.left(), title_bar.bottom())), id.with("picker_title"), Sense::drag());
             drag.widget_info(|| WidgetInfo::labeled(Role::TitleBar, true, label));
             let drag = drag.on_hover_cursor(CursorIcon::Grab);
@@ -211,7 +205,7 @@ impl PropertySheet<'_> {
             closed.widget_info(|| WidgetInfo::labeled(Role::Button, true, tr("Close")));
             let painter = ui.painter();
             painter.text(
-                pos2(title_bar.left() + PAD, title_bar.center().y),
+                pos2(title_bar.left() + SIDE_PADDING_POINTS, title_bar.center().y),
                 Align2::LEFT_CENTER,
                 label,
                 FontId::proportional(TITLE_TEXT_SIZE),
@@ -250,7 +244,11 @@ impl PropertySheet<'_> {
             (pick, face, drag.dragged().then(|| drag.drag_delta()), closed.clicked(), resize)
         });
         let (pick, face, dragged, closed, resize) = shown.inner;
-        state.height = Some(face.height());
+        let measured_fixed_height = face.height() - field_height;
+        if (measured_fixed_height - fixed_height).abs() > 1.0 {
+            ctx.request_repaint();
+        }
+        state.fixed_height = Some(measured_fixed_height);
         if (state.space, state.model) != shown_in {
             ctx.data_mut(|data| data.insert_temp(Id::unique(PREFERENCES_KEY), (state.space, state.model)));
         }
