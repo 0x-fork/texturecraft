@@ -45,7 +45,7 @@ fn set_material(session: &mut Session, params: &Value) -> Result<Value> {
             match target {
                 // A fill effect changes a channel while it has a source: its channels stay on, at their defaults
                 FillTarget::Effect(_) => edited.sources.iter_mut().for_each(|(channel, source)| *source = Source::uniform_of(*channel)),
-                FillTarget::Layer(_) => edited.sources.clear(),
+                FillTarget::Layer(_) | FillTarget::Mask(_) => edited.sources.clear(),
             }
             Ok(())
         })?;
@@ -101,6 +101,7 @@ fn holds(session: &Session, target: FillTarget, set: usize, material: Option<&Sm
             Some(EffectKind::Material(fill)) => (fill, None),
             _ => return Err(bad(CMD, "not a content fill effect")),
         },
+        FillTarget::Mask(_) => return Err(bad(CMD, "a mask fill has one grayscale source and no channels or material")),
     };
     if fill.link.is_some() {
         return Err(bad(CMD, "a linked material cannot be replaced with this command"));
@@ -115,6 +116,7 @@ fn holds(session: &Session, target: FillTarget, set: usize, material: Option<&Sm
         (Some(_), Some(channels)) => channels.len() == fill.sources.len() && fill.sources.keys().all(|channel| channels.contains_key(channel)),
         (Some(found), None) => {
             let channels = session.doc.project.texture_set(set)?.channel_list();
+
             // The recipe allocates a layer ID, but comparing its sources must leave the project alone
             let mut scratch = Project::new("", "");
             fill.sources == material_sources(&mut scratch, &channels, found)?
@@ -128,7 +130,9 @@ fn holds(session: &Session, target: FillTarget, set: usize, material: Option<&Sm
 fn target_set(session: &Session, target: FillTarget) -> Result<usize> {
     let owner = match target {
         FillTarget::Layer(id) => id,
-        FillTarget::Effect(id) => session.doc.project.effect(id).map(|(owner, _)| owner).ok_or_else(|| bad(CMD, format!("no effect {}", id.0)))?,
+        FillTarget::Effect(id) | FillTarget::Mask(id) => {
+            session.doc.project.effect(id).map(|(owner, _)| owner).ok_or_else(|| bad(CMD, format!("no effect {}", id.0)))?
+        }
     };
     session.doc.project.locate(owner).map(|(set, ..)| set).ok_or_else(|| bad(CMD, format!("layer {} is in no texture set", owner.0)))
 }

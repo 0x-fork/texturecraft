@@ -177,7 +177,7 @@ pub(crate) fn source_line(app: &TextureCraftApp, source: &Source) -> String {
     }
 }
 
-/// One source's card (a channel's): its slot (the row opens the source picker), then the source's own settings; `in_card`: only its slot row, inside the card open now
+/// One source's card (a channel's, a mask fill's grayscale or a filter's image input): its slot (the row opens the source picker), then the source's own settings; `in_card`: only its slot row, inside the card open now
 pub(crate) fn source_card(
     app: &mut TextureCraftApp,
     sheet: &mut PropertySheet<'_>,
@@ -258,9 +258,21 @@ pub(crate) fn source_card(
                 }
             }
         }
+        Source::Anchor { anchor, channel, .. } if slot_of == SourceSlot::Grayscale && !crate::dock::anchor_in_mask(app, anchor) => {
+            anchor_channel_row(app, sheet, base, reader, channel);
+        }
         Source::Image { .. } | Source::Anchor { .. } => {}
     }
     sheet.close_card();
+}
+
+/// The channel a mask fill reads from a content anchor point as gray (a mask anchor point reads its mask's one gray)
+fn anchor_channel_row(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, base: &Value, reader: LayerId, channel: Channel) {
+    let project = &app.session.doc.project;
+    let channels = project.locate(reader).and_then(|(set, _, _)| project.texture_set(set).ok()).map(|set| set.channel_list()).unwrap_or_default();
+    if let (Some(picked), _) = sheet.dropdown(tr("Channel"), channel, &channels, |option| tr(option.label()).to_string(), None) {
+        app.run("effect.set", with(base, json!({"anchorChannel": picked.id()})));
+    }
 }
 
 /// Runs the fill command `choice` asks for on the slot (Import opens the import dialog)
@@ -413,8 +425,16 @@ fn procedural_rows(
 
     let mut edited = pattern.clone();
     let mut edit = scale_and_contrast(sheet, &mut edited);
-    if sheet.fold(tr("Attributes"), None, false) {
+
+    // Only grayscale cards edit Balance and Seed here
+    let gray = matches!(slot_of, SourceSlot::Grayscale);
+    if gray {
         edit = edit.or(balance_and_seed(sheet, &mut edited));
+    }
+    if sheet.fold(tr("Attributes"), None, false) {
+        if !gray {
+            edit = edit.or(balance_and_seed(sheet, &mut edited));
+        }
         if sheet.toggle(tr("Invert"), &mut edited.invert) {
             edit = edit.or(Some(("invert", json!(edited.invert), false)));
         }

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Backface, BakedMap, BlendMode, Channel, ChannelKind, DepthCulling, Projector, ShapeCrop, lum};
+use crate::{Backface, BakedMap, BlendMode, Channel, ChannelKind, CompareSource, ContentsOffset, DepthCulling, Projector, RandomizedSeed, ShapeCrop, lum};
 
 mod curvature_detail;
 mod curvature_mode;
@@ -130,7 +130,16 @@ pub enum LayerKind {
     /// A procedural or uniform material applied everywhere (shaped by the mask).
     Fill(Fill),
     /// A folder of layers, bottom → top.
-    Group { children: Vec<LayerId>, collapsed: bool },
+    Group {
+        children: Vec<LayerId>,
+        collapsed: bool,
+        /// Scale and Rotation laid on every fill inside (none in folders saved before folders had one)
+        #[serde(default, skip_serializing_if = "ContentsOffset::is_none")]
+        contents: ContentsOffset,
+        /// The seeds inside that its Randomize seeds changed, until its Contents reset puts them back (none in folders saved before)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        randomized: Vec<RandomizedSeed>,
+    },
     /// A linked instance of `source` (possibly in another texture set): renders the source's
     /// content, content effects and channel blending, and its mask unless the instance has its
     /// own. Edits to the source show in every instance.
@@ -138,6 +147,11 @@ pub enum LayerKind {
 }
 
 impl LayerKind {
+    /// A new folder: empty, open, with no Scale or Rotation laid on its contents
+    pub fn folder() -> LayerKind {
+        LayerKind::Group { children: Vec::new(), collapsed: false, contents: ContentsOffset::NONE, randomized: Vec::new() }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             LayerKind::Paint => "paint",
@@ -698,6 +712,11 @@ impl Source {
             _ => None,
         }
     }
+
+    /// Whether this source reads anchor point `anchor` (any anchor point when None)
+    pub fn reads_anchor(&self, anchor: Option<LayerId>) -> bool {
+        self.anchor().is_some_and(|found| anchor.is_none_or(|wanted| wanted == found))
+    }
 }
 
 /// A fill layer's material: one source per channel, plus how it is projected.
@@ -835,19 +854,51 @@ pub struct Levels {
     pub gamma: f32,
     pub out_low: f32,
     pub out_high: f32,
+    /// The one channel a content levels remaps; none remaps every channel (as levels saved before the choice did) and a mask's one value
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affects: Option<Channel>,
+    /// Values past the input handles stop at the output ends; off, the remap's line carries on past them (older saves load clamped)
+    #[serde(default = "saved_levels_clamp", skip_serializing_if = "is_true")]
+    pub clamp: bool,
+}
+
+/// What levels saved before [`Levels::clamp`] existed did
+fn saved_levels_clamp() -> bool {
+    true
 }
 
 impl Default for Levels {
     fn default() -> Self {
-        Levels { in_low: 0.0, in_high: 1.0, gamma: 1.0, out_low: 0.0, out_high: 1.0 }
+        Levels { in_low: 0.0, in_high: 1.0, gamma: 1.0, out_low: 0.0, out_high: 1.0, affects: None, clamp: false }
     }
 }
 
 impl Levels {
+    /// The gamma a levels effect takes, typed or dragged
+    pub const GAMMA_RANGE: std::ops::RangeInclusive<f32> = 0.01..=10.0;
+
+    /// Narrowest input range the remap divides by, so handles on one value never divide by zero
+    const MIN_INPUT_RANGE: f32 = 1e-5;
+
+    /// Smallest gamma the remap raises by, so a zero gamma read from a file never divides by zero
+    const MIN_GAMMA: f32 = 1e-3;
+
     pub fn apply(&self, x: f32) -> f32 {
-        let t = ((x - self.in_low) / (self.in_high - self.in_low).max(1e-5)).clamp(0.0, 1.0);
-        let t = t.powf(1.0 / self.gamma.max(1e-3));
-        self.out_low + (self.out_high - self.out_low) * t
+        let between = (x - self.in_low) / (self.in_high - self.in_low).max(Self::MIN_INPUT_RANGE);
+
+        // Past the input handles an unclamped remap carries on in a straight line (gamma only bends the part between them)
+        let between = if self.clamp || (0.0..=1.0).contains(&between) { between.clamp(0.0, 1.0).powf(1.0 / self.gamma.max(Self::MIN_GAMMA)) } else { between };
+        self.out_low + (self.out_high - self.out_low) * between
+    }
+
+    /// Whether these levels remap `channel` of a layer's content
+    pub fn remaps(&self, channel: Channel) -> bool {
+        self.affects.is_none_or(|affects| affects == channel)
+    }
+
+    /// The handles back at their defaults, keeping the channel and the clamp
+    pub fn reset(&self) -> Levels {
+        Levels { affects: self.affects, clamp: self.clamp, ..Levels::default() }
     }
 }
 
@@ -1126,6 +1177,11 @@ pub enum Filter {
     },
 }
 
+/// Whether a switch is on, its default where it defaults to on (not saved then)
+fn is_true(on: &bool) -> bool {
+    *on
+}
+
 /// Push `x` (0..1) towards 1 (`amount` > 0) or 0 (`amount` < 0); `amount` in −1..1.
 fn shift_unit(x: f32, amount: f32) -> f32 {
     let a = amount.clamp(-1.0, 1.0);
@@ -1379,15 +1435,24 @@ pub enum EffectKind {
     Levels(Levels),
     Filter(Filter),
     /// Select ID-map colors within a tolerance.
-    ColorSelection {
-        colors: Vec<[f32; 3]>,
-        tolerance: f32,
-    },
-    /// Compare the mask with a constant.
+    ColorSelection(crate::ColorSelection),
+    /// Compare one channel (or the mask so far, or a constant) on two sides: 1 where the comparison holds, softened by `hardness`
     Compare {
         op: CompareOp,
+        /// The constant a [`CompareSource::Constant`] side reads
         value: f32,
+        /// How far apart two values may be and still count as equal ([`CompareOp::WithinTolerance`])
         tolerance: f32,
+        #[serde(default = "CompareSource::saved_left", skip_serializing_if = "CompareSource::is_saved_left")]
+        left: CompareSource,
+        #[serde(default = "CompareSource::saved_right", skip_serializing_if = "CompareSource::is_saved_right")]
+        right: CompareSource,
+        /// The channel a layer side reads
+        #[serde(default = "saved_compare_channel", skip_serializing_if = "is_saved_compare_channel")]
+        channel: Channel,
+        /// 1 is a hard step (what compare masks saved before hardness did); lower ramps over 1 − hardness
+        #[serde(default = "saved_compare_hardness", skip_serializing_if = "is_saved_compare_hardness")]
+        hardness: f32,
     },
     /// Content only: a material fill (one source per channel; channels without a source are
     /// left as they are).
@@ -1422,6 +1487,66 @@ pub enum CompareOp {
     GreaterThan,
 }
 
+impl CompareOp {
+    /// Menu order
+    pub const ALL: [CompareOp; 3] = [CompareOp::LesserThan, CompareOp::WithinTolerance, CompareOp::GreaterThan];
+
+    /// Command id
+    pub fn id(self) -> &'static str {
+        match self {
+            CompareOp::LesserThan => "lesser",
+            CompareOp::WithinTolerance => "within",
+            CompareOp::GreaterThan => "greater",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<CompareOp> {
+        match id {
+            // mask.add.compare took "less" as well as "lesser" before the ids were the op names
+            "less" => Some(CompareOp::LesserThan),
+            _ => CompareOp::ALL.into_iter().find(|op| op.id() == id),
+        }
+    }
+
+    /// The mask value of `left` compared with `right`: a hard 0/1 at hardness 1, else a ramp over 1 − hardness past the edge
+    pub fn mask(self, left: f32, right: f32, tolerance: f32, hardness: f32) -> f32 {
+        // How far past the edge of the passing range `left` is (positive passes)
+        let past = match self {
+            CompareOp::LesserThan => right - left,
+            CompareOp::GreaterThan => left - right,
+            CompareOp::WithinTolerance => tolerance - (left - right).abs(),
+        };
+        let width = (1.0 - hardness).clamp(0.0, 1.0);
+        let pass = if self == CompareOp::WithinTolerance { past >= 0.0 } else { past > 0.0 };
+        if width.is_nan() || width <= 0.0 || past.is_nan() {
+            return if pass { 1.0 } else { 0.0 };
+        }
+
+        let ramp = if self == CompareOp::WithinTolerance { 1.0 + past / width } else { past / width };
+        ramp.clamp(0.0, 1.0)
+    }
+}
+
+/// The channel of compare masks saved before the channel choice (their sides read no channel)
+fn saved_compare_channel() -> Channel {
+    Channel::Height
+}
+
+/// The hardness of compare masks saved before hardness existed (a hard step)
+fn saved_compare_hardness() -> f32 {
+    1.0
+}
+
+/// Whether a compare mask reads the channel saved ones did (not saved then)
+fn is_saved_compare_channel(channel: &Channel) -> bool {
+    *channel == saved_compare_channel()
+}
+
+/// Whether a compare mask is the hard step saved ones were (not saved then)
+fn is_saved_compare_hardness(hardness: &f32) -> bool {
+    *hardness == saved_compare_hardness()
+}
+
 impl EffectKind {
     pub fn name(&self) -> &'static str {
         match self {
@@ -1436,6 +1561,11 @@ impl EffectKind {
             EffectKind::Material(_) => "Fill",
             EffectKind::Anchor => "Anchor point",
         }
+    }
+
+    /// Whether the effect has a blend mode and opacity of its own (levels and anchor points do not)
+    pub fn blends(&self) -> bool {
+        !matches!(self, EffectKind::Levels(_) | EffectKind::Anchor)
     }
 
     /// Whether the effect belongs in a layer's content stack (`true`), its mask (`false`), or
@@ -1453,12 +1583,15 @@ impl EffectKind {
         matches!(self, EffectKind::Paint | EffectKind::Path(_))
     }
 
-    /// Whether a source of this effect (a fill, a material or a generator input) reads an anchor point.
-    fn reads_anchor(&self) -> bool {
+    /// Whether a source of this effect reads anchor point `anchor` (any anchor point when None)
+    pub fn reads(&self, anchor: Option<LayerId>) -> bool {
         match self {
-            EffectKind::Fill { source, .. } => source.anchor().is_some(),
-            EffectKind::Material(fill) => fill.sources.values().any(|source| source.anchor().is_some()),
-            EffectKind::Generator(generator) => generator.micro.is_some() || generator.inputs.values().any(|source| source.anchor().is_some()),
+            EffectKind::Fill { source, .. } => source.reads_anchor(anchor),
+            EffectKind::Material(fill) => fill.sources.values().any(|source| source.reads_anchor(anchor)),
+            EffectKind::Generator(generator) => {
+                generator.micro.is_some_and(|micro| anchor.is_none_or(|wanted| wanted == micro.anchor))
+                    || generator.inputs.values().any(|source| source.reads_anchor(anchor))
+            }
             _ => false,
         }
     }
@@ -1486,7 +1619,7 @@ impl EffectKind {
         anchors
     }
 
-    /// The image resources this effect's sources read (a fill, its patterns, a material or a generator input)
+    /// The image resources this effect's sources read (a fill, its patterns, a material or a generator input, a colour selection's ID map)
     pub fn images_read(&self) -> impl Iterator<Item = &str> {
         let sources: Vec<&Source> = match self {
             EffectKind::Fill { source, .. } => vec![source],
@@ -1494,7 +1627,16 @@ impl EffectKind {
             EffectKind::Generator(generator) => generator.inputs.values().collect(),
             _ => Vec::new(),
         };
-        sources.into_iter().flat_map(Source::images)
+        let id_map = match self {
+            EffectKind::ColorSelection(selection) => selection.id_map.as_deref(),
+            _ => None,
+        };
+        sources.into_iter().flat_map(Source::images).chain(id_map)
+    }
+
+    /// Reads a channel of the layer or of the stack below it (a compare mask's layer sides)
+    pub fn reads_stack(&self) -> bool {
+        matches!(self, EffectKind::Compare { left, right, .. } if left.reads_stack() || right.reads_stack())
     }
 }
 
@@ -1502,10 +1644,15 @@ impl Layer {
     /// Whether any source of the layer (fill, mask or content effects) reads an anchor point.
     pub fn reads_anchor(&self) -> bool {
         let fill = match &self.kind {
-            LayerKind::Fill(f) => f.sources.values().any(|s| s.anchor().is_some()),
+            LayerKind::Fill(fill) => fill.sources.values().any(|source| source.reads_anchor(None)),
             _ => false,
         };
-        fill || self.mask.iter().flat_map(|m| m.effects.iter()).chain(self.content_effects.iter()).any(|e| e.kind.reads_anchor())
+        fill || self.mask.iter().flat_map(|mask| mask.effects.iter()).chain(self.content_effects.iter()).any(|effect| effect.kind.reads(None))
+    }
+
+    /// Whether the layer's result depends on the stack below it: it reads an anchor point, or its mask compares channels of the stack
+    pub fn reads_stack(&self) -> bool {
+        self.reads_anchor() || self.mask.iter().flat_map(|mask| mask.effects.iter()).any(|effect| effect.visible && effect.kind.reads_stack())
     }
 }
 
@@ -1517,12 +1664,21 @@ pub struct Effect {
     pub kind: EffectKind,
     pub blend: BlendMode,
     pub opacity: f32,
+    /// A content effect's channels that blend apart from `blend` and `opacity` (none in projects saved before they existed)
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub channel_blends: BTreeMap<Channel, ChannelBlend>,
 }
 
 impl Effect {
     pub fn new(id: LayerId, kind: EffectKind) -> Effect {
         // Generators and fills that build a mask usually add on top of the background
-        Effect { id, name: kind.name().to_string(), visible: true, kind, blend: BlendMode::Normal, opacity: 1.0 }
+        Effect { id, name: kind.name().to_string(), visible: true, kind, blend: BlendMode::Normal, opacity: 1.0, channel_blends: BTreeMap::new() }
+    }
+
+    /// How the effect blends on `channel` of its layer's content, or on its mask (`None`)
+    pub fn blend_of(&self, channel: Option<Channel>) -> ChannelBlend {
+        let shared = ChannelBlend { mode: self.blend, opacity: self.opacity };
+        channel.and_then(|channel| self.channel_blends.get(&channel).copied()).unwrap_or(shared)
     }
 }
 
@@ -1558,6 +1714,15 @@ mod tests {
         let effect = EffectKind::Material(fill);
 
         assert_eq!(effect.images_read().collect::<Vec<_>>(), vec!["material.png"]);
+    }
+
+    #[test]
+    fn a_colour_selection_id_map_is_reported_as_used() {
+        let mut selection = crate::ColorSelection::new(Vec::new(), 0.0);
+        selection.id_map = Some("id.png".into());
+        let effect = Effect::new(LayerId(1), EffectKind::ColorSelection(selection));
+
+        assert_eq!(effect.kind.images_read().collect::<Vec<_>>(), vec!["id.png"]);
     }
 
     #[test]
@@ -1649,7 +1814,7 @@ mod tests {
 
     #[test]
     fn levels_map_range_and_gamma() {
-        let l = Levels { in_low: 0.2, in_high: 0.6, gamma: 1.0, out_low: 0.0, out_high: 1.0 };
+        let l = Levels { in_low: 0.2, in_high: 0.6, clamp: true, ..Levels::default() };
         assert!((l.apply(0.4) - 0.5).abs() < 1e-6);
         assert_eq!(l.apply(0.0), 0.0);
         assert_eq!(l.apply(1.0), 1.0);
@@ -1660,6 +1825,19 @@ mod tests {
         // Degenerate ranges never divide by zero
         let d = Levels { in_low: 0.5, in_high: 0.5, ..Levels::default() };
         assert!(d.apply(0.7).is_finite());
+    }
+
+    #[test]
+    fn unclamped_levels_carry_on_past_the_input_handles() {
+        let clamped = Levels { in_low: 0.2, in_high: 0.6, clamp: true, ..Levels::default() };
+        let open = Levels { clamp: false, ..clamped };
+        assert_eq!(clamped.apply(0.0), 0.0);
+        assert!((open.apply(0.0) + 0.5).abs() < 1e-6, "0.2 below the black handle is half a range below black");
+        assert!((open.apply(0.8) - 1.5).abs() < 1e-6);
+        assert!((open.apply(0.4) - clamped.apply(0.4)).abs() < 1e-6, "between the handles both remap alike");
+
+        let bent = Levels { gamma: 2.0, ..open };
+        assert!((bent.apply(0.0) + 0.5).abs() < 1e-6, "gamma bends only the part between the handles");
     }
 
     #[test]
@@ -1680,6 +1858,9 @@ mod tests {
 
         let effects = [
             r#"{"Fill":{"source":{"Uniform":[0.5,0.5,0.5]},"projection":{"Triplanar":{"scale":1.0,"sharpness":0.5,"offset":[0.0,0.0,0.0]}}}}"#,
+            r#"{"Levels":{"in_low":0.2,"in_high":0.6,"gamma":1.0,"out_low":0.0,"out_high":1.0}}"#,
+            r#"{"Compare":{"op":"GreaterThan","value":0.5,"tolerance":0.1}}"#,
+            r#"{"ColorSelection":{"colors":[[1.0,0.0,0.0]],"tolerance":0.1}}"#,
             r#"{"Material":{"sources":{},"projection":{"Spherical":{"scale":2.0}}}}"#,
         ];
         for saved in effects {
@@ -1687,6 +1868,29 @@ mod tests {
 
             assert_eq!(serde_json::to_string(&loaded).unwrap(), saved, "an effect saves as it was saved");
         }
+    }
+
+    #[test]
+    fn levels_saved_before_the_channel_and_clamp_load_as_they_rendered() {
+        let saved = serde_json::json!({"in_low": 0.2, "in_high": 0.6, "gamma": 1.0, "out_low": 0.0, "out_high": 1.0});
+        let loaded: Levels = serde_json::from_value(saved.clone()).unwrap();
+
+        assert!(loaded.clamp, "they stopped at the output ends");
+        assert_eq!(loaded.affects, None, "they remapped every channel");
+        assert!(Channel::ALL.iter().all(|&channel| loaded.remaps(channel)));
+
+        let saved_again = serde_json::to_value(loaded).unwrap();
+
+        assert!(saved_again.get("affects").is_none(), "no channel is saved, as before: {saved_again}");
+        assert!(saved_again.get("clamp").is_none(), "a clamped level is saved as before: {saved_again}");
+        assert_eq!(serde_json::from_value::<Levels>(saved_again).unwrap(), loaded);
+
+        let unclamped = serde_json::to_value(Levels { clamp: false, ..loaded }).unwrap();
+
+        assert_eq!(serde_json::from_value::<Levels>(unclamped).unwrap(), Levels { clamp: false, ..loaded }, "an unclamped level keeps its choice");
+
+        let base = Levels { affects: Some(Channel::BaseColor), ..loaded };
+        assert!(base.remaps(Channel::BaseColor) && !base.remaps(Channel::Roughness));
     }
 
     #[test]
@@ -1709,16 +1913,20 @@ mod tests {
     fn point_filters_map_values_and_skip_neighbourhood_filters() {
         let c = ChannelKind::Color;
         let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-4);
-        let cl = Filter::ContrastLuminosity { contrast: 1.0, luminosity: 0.0 };
-        assert!(close(cl.point(c, [0.25, 0.5, 0.75]).unwrap(), [0.0, 0.5, 1.0]));
+        let contrast = Filter::ContrastLuminosity { contrast: 1.0, luminosity: 0.0 };
+        assert!(close(contrast.point(c, [0.25, 0.5, 0.75]).unwrap(), [0.0, 0.5, 1.0]));
         assert!(close(Filter::ContrastLuminosity { contrast: 0.0, luminosity: 0.2 }.point(ChannelKind::Scalar, [0.5; 3]).unwrap(), [0.7; 3]));
-        let gm = Filter::GradientMap { colors: vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] };
-        assert!(close(gm.point(c, [0.0; 3]).unwrap(), [1.0, 0.0, 0.0]));
-        assert!(close(gm.point(c, [1.0; 3]).unwrap(), [0.0, 0.0, 1.0]));
+
+        let gradient_map = Filter::GradientMap { colors: vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]] };
+        assert!(close(gradient_map.point(c, [0.0; 3]).unwrap(), [1.0, 0.0, 0.0]));
+        assert!(close(gradient_map.point(c, [1.0; 3]).unwrap(), [0.0, 0.0, 1.0]));
         assert_eq!(Filter::GradientMap { colors: vec![] }.point(c, [0.3; 3]), None, "an empty gradient changes nothing");
+
         assert!(close(Filter::Posterize { levels: 2.0 }.point(c, [0.2, 0.6, 0.9]).unwrap(), [0.0, 1.0, 1.0]));
         assert!(close(Filter::Clamp { min: 0.8, max: 0.3 }.point(c, [0.1, 0.5, 0.9]).unwrap(), [0.3, 0.5, 0.8]), "swapped bounds never panic");
+
         let scan = |position, contrast| Filter::HistogramScan { position, contrast }.point(c, [0.2, 0.5, 0.9]).unwrap();
+
         assert!(close(scan(0.5, 0.0), [0.2, 0.5, 0.9]), "a full-width ramp at the middle keeps the values");
         assert!(close(scan(0.4, 1.0), [0.0, 1.0, 1.0]), "full contrast is a step at the position");
         assert!(close(scan(0.5, 1.0), [0.0, 1.0, 1.0]), "the position itself goes to white");
@@ -1734,10 +1942,11 @@ mod tests {
         assert!(close(shift(0.0), [0.0, 0.5, 1.0]), "no offset keeps white white");
         assert!(close(shift(0.25), [0.25, 0.75, 0.25]) && close(shift(-0.25), [0.75, 0.25, 0.75]));
 
-        let cb = Filter::ColorBalance { shadows: [0.2, 0.0, 0.0], midtones: [0.0; 3], highlights: [0.0, 0.0, 0.2] };
-        assert!(cb.point(c, [0.05; 3]).unwrap()[0] > 0.2 && cb.point(c, [0.95; 3]).unwrap()[2] > 0.99);
+        let color_balance = Filter::ColorBalance { shadows: [0.2, 0.0, 0.0], midtones: [0.0; 3], highlights: [0.0, 0.0, 0.2] };
+        assert!(color_balance.point(c, [0.05; 3]).unwrap()[0] > 0.2 && color_balance.point(c, [0.95; 3]).unwrap()[2] > 0.99);
         assert!(close(Filter::Invert.point(ChannelKind::Signed, [0.5; 3]).unwrap(), [-0.5; 3]));
         assert_eq!(Filter::Invert.point(ChannelKind::NormalMap, [0.5, 0.5, 1.0]), Some([0.5, 0.5, 1.0]));
+
         for f in [Filter::Blur { radius: 1.0 }, Filter::Warp { intensity: 1.0, scale: 1.0, seed: 0 }, Filter::DirectionalBlur { radius: 1.0, angle: 0.0 }] {
             assert!(f.is_neighbourhood() && f.point(c, [0.5; 3]).is_none());
         }
@@ -1785,15 +1994,49 @@ mod tests {
 
         assert!(fill_layer.reads_anchor());
 
+        let reader = fill_layer.mask.as_ref().map(|mask| &mask.effects[0].kind);
+        assert!(reader.is_some_and(|reader| reader.reads(Some(LayerId(9))) && reader.reads(None) && !reader.reads(Some(LayerId(8)))));
+
         // A generator with micro detail reads its anchor too
         let mut generator_layer = Layer::new(LayerId(3), "g", LayerKind::Paint, &[Channel::BaseColor]);
         let mut generator = Generator::new(GeneratorKind::Dirt);
         generator.micro = Some(MicroDetail { anchor: LayerId(9), amount: 0.5 });
 
         assert_eq!(EffectKind::Generator(generator.clone()).anchors_read(), [(LayerId(9), Channel::Height)]);
+        assert!(EffectKind::Generator(generator.clone()).reads(Some(LayerId(9))) && !EffectKind::Generator(generator.clone()).reads(Some(LayerId(8))));
+
         generator_layer.mask = Some(Mask { effects: vec![Effect::new(LayerId(4), EffectKind::Generator(generator))], ..Mask::new(MaskBackground::Black) });
 
         assert!(generator_layer.reads_anchor());
+    }
+
+    #[test]
+    fn compare_masks_saved_before_sources_compare_the_mask_with_the_constant_hard() {
+        let saved = r#"{"Compare":{"op":"GreaterThan","value":0.5,"tolerance":0.1}}"#;
+        let kind: EffectKind = serde_json::from_str(saved).unwrap();
+        let EffectKind::Compare { left, right, channel, hardness, .. } = kind else { panic!("{kind:?}") };
+        assert_eq!((left, right, channel, hardness), (CompareSource::ThisMask, CompareSource::Constant, Channel::Height, 1.0));
+        assert_eq!(serde_json::to_string(&kind).unwrap(), saved, "an unedited compare saves only its op, value and tolerance");
+
+        let round_trip: EffectKind = serde_json::from_str(&serde_json::to_string(&kind).unwrap()).unwrap();
+
+        assert_eq!(round_trip, kind);
+    }
+
+    #[test]
+    fn a_hard_compare_is_the_old_step_and_a_soft_one_ramps() {
+        // Hardness 1 keeps the strict comparisons compare masks always made
+        for (left, right) in [(0.4, 0.5), (0.5, 0.5), (0.6, 0.5), (f32::NAN, 0.5)] {
+            let step = |pass: bool| if pass { 1.0 } else { 0.0 };
+            assert_eq!(CompareOp::GreaterThan.mask(left, right, 0.1, 1.0), step(left > right));
+            assert_eq!(CompareOp::LesserThan.mask(left, right, 0.1, 1.0), step(left < right));
+            assert_eq!(CompareOp::WithinTolerance.mask(left, right, 0.05, 1.0), step((left - right).abs() <= 0.05));
+        }
+
+        assert!((CompareOp::GreaterThan.mask(0.55, 0.5, 0.1, 0.9) - 0.5).abs() < 1e-5, "halfway up a 0.1 ramp");
+        assert_eq!(CompareOp::GreaterThan.mask(0.45, 0.5, 0.1, 0.0), 0.0, "below the edge stays 0 however soft");
+        assert_eq!(CompareOp::GreaterThan.mask(0.6, 0.5, 0.1, f32::NAN), 1.0, "a NaN hardness compares hard");
+        assert!((CompareOp::WithinTolerance.mask(0.65, 0.5, 0.1, 0.9) - 0.5).abs() < 1e-5, "0.05 past the tolerance");
     }
 
     #[test]

@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use texturecraft_core::{FillSymmetry, Projection, Sampling};
+use texturecraft_core::{FillSymmetry, LayerId, Project, Projection, Sampling};
 
 use super::Inputs;
 use crate::ProjectorDepthCache;
@@ -16,12 +17,27 @@ const MAX_EVALUATION_VIEWS: usize = 10;
 pub(super) struct EvaluationInputs<'a> {
     inputs: &'a Inputs<'a>,
     projectors: &'a ProjectorDepthCache,
+    instance_draws: OnceLock<HashMap<(usize, LayerId), usize>>,
     depth_maps: Mutex<Vec<ViewDepth>>,
 }
 
 impl<'a> EvaluationInputs<'a> {
     pub(super) fn new(inputs: &'a Inputs<'a>, projectors: &'a ProjectorDepthCache) -> Self {
-        Self { inputs, projectors, depth_maps: Mutex::new(Vec::new()) }
+        Self { inputs, projectors, instance_draws: OnceLock::new(), depth_maps: Mutex::new(Vec::new()) }
+    }
+
+    /// Each path through nested folder instances gets a stable identity within an evaluation.
+    pub(super) fn instance_draw(&self, parent: usize, id: LayerId) -> usize {
+        let draws = self.instance_draws.get_or_init(|| {
+            let mut draws = HashMap::new();
+            if let Ok(set) = self.project.texture_set(self.ts) {
+                collect_instance_draws(self.project, &set.stack, 0, 0, &mut draws);
+            }
+
+            draws
+        });
+
+        draws.get(&(parent, id)).copied().unwrap_or_default()
     }
 
     pub(super) fn projector_depth(&self, projection: &Projection, sampling: Sampling) -> Option<Arc<FillDepth>> {
@@ -56,5 +72,22 @@ impl<'a> Deref for EvaluationInputs<'a> {
 
     fn deref(&self) -> &Self::Target {
         self.inputs
+    }
+}
+
+fn collect_instance_draws(project: &Project, layers: &[LayerId], parent: usize, depth: usize, draws: &mut HashMap<(usize, LayerId), usize>) {
+    if depth > texturecraft_core::project::MAX_DEPTH {
+        return;
+    }
+
+    for &id in layers {
+        let Some(source) = project.content_layer(id).filter(|layer| !layer.children().is_empty()) else { continue };
+        let instance = if id == source.id {
+            parent
+        } else {
+            let next = draws.len() + 1;
+            *draws.entry((parent, id)).or_insert(next)
+        };
+        collect_instance_draws(project, source.children(), instance, depth + 1, draws);
     }
 }

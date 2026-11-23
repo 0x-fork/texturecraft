@@ -257,8 +257,10 @@ fn panic_hunt() {
         if spec.id == "project.sample" {
             continue; // slow (bakes); covered elsewhere
         }
+
         for p in &hostile {
             let mut s = session();
+
             // Match the fixture resolution to avoid a full 2048px bake for each unrelated input
             for texture_set in &mut s.doc.project.texture_sets {
                 texture_set.bake.common.resolution = texturecraft_engine::core::BakeResolution::R256;
@@ -278,7 +280,7 @@ fn gray_png() -> Vec<u8> {
 
 /// Frame edits and frame and Fill section resets on the fills they act on (a planar, a warp and a decal mask) meet hostile values without panicking; a refused edit changes nothing and adds no undo step
 #[test]
-fn panic_hunt_frames_and_transforms() {
+fn panic_hunt_frames() {
     let mut s = session();
     let image = s.import_resource_bytes("gray.png", gray_png()).unwrap();
     let planar = execute(&mut s, "layer.add.fill", &Value::Null).unwrap()["layer"].as_u64().unwrap();

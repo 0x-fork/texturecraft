@@ -4,13 +4,20 @@
 
 use std::collections::BTreeMap;
 
-use texturecraft_compose::{BelowCache, Composite, Inputs, PaintTarget, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached};
+use texturecraft_compose::{
+    BelowCache, Composite, Inputs, MaskGray, PaintTarget, PixelStore, StrokePreview, all_tiles, composite_tiles, composite_tiles_cached,
+};
 use texturecraft_core::{
-    BakedMap, BlendMode, Channel, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind, HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground,
-    Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
+    BakedMap, BlendMode, Channel, ColorSelection, CompareOp, CompareSource, ContentsOffset, Effect, EffectKind, Fill, Filter, Generator, GeneratorKind,
+    HeightMask, Layer, LayerId, LayerKind, Mask, MaskBackground, Procedural, ProceduralKind, Project, Projection, Source, TextureSet,
 };
 use texturecraft_geom::{Mesh, UvGBuffer, primitives};
 use texturecraft_texel::{TILE, TileImage, to_u16};
+
+#[path = "cache_and_instances/blur_on.rs"]
+mod blur_on;
+
+use blur_on::BlurOn;
 
 const RES: u32 = 256;
 
@@ -69,7 +76,7 @@ fn heavy_stack(f: &mut Fixture) -> LayerId {
     mask.effects.push(effect(f, EffectKind::Generator(Generator::new(GeneratorKind::Position))));
     mask.effects.push(effect(f, EffectKind::Filter(Filter::Blur { radius: 40.0 })));
     add(f, 0, fill(&[(Channel::Roughness, procedural(ProceduralKind::Grunge, 0.0, 1.0))]), Some(mask));
-    let group = add(f, 0, LayerKind::Group { children: vec![], collapsed: false }, None);
+    let group = add(f, 0, LayerKind::Group { children: vec![], collapsed: false, contents: Default::default(), randomized: Vec::new() }, None);
     for b in f.project.layer_mut(group).unwrap().channels.values_mut() {
         b.mode = BlendMode::Passthrough;
     }
@@ -226,7 +233,7 @@ fn mask_with_height_follows_the_layer_height() {
 }
 
 fn group(f: &mut Fixture, folder: Option<LayerId>, mode: BlendMode, opacity: f32, mask: Option<Mask>) -> LayerId {
-    let id = put(f, 0, folder, LayerKind::Group { children: vec![], collapsed: false }, mask);
+    let id = put(f, 0, folder, LayerKind::Group { children: vec![], collapsed: false, contents: Default::default(), randomized: Vec::new() }, mask);
     blend(f, id, mode, opacity);
     id
 }
@@ -338,7 +345,7 @@ fn stroke(target: LayerId) -> StrokePreview {
         opacity: 0.9,
         erase: false,
         values: [(Channel::BaseColor, [1.0, 0.1, 0.1]), (Channel::Roughness, [0.2; 3])].into_iter().collect(),
-        mask_value: 1.0,
+        mask_gray: MaskGray::Value(1.0),
         stencil: None,
         carried: BTreeMap::new(),
         carried_mask: None,
@@ -919,6 +926,132 @@ fn generator_input_image_changes_invalidate_stack_key() {
     assert!(key(&images) != original, "removing a generator input must invalidate the cache");
 }
 
+#[test]
+fn compare_masks_reading_layers_fall_back_to_full_evaluation() {
+    let mut f = fixture();
+    let n = nested_stack(&mut f);
+    let compare = effect(
+        &mut f,
+        EffectKind::Compare {
+            op: CompareOp::GreaterThan,
+            value: 0.5,
+            tolerance: 0.0,
+            left: CompareSource::LayersBelow,
+            right: CompareSource::ThisLayer,
+            channel: Channel::Roughness,
+            hardness: 1.0,
+        },
+    );
+
+    // A mask above the hot layer compares the stack below it
+    f.project.layer_mut(n.g2_above).unwrap().mask.as_mut().unwrap().effects.push(compare);
+
+    for hot in [n.deep, n.top] {
+        assert!(check_cached(&f, 0, hot).is_empty(), "compare masks read the stack: nothing cached");
+    }
+}
+
+/// The key of set 0's whole stack over `images`
+fn stack_key(fixture: &Fixture, images: &texturecraft_compose::ImageStore) -> texturecraft_compose::StackKey {
+    let roots = &fixture.project.texture_sets[0].stack;
+    texturecraft_compose::StackKey::new(&fixture.project, &fixture.pixels, &Default::default(), images, 0, roots).unwrap()
+}
+
+/// A flat image resource of `value`
+fn flat_image(value: f32) -> std::sync::Arc<texturecraft_compose::ImageRes> {
+    std::sync::Arc::new(texturecraft_compose::ImageRes::new(RES, RES, vec![[value; 4]; (RES * RES) as usize], false))
+}
+
+#[test]
+fn id_map_image_changes_invalidate_stack_key() {
+    let mut fixture = fixture();
+    heavy_stack(&mut fixture);
+    let bottom_layer = fixture.project.texture_sets[0].stack[0];
+    let mut selection = ColorSelection::new(vec![[1.0, 0.0, 0.0]], 0.1);
+    selection.id_map = Some("id".into());
+    let selection = effect(&mut fixture, EffectKind::ColorSelection(selection));
+    let layer = fixture.project.layer_mut(bottom_layer).unwrap();
+    layer.mask = Some(Mask::new(MaskBackground::White));
+    layer.mask.as_mut().unwrap().effects.push(selection);
+    let mut images = texturecraft_compose::ImageStore::default();
+    images.insert("id".into(), flat_image(0.1));
+
+    let original = stack_key(&fixture, &images);
+    images.insert("id".into(), flat_image(0.9));
+
+    assert!(stack_key(&fixture, &images) != original, "replacing the id image must invalidate the cache");
+}
+
+/// A folder of set `ts` holding a Clouds fill whose content or mask is blurred by 8; returns the folder and the fill
+fn folder_of_blurred_clouds(f: &mut Fixture, ts: usize, folder: Option<LayerId>, blur_on: BlurOn) -> (LayerId, LayerId) {
+    let held = put(f, ts, folder, LayerKind::Group { children: vec![], collapsed: false, contents: Default::default(), randomized: Vec::new() }, None);
+    let clouds = put(f, ts, Some(held), fill(&[(Channel::BaseColor, procedural(ProceduralKind::Clouds, 0.1, 0.9))]), None);
+    let blur = effect(f, EffectKind::Filter(Filter::Blur { radius: 8.0 }));
+    match blur_on {
+        BlurOn::Content => f.project.layer_mut(clouds).unwrap().content_effects.push(blur),
+        BlurOn::Mask => {
+            let mut mask = Mask::new(MaskBackground::Black);
+            let checker = procedural(ProceduralKind::Checker, 0.0, 1.0);
+            mask.effects.push(effect(f, EffectKind::Fill { source: checker, projection: Projection::default(), sampling: Default::default() }));
+            mask.effects.push(blur);
+            f.project.layer_mut(clouds).unwrap().mask = Some(mask);
+        }
+    }
+    (held, clouds)
+}
+
+/// A top-level folder of set 0 laying Scale 2 and Rotation 25 on the fills inside it
+fn offset_folder(f: &mut Fixture) -> LayerId {
+    let contents = ContentsOffset::new(2.0, 25.0);
+    put(f, 0, None, LayerKind::Group { children: vec![], collapsed: false, contents, randomized: Vec::new() }, None)
+}
+
+#[test]
+fn a_neighbourhood_filter_in_an_instanced_folder_under_an_offset_folder_reads_its_content_in_the_instances_space() {
+    let mut mismatches = Vec::new();
+    for blur_on in [BlurOn::Content, BlurOn::Mask] {
+        let mut instanced = fixture();
+        let (source, _) = folder_of_blurred_clouds(&mut instanced, 1, None, blur_on);
+        let outer = offset_folder(&mut instanced);
+        put(&mut instanced, 0, Some(outer), LayerKind::Instance { source }, None);
+
+        let mut copied = fixture();
+        let outer = offset_folder(&mut copied);
+        folder_of_blurred_clouds(&mut copied, 0, Some(outer), blur_on);
+
+        let (instanced, copied) = (reference(&instanced, 0), reference(&copied, 0));
+        let texels = (0..RES).flat_map(|y| (0..RES).map(move |x| (x, y)));
+        let differences: Vec<f32> = texels
+            .map(|(x, y)| {
+                let (a, b) = (instanced.value(Channel::BaseColor, x, y), copied.value(Channel::BaseColor, x, y));
+                a.iter().zip(&b).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max)
+            })
+            .filter(|difference| *difference > 1e-5)
+            .collect();
+        let largest = differences.iter().copied().fold(0.0, f32::max);
+
+        if !differences.is_empty() {
+            mismatches.push(format!("{blur_on:?} blur: the instance differs from the copy by up to {largest} on {} texels", differences.len()));
+        }
+    }
+
+    assert!(mismatches.is_empty(), "{}", mismatches.join("; "));
+}
+
+#[test]
+fn a_hot_layer_with_a_neighbourhood_filter_in_an_instanced_folder_under_an_offset_folder_composites_exactly_cached() {
+    for blur_on in [BlurOn::Content, BlurOn::Mask] {
+        let mut instanced = fixture();
+        let (source, clouds) = folder_of_blurred_clouds(&mut instanced, 1, None, blur_on);
+        let outer = offset_folder(&mut instanced);
+        put(&mut instanced, 0, Some(outer), LayerKind::Instance { source }, None);
+
+        let cache = check_cached(&instanced, 0, clouds);
+
+        assert!(!cache.is_empty(), "{blur_on:?} blur: the hot layer is cached through its instance");
+    }
+}
+
 fn cache_after_changing_mesh(owned: bool) {
     use std::sync::Arc;
     use texturecraft_compose::{ProjectorDepthCache, composite_tiles_with_projectors};
@@ -965,4 +1098,103 @@ fn a_borrowed_mesh_change_invalidates_cached_fills() {
 #[test]
 fn a_projector_rebind_without_below_cache_invalidates_cached_fills() {
     cache_after_changing_mesh(true);
+}
+
+fn roughness_compare(fixture: &mut Fixture, source: CompareSource) -> Effect {
+    effect(
+        fixture,
+        EffectKind::Compare {
+            op: CompareOp::GreaterThan,
+            value: 0.7,
+            tolerance: 0.0,
+            left: source,
+            right: CompareSource::Constant,
+            channel: Channel::Roughness,
+            hardness: 1.0,
+        },
+    )
+}
+
+#[test]
+fn compare_uses_the_stack_below_each_draw_of_an_instanced_folder() {
+    let mut fixture = fixture();
+    let base = |roughness| fill(&[(Channel::BaseColor, Source::Uniform([0.0, 0.0, 1.0])), (Channel::Roughness, Source::Uniform([roughness; 3]))]);
+    add(&mut fixture, 0, base(0.2), None);
+    let folder = add(&mut fixture, 0, LayerKind::folder(), None);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::LayersBelow));
+    mask.effects.push(effect(&mut fixture, EffectKind::Filter(Filter::Blur { radius: 32.0 })));
+    let red = fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]);
+    put(&mut fixture, 0, Some(folder), red, Some(mask));
+    add(&mut fixture, 0, base(0.9), None);
+    add(&mut fixture, 0, LayerKind::Instance { source: folder }, None);
+
+    let color = run(&fixture, 0, &[(1, 1)], None).value(Channel::BaseColor, 96, 96);
+
+    assert!(color[0] > color[2], "the second draw should read the rougher surface: {color:?}");
+}
+
+#[test]
+fn compare_reads_a_retained_channel_after_it_is_removed_from_the_outputs() {
+    let mut fixture = fixture();
+    let roughness = fill(&[(Channel::Roughness, Source::Uniform([0.9; 3]))]);
+    add(&mut fixture, 0, roughness, None);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::LayersBelow));
+    let red = fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]);
+    add(&mut fixture, 0, red, Some(mask));
+    let before = run(&fixture, 0, &[(1, 1)], None).value(Channel::BaseColor, 96, 96);
+
+    fixture.project.texture_sets[0].channels.retain(|(channel, _)| *channel != Channel::Roughness);
+    let after = run(&fixture, 0, &[(1, 1)], None);
+
+    assert!(before[0] > before[1]);
+    assert_eq!(after.value(Channel::BaseColor, 96, 96), before);
+    assert!(!after.channels.contains_key(&Channel::Roughness));
+}
+
+#[test]
+fn sparse_compare_mask_reads_filtered_content_through_the_full_blur_radius() {
+    use texturecraft_compose::{mask_texels, mask_values};
+
+    const SIZE: u32 = 512;
+    let mut fixture = fixture();
+    fixture.mesh = primitives::plane(2.0, 2);
+    fixture.gbuf = UvGBuffer::new(&fixture.mesh, 0, SIZE, SIZE);
+    fixture.project.texture_sets[0] = TextureSet::new("Plane", 0, SIZE);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::ThisLayer));
+    mask.effects.push(effect(&mut fixture, EffectKind::Filter(Filter::Blur { radius: 256.0 })));
+    let roughness = fill(&[(Channel::Roughness, Source::Uniform([0.9; 3]))]);
+    let layer = add(&mut fixture, 0, roughness, Some(mask));
+    let edge = effect(&mut fixture, EffectKind::Filter(Filter::EdgeDetect { width: 8.0 }));
+    fixture.project.layer_mut(layer).unwrap().content_effects.push(edge);
+    let (images, baked) = (Default::default(), Default::default());
+    let inputs = inputs(&fixture, 0, &images, &baked);
+    let center = SIZE / 2;
+
+    let full = mask_texels(&inputs, layer).unwrap();
+    let tile = mask_values(&inputs, layer, &[(center / TILE, center / TILE)]).unwrap();
+
+    assert_eq!(tile.get(center, center)[0], to_u16(full[(center * SIZE + center) as usize]));
+}
+
+#[test]
+fn a_folder_thumbnail_reads_compare_inputs_from_its_backdrop() {
+    use texturecraft_compose::{ThumbTarget, thumb};
+
+    let mut fixture = fixture();
+    let backdrop = fill(&[(Channel::Roughness, Source::Uniform([0.9; 3])), (Channel::BaseColor, Source::Uniform([0.0, 0.0, 1.0]))]);
+    add(&mut fixture, 0, backdrop, None);
+    let folder = add(&mut fixture, 0, LayerKind::folder(), None);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::LayersBelow));
+    put(&mut fixture, 0, Some(folder), fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]), Some(mask));
+    let (images, baked) = (Default::default(), Default::default());
+    let inputs = inputs(&fixture, 0, &images, &baked);
+
+    let thumbnail = thumb::render(&inputs, ThumbTarget::Content { layer: folder, channel: Channel::BaseColor }).unwrap();
+    let center = 4 * (96 * RES + 96) as usize;
+
+    assert!(thumbnail.rgba[center] > thumbnail.rgba[center + 2], "visible red child");
 }
