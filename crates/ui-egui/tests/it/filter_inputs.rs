@@ -56,6 +56,12 @@ fn the_custom_noise_slot_follows_the_source_mode() {
 
     pick(&mut harness, "Default Noise", "Custom Noise");
 
+    let ramp = harness.get_by_role_and_label(Role::Slider, "Custom Noise").rect();
+    click_at(&mut harness, along(ramp, 0.25));
+
+    let Some(Source::Uniform([gray, ..])) = input(&harness, effect, "customNoise") else { panic!("expected a uniform input") };
+    assert!((gray - 0.25).abs() < 0.05);
+
     let slot = lowest(&harness, Role::ComboBox, "Custom Noise");
     let blur = harness.get_by_role_and_label(Role::Slider, "Source Blur").rect();
     assert!(slot.bottom() <= blur.top(), "the slot sits above Source Blur");

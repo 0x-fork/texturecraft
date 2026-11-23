@@ -3,6 +3,7 @@
 use egui::{CursorIcon, Pos2, Rect};
 use egui_phosphor::regular as ic;
 use serde_json::{Value, json};
+use texturecraft_engine::StackTarget;
 use texturecraft_engine::core::{EffectKind, LayerId, LayerKind, Projection};
 
 use crate::TextureCraftApp;
@@ -36,26 +37,30 @@ impl MoveOnModel {
     /// The selected fill layer, or the selected fill effect in it (its content or its mask); its projector shows in the 3D view
     pub(crate) fn selected(app: &TextureCraftApp) -> Option<MoveOnModel> {
         let layer = app.session.selected_layer()?;
-        let effect = match app.session.target {
-            texturecraft_engine::StackTarget::Content => None,
-            texturecraft_engine::StackTarget::Effect(effect) => Some(effect),
-            texturecraft_engine::StackTarget::Mask => return None,
-        };
-        Some(MoveOnModel { layer, effect })
+        match app.session.target {
+            StackTarget::Content => Some(Self::layer(app.session.project().content_layer(layer)?.id)),
+            StackTarget::Effect(effect) => Some(MoveOnModel { layer, effect: Some(effect) }),
+            StackTarget::Mask => None,
+        }
     }
 
-    pub(crate) fn projection(self, app: &TextureCraftApp) -> Option<Projection> {
-        let project = &app.session.doc.project;
-        match self.effect {
-            Some(effect) => match &project.effect(effect)?.1.kind {
-                EffectKind::Material(fill) => Some(fill.projection.clone()),
-                EffectKind::Fill { projection, .. } => Some(projection.clone()),
+    /// Resolves the projection and its edit command from the target's effective stacks
+    pub(crate) fn projection_editor(self, app: &TextureCraftApp) -> Option<(&Projection, &'static str)> {
+        let project = app.session.project();
+        let content = project.content_layer(self.layer)?;
+        if let Some(effect_id) = self.effect {
+            let mask_owner = project.layer(project.mask_owner(self.layer)).ok()?;
+            let effect = mask_owner.mask.iter().flat_map(|mask| &mask.effects).chain(&content.content_effects).find(|effect| effect.id == effect_id)?;
+            return match &effect.kind {
+                EffectKind::Material(fill) => Some((&fill.projection, "layer.fill.projection")),
+                EffectKind::Fill { projection, .. } => Some((projection, "effect.set")),
                 _ => None,
-            },
-            None => match &project.layer(self.layer).ok()?.kind {
-                LayerKind::Fill(fill) => Some(fill.projection.clone()),
-                _ => None,
-            },
+            };
+        }
+
+        match &content.kind {
+            LayerKind::Fill(fill) => Some((&fill.projection, "layer.fill.projection")),
+            _ => None,
         }
     }
 }
@@ -95,7 +100,7 @@ pub(crate) fn holding(app: &mut TextureCraftApp, ctx: &egui::Context) -> bool {
 pub(crate) fn end_when_gone(app: &mut TextureCraftApp, ctx: &egui::Context) {
     let Some(target) = app.moving_on_model else { return };
 
-    if target.projection(app).is_none() || pad_gone(ctx) {
+    if target.projection_editor(app).is_none() || pad_gone(ctx) {
         end(app, ctx);
     }
 }
@@ -135,7 +140,7 @@ fn hold(app: &mut TextureCraftApp, ctx: &egui::Context, pad: &egui::Response, ta
         held = Some(MoveHold { target, last: at, edited_revision: None, pass: pass.wrapping_sub(1) });
     }
 
-    let Some(mut held) = held.filter(|_| primary && target.projection(app).is_some()) else {
+    let Some(mut held) = held.filter(|_| primary && target.projection_editor(app).is_some()) else {
         if app.moving_on_model == Some(target) {
             end(app, ctx);
         }
@@ -219,11 +224,11 @@ fn dragged(app: &TextureCraftApp, target: MoveOnModel, from: Pos2, to: Pos2, tur
     }
 
     if !turn && let Some(round) = RoundGizmo::of(app, rect).filter(|round| round.target == target) {
-        return Some(("layer.fill.projection", round.slid(app, rect, from, to)?));
+        return round.slid(app, rect, from, to);
     }
 
-    let projection = target.projection(app)?;
-    let (_, rotation, offset) = placement(&projection)?;
+    let (projection, command) = target.projection_editor(app)?;
+    let (_, rotation, offset) = placement(projection)?;
     let slide = delta * SLIDE_PER_HEIGHT / rect.height().max(1.0);
     let offset = [offset[0] - slide.x, offset[1] - slide.y];
     let mut params = match (turn, projection) {
@@ -232,7 +237,7 @@ fn dragged(app: &TextureCraftApp, target: MoveOnModel, from: Pos2, to: Pos2, tur
         (false, _) => json!({"uvOffset": offset}),
     };
     merge_target(&mut params, target);
-    Some(("layer.fill.projection", params))
+    Some((command, params))
 }
 
 /// The edit a wheel step growing the projection by `growth` makes: a frame grows, other projections' images repeat less
@@ -242,10 +247,11 @@ fn resized(app: &TextureCraftApp, target: MoveOnModel, growth: f32, rect: Rect) 
         return Some(("layer.decal.set", frame_target(json!({"size": [width * growth, height * growth]}), &gizmo)));
     }
 
-    let (tiling, _, _) = placement(&target.projection(app)?)?;
+    let (projection, command) = target.projection_editor(app)?;
+    let (tiling, _, _) = placement(projection)?;
     let mut params = json!({"tiling": [tiling[0] / growth, tiling[1] / growth]});
     merge_target(&mut params, target);
-    Some(("layer.fill.projection", params))
+    Some((command, params))
 }
 
 /// Adds the `layer` or `effect` param naming `target` to `params`
@@ -322,6 +328,7 @@ mod tests {
 
         let mut pointer = press_the_button(&mut harness);
         let from = pointer.at;
+
         assert_eq!(harness.state().moving_on_model, Some(MoveOnModel::layer(layer)), "a press starts the hold");
 
         let moved = vec2(-300.0, -20.0);
@@ -428,6 +435,7 @@ mod tests {
         let _language = crate::i18n::TEST_LANGUAGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (mut harness, layer) = fill_app("triplanar");
         let pad = harness.get_by_label("Move on model").rect();
+
         assert!((pad.width() - pad.height()).abs() < 1.0 && pad.width() > 60.0, "Move on model is the preview square, no row of its own: {pad:?}");
 
         let before = projection(&harness, layer);
@@ -458,10 +466,11 @@ mod tests {
 
         pointer.drags(&mut harness, vec2(-40.0, 0.0), 30, Modifiers::SHIFT);
         let shifted = uv_of(&projection(&harness, layer));
+
         assert!(shifted.rotation > 0.0, "Shift turns the image: {shifted:?}");
         assert_eq!(projector_offset(&projection(&harness, layer)), [0.0; 3], "and does not slide it");
 
-        // The right button pressed once the drag has carried the held pointer over the 3D view, the left still holding the button
+        // Press the second button over the viewport while the first still holds the drag
         let over_view = rect.center() + vec2(-100.0, 80.0);
         pointer.drags(&mut harness, over_view - (from + vec2(-40.0, 0.0)), 30, Modifiers::NONE);
         let slid = projection(&harness, layer);

@@ -3,7 +3,7 @@
 use egui::{Align2, Color32, CornerRadius, FontId, Frame, Id, Painter, Pos2, Rect, Response, Sense, Shadow, Stroke, StrokeKind, Ui, pos2, vec2};
 use egui_phosphor::regular as ic;
 use serde_json::{Value, json};
-use texturecraft_engine::compose::ImageStore;
+use texturecraft_engine::Session;
 use texturecraft_engine::core::{Layer, LayerId};
 use texturecraft_engine::paint::alphas;
 
@@ -14,7 +14,6 @@ use crate::picker_tab::PickerTab;
 use crate::resource_picker;
 use crate::resource_picker_item::ResourcePickerItem;
 use crate::theme::{HARD_SHADOW, Tokens};
-use crate::thumbs::Thumbs;
 use crate::tile_picture::TilePicture;
 
 mod add_item;
@@ -135,7 +134,7 @@ pub(crate) fn show(app: &mut TextureCraftApp, ui: &mut Ui) {
         app.run("layer.remove", Value::Null);
     }
 
-    // Keyed by the layer that opened it: a picker no longer shown when the selection moves closes, so its pick never lands on another layer
+    // Key the picker to its opening layer so a selection change discards its result
     let popup = |layer: LayerId| ui.scope_id().with(("bitmap_mask_picker", layer.0));
     match (pick, selected) {
         (Some(Pick::Run { command, params }), Some(layer)) => run_on(app, ui, layer, command, params),
@@ -435,8 +434,7 @@ fn icon_of(icon: ItemIcon) -> &'static str {
 /// The texture picker of Add bitmap mask, hanging under `anchor` at its width while open: a pick adds the mask to `layer`, Escape or a click elsewhere adds nothing
 pub(crate) fn bitmap_picker(app: &mut TextureCraftApp, anchor: &Response, popup: Id, layer: LayerId) {
     let ctx = anchor.ctx.clone();
-    let images = &app.session.images;
-    let tabs = |thumbs: &mut Thumbs| bitmap_tabs(thumbs, &ctx, images);
+    let tabs = || bitmap_tabs(&app.session);
     match resource_picker::show(anchor, popup, &mut app.thumbs, None, false, tabs) {
         Some(BitmapChoice::Import) => crate::menus::invoke(app, &ctx, "resource.import"),
         Some(BitmapChoice::Image(name)) => {
@@ -452,12 +450,12 @@ pub(crate) fn bitmap_picker(app: &mut TextureCraftApp, anchor: &Response, popup:
 }
 
 /// The bitmap picker's one tab: Textures (Import... first) and the Alphas in their shelf groups
-fn bitmap_tabs(thumbs: &mut Thumbs, ctx: &egui::Context, images: &ImageStore) -> Vec<PickerTab<BitmapChoice>> {
+fn bitmap_tabs(session: &Session) -> Vec<PickerTab<BitmapChoice>> {
     let tile = |id, label: &str, caption, picture| ResourcePickerItem { id, label: label.to_owned(), caption, picture };
-    let textures = ResourcePickerItem::textures(images, BitmapChoice::Import, |name| BitmapChoice::Image(name.to_owned()));
+    let textures = ResourcePickerItem::textures(session, BitmapChoice::Import, |name| BitmapChoice::Image(name.to_owned()));
     let alphas = alphas::library()
         .iter()
-        .map(|alpha| tile(BitmapChoice::Alpha(alpha.id.as_str()), tr(&alpha.label), Some(tr(alpha.category)), TilePicture::Texture(thumbs.alpha(ctx, alpha))))
+        .map(|alpha| tile(BitmapChoice::Alpha(alpha.id.as_str()), tr(&alpha.label), Some(tr(alpha.category)), TilePicture::Alpha(alpha)))
         .collect();
     let groups = vec![PickerGroup { header: Some(tr("Textures")), items: textures }, PickerGroup { header: Some(tr("Alphas")), items: alphas }];
     vec![PickerTab { icon: ic::SQUARES_FOUR, name: tr("Resources"), groups }]

@@ -89,7 +89,11 @@ impl StylizedShading {
         let ao = if ao.is_finite() { ao.clamp(0.0, 1.0) } else { 1.0 };
         let curvature = if curvature.is_finite() { curvature } else { FLAT_CURVATURE };
         let cavity = fade_in((FLAT_CURVATURE - curvature) * CURVATURE_SIDE_SCALE, self.cavity_smoothness);
-        let edge = fade_in((curvature - FLAT_CURVATURE) * CURVATURE_SIDE_SCALE, self.edges_smoothness);
+        let edge = if self.output.diffuse() {
+            fade_in((curvature - FLAT_CURVATURE) * CURVATURE_SIDE_SCALE, self.edges_smoothness) * self.edges_intensity
+        } else {
+            0.0
+        };
 
         let (roughness, f0, diffuse_albedo) = if self.specular_glossiness {
             (1.0 - finite_unit(channel(Channel::Glossiness)[0]), channel(Channel::Specular).map(finite_unit), albedo)
@@ -143,7 +147,7 @@ impl StylizedShading {
             let lit = if compute_diffuse { diffuse_albedo[channel] * diffuse[channel] } else { 0.0 };
             let shine = specular[channel];
             let shaded = finite_unit(lit + shine);
-            finite_unit(shaded + (1.0 - shaded) * edge * self.edges_intensity)
+            finite_unit(shaded + (1.0 - shaded) * edge)
         })
     }
 }

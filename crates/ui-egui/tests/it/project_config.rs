@@ -182,6 +182,7 @@ fn the_window_follows_the_reference_layout() {
         "Physical size",
         "Working color space",
     ];
+
     // Only the window's own rows: a dock panel may show the same text (the fill's Scale switch offers Physical size)
     let in_window = |node: &egui_kittest::Node<'_>| (node.rect().center().x - WINDOW_MIDDLE_X).abs() <= WINDOW_HALF_WIDTH;
     let top = |label: &str| h.get_all_by_label(label).filter(in_window).map(|n| n.rect().top()).fold(f32::INFINITY, f32::min);

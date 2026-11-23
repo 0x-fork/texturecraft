@@ -88,6 +88,7 @@ mod tests {
     #[test]
     fn uv_tile_length_is_the_uv_density_over_the_tiling() {
         let uv = Projection::Uv { scale: [2.0, 4.0], rotation: 0.0, offset: [0.0; 2] };
+
         assert_eq!(tile_length(&uv, SIZE), Some([1.5, 0.75]));
     }
 
@@ -102,6 +103,7 @@ mod tests {
         ] {
             let length = tile_length(&projection, SIZE).unwrap();
             let tiling = tiling_for_length(&projection, SIZE, length).unwrap();
+
             assert!((tiling[0] - 3.0).abs() < 1e-5 && (tiling[1] - 1.5).abs() < 1e-5, "{projection:?}: {tiling:?}");
         }
     }
@@ -141,6 +143,7 @@ mod tests {
     fn a_cylinder_of_no_angle_still_has_a_length() {
         let flat = Projection::Cylindrical { scale: 1.0, axis: 1, uv: UvTransform::default(), offset: [0.0; 3], projector: Default::default(), angle: 0.0 };
         let length = tile_length(&flat, SIZE).unwrap();
+
         assert!(length[0] > 0.0, "{length:?}");
         assert!(tiling_for_length(&flat, SIZE, length).unwrap()[0] > 0.0, "a written-back tiling is never 0");
     }

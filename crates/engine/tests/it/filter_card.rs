@@ -93,7 +93,7 @@ fn the_divider_divides_the_intensity() {
     assert_ne!(divided, warp(0.5, 1), "the divider changes the warp");
 
     let mut s = session();
-    let (_, effect) = filtered_layer(&mut s, json!({"filter": "slopeBlur"}));
+    let (_, effect) = filtered_layer(&mut s, json!({"filter": "blurSlope"}));
     assert!(execute(&mut s, "effect.set", &json!({"effect": effect.0, "divider": 7})).is_err());
 
     set(&mut s, effect, json!({"divider": 100}));

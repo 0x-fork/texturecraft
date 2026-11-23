@@ -20,6 +20,32 @@ fn inputs(s: &Session, effect: LayerId) -> Vec<(String, Source)> {
     found.inputs.iter().map(|(id, source)| (id.clone(), source.clone())).collect()
 }
 
+#[test]
+fn a_library_alpha_input_uses_its_own_image_when_the_project_already_has_its_name() {
+    let mut session = session();
+    let effect = add_filter(&mut session, json!({"filter": "bevelSmooth"}));
+    let alpha_id = "round_soft";
+    let alpha = texturecraft_engine::paint::alphas::find(alpha_id).unwrap();
+    let reserved_name = texturecraft_engine::fill_alpha::resource_name(alpha);
+    let imported_pixels = texturecraft_engine::formats::mcmat::mesh_map_png(2, 1, &[0.25; 4]).unwrap();
+    session.doc.resources.insert(reserved_name.clone(), imported_pixels.clone().into());
+    session.sync_images();
+
+    let settings = json!({"input": "distanceMap", "alpha": alpha_id});
+    input(&mut session, effect, settings.clone()).unwrap();
+
+    let [(input_name, Source::Image { name, .. })] = &inputs(&session, effect)[..] else { panic!("expected one image input") };
+    assert_eq!(input_name, "distanceMap");
+    assert_ne!(name, &reserved_name);
+    assert_eq!(session.library_alpha(name).unwrap().id, alpha_id);
+    assert_eq!(session.doc.resources[&reserved_name].as_slice(), imported_pixels);
+
+    let history_length = session.history_labels().len();
+    input(&mut session, effect, settings).unwrap();
+
+    assert_eq!(session.history_labels().len(), history_length);
+}
+
 /// Bevel Smooth's Distance Map scales its distance texel by texel: a gray, an anchor's gray, back to white; its default is not stored; one undo step
 #[test]
 fn a_distance_map_scales_the_bevel_smooth_distance() {
@@ -70,6 +96,18 @@ fn a_distance_map_scales_the_bevel_smooth_distance() {
     }
 
     assert!(input(&mut s, anchor, json!({"input": "distanceMap", "value": 0.5})).is_err(), "not a filter");
+}
+
+#[test]
+fn a_malformed_filter_input_cannot_edit_the_selected_fill() {
+    let mut session = session();
+    execute(&mut session, "layer.add.fill", &json!({"roughness": 0.25})).unwrap();
+    let history = session.history_labels().len();
+
+    let result = execute(&mut session, "layer.fill.set", &json!({"input": false, "channel": "roughness", "value": 0.9}));
+
+    assert!(result.is_err());
+    assert_eq!(session.history_labels().len(), history);
 }
 
 /// Directional Distance: a black Distance Map leaves no trail

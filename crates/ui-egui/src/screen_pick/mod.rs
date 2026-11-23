@@ -13,6 +13,8 @@ mod keeper_args;
 #[cfg(windows)]
 mod live_swatch;
 mod painted_cursor;
+#[path = "screen_pick.rs"]
+mod pick;
 mod pick_outcome;
 mod pick_shared;
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -34,13 +36,14 @@ mod windows_hook;
 mod x11_grab;
 
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::Sender;
 
 pub use cursor_image::CursorImage;
 #[cfg(windows)]
 pub use eyedropper_pointer::keep_pointer;
 pub use keeper_args::KEEPER_ARG;
 pub use painted_cursor::paint as paint_cursor;
+pub use pick::ScreenPick;
 pub use pick_outcome::PickOutcome;
 pub(crate) use pick_shared::PickShared;
 pub(crate) use swatch_color::SwatchColor;
@@ -50,65 +53,16 @@ pub use swatch_side::SwatchSide;
 use crate::TextureCraftApp;
 use crate::color_picker::ColorPick;
 
-/// A running eyedropper pick's wait for a click outside the app, for the colour bar `bar`
-pub struct ScreenPick {
-    bar: egui::Id,
-    outcomes: Receiver<PickOutcome>,
-    shared: Arc<PickShared>,
-    /// Whether the app losing the focus ends the pick (not while the desktop's own picker has it)
-    ends_on_focus_loss: bool,
-}
-
-impl ScreenPick {
-    fn start(bar: egui::Id, ctx: &egui::Context) -> Self {
-        let (sender, outcomes) = mpsc::channel();
-        let shared = Arc::new(PickShared::default());
-
-        let waiting = Arc::clone(&shared);
-        let dpi = window_dpi(ctx);
-        let ctx = ctx.clone();
-        let spawned = std::thread::Builder::new().name("eyedropper".into()).spawn(move || wait_for_click(&waiting, sender, ctx, dpi));
-        if let Err(error) = spawned {
-            log::warn!("the eyedropper picks on the model only: {error}");
-        }
-
-        ScreenPick { bar, outcomes, shared, ends_on_focus_loss: ends_on_focus_loss() }
-    }
-
-    /// A pick for `bar` whose click outside the app already ended as `outcome` (tests and agents stand in for the system)
-    pub fn ended(bar: egui::Id, outcome: PickOutcome) -> Self {
-        let (sender, outcomes) = mpsc::channel();
-        let _ = sender.send(outcome);
-        ScreenPick { bar, outcomes, shared: Arc::default(), ends_on_focus_loss: true }
-    }
-
-    /// A pick for `bar` still waiting for its click outside the app (tests stand in for the system)
-    pub fn waiting(bar: egui::Id) -> Self {
-        let (_, outcomes) = mpsc::channel();
-        ScreenPick { bar, outcomes, shared: Arc::default(), ends_on_focus_loss: true }
-    }
-
-    /// Tells the waiting thread where the app's windows are and whether the pointer is over one of them
-    fn share_windows(&self, ctx: &egui::Context) {
-        let viewports = ctx.input(|input| input.raw.viewports.clone());
-        let windows = viewports.values().filter_map(physical_rect).collect();
-        self.shared.set_windows(windows);
-        #[cfg(all(unix, not(target_os = "macos")))]
-        {
-            let pointer_inside = viewports.keys().any(|id| ctx.input_for(*id, |input| input.pointer.has_pointer()));
-            self.shared.set_pointer_outside(!pointer_inside);
-        }
-    }
-}
-
-impl Drop for ScreenPick {
-    fn drop(&mut self) {
-        self.shared.stop();
-    }
-}
-
 /// Starts or ends the wait for a click outside the app with the eyedropper pick, and hands a colour picked there to its bar
 pub(crate) fn sync(app: &mut TextureCraftApp, ctx: &egui::Context) {
+    if app.eyedropper_project_id != app.session.project_id {
+        if let Some(bar) = app.picking_color.take() {
+            ColorPick::delivered(ctx, bar);
+        }
+        app.screen_pick = None;
+        app.eyedropper_project_id = app.session.project_id;
+    }
+
     let Some(bar) = app.picking_color else {
         app.screen_pick = None;
         return;
@@ -146,8 +100,8 @@ pub(crate) fn sync(app: &mut TextureCraftApp, ctx: &egui::Context) {
 }
 
 /// Whether the app losing the focus ends a pick here (not on Wayland, where the desktop's colour picker takes the focus)
-fn ends_on_focus_loss() -> bool {
-    cfg!(windows) || (cfg!(all(unix, not(target_os = "macos"))) && std::env::var_os("WAYLAND_DISPLAY").is_none())
+fn ends_on_focus_loss(ctx: &egui::Context) -> bool {
+    cfg!(windows) || (cfg!(all(unix, not(target_os = "macos"))) && !crate::uses_wayland(ctx))
 }
 
 /// The highest window DPI read, far past any display, so a broken scale cannot size a huge pointer
@@ -179,7 +133,7 @@ fn wait_for_click(shared: &Arc<PickShared>, outcomes: Sender<PickOutcome>, ctx: 
     let _ = dpi;
 
     #[cfg(all(unix, not(target_os = "macos")))]
-    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+    if crate::uses_wayland(&ctx) {
         portal::run(shared, &outcomes, &ctx);
     } else if x11_grab::run(shared, &outcomes, &ctx).is_none() {
         let _ = outcomes.send(PickOutcome::Unavailable);

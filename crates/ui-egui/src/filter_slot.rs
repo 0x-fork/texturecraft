@@ -11,7 +11,6 @@ use crate::picker_group::PickerGroup;
 use crate::picker_tab::PickerTab;
 use crate::resource_picker;
 use crate::resource_picker_item::ResourcePickerItem;
-use crate::thumbs::Thumbs;
 use crate::tile_picture::TilePicture;
 
 /// The filter picker of filter effect `effect` (library filter `current` now), hanging from its card's row `pick`: a pick runs `effect.set {filter}`, masks offer only mask filters
@@ -24,16 +23,11 @@ pub(crate) fn picker(app: &mut TextureCraftApp, pick: &egui::Response, effect: u
         resource_picker::toggle(&ctx, popup);
     }
 
-    let tabs = |thumbs: &mut Thumbs| {
+    let tabs = || {
         let mut items: Vec<ResourcePickerItem<&'static str>> = filter_effects()
             .iter()
             .filter(|def| def.mask || !on_mask)
-            .map(|def| ResourcePickerItem {
-                id: def.id,
-                label: tr(def.label).to_owned(),
-                caption: None,
-                picture: TilePicture::Texture(thumbs.filter(&ctx, def.id)),
-            })
+            .map(|def| ResourcePickerItem { id: def.id, label: tr(def.label).to_owned(), caption: None, picture: TilePicture::Filter(def.id) })
             .collect();
 
         // One kind of resource: one grid in name order, no group captions

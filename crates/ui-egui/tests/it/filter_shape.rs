@@ -194,7 +194,7 @@ fn warp_rows_follow_the_mode() {
 /// Blur Slope shows the reference's rows in order (no Slope scale); Blending Mode, Source Type and Quality set their own setting
 #[test]
 fn slope_blur_rows_set_the_smear() {
-    let (mut harness, effect) = app_with("slopeBlur", "mask", WINDOW_HEIGHT);
+    let (mut harness, effect) = app_with("blurSlope", "mask", WINDOW_HEIGHT);
     assert!(harness.query_by_label("Slope scale").is_none());
 
     let top = |harness: &Harness<'_, TextureCraftApp>, role: Role, label: &str| harness.get_by_role_and_label(role, label).rect().top();
@@ -275,7 +275,7 @@ fn legacy_warp_seed_past_two_to_the_24_opens_as_stored() {
 /// Blur Slope's ÷ chip picks the divider, the dice picks a new Seed, and Source Parameters' Blur shows 0..20 over the stored 0..1
 #[test]
 fn slope_blur_divider_seed_and_source_blur() {
-    let (mut harness, effect) = app_with("slopeBlur", "mask", WINDOW_HEIGHT);
+    let (mut harness, effect) = app_with("blurSlope", "mask", WINDOW_HEIGHT);
 
     let chip = harness.get_by_role_and_label(Role::ComboBox, "÷10").rect();
     click_at(&mut harness, chip.center());

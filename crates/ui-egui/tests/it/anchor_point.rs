@@ -81,6 +81,7 @@ fn a_click_on_a_reference_selects_what_reads_the_anchor_point() {
 #[test]
 fn a_long_reference_name_is_cut_short_and_shows_in_full_on_hover() {
     const LONG_NAME: &str = "Rust along every lower edge of the hull plates where rain water collects and runs";
+
     // Frames past the tooltip delay
     const TOOLTIP_FRAMES: usize = 60;
     let (mut harness, _, top, _) = anchor_harness();

@@ -71,6 +71,7 @@ impl PropertySheet<'_> {
         reset: bool,
     ) -> SlotResponse {
         self.open_card();
+        self.scope = self.named_id("slot", name);
         self.space(SLOT_CARD_TOP);
         self.slot_row(thumbnail, name, source, on, clear, reset.then_some(true))
     }
@@ -105,7 +106,7 @@ impl PropertySheet<'_> {
         let clear_x = self.right - if has_toggle { CLEAR_INSET_WITH_TOGGLE } else { CLEAR_INSET };
         let reset_x = if clear { clear_x - RESET_STEP } else { clear_x };
 
-        // The whole row across the card picks the source, so its list hangs at the card's width; the glyphs on the right take their clicks first
+        // The picker spans the card while the trailing glyphs keep their own hit areas
         let row = self.bled_row(rect);
         let pick_id = self.next_id();
         let pick = self.ui.interact(row, pick_id, Sense::click());
@@ -219,6 +220,7 @@ impl PropertySheet<'_> {
             drawn.paint(painter, pos2(x + icon_width / 2.0, button.center().y), BUTTON_ICON_SIZE, color);
         }
         painter.galley(pos2(x + icon_width + BUTTON_ICON_GAP, button.center().y - text_galley.size().y / 2.0), text_galley, color);
+        self.paint_control_focus(&response);
         self.drawn(button.bottom());
         response
     }

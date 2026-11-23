@@ -16,7 +16,7 @@ pub struct WarpSource {
     pub balance: f32,
     /// Steepens the source around mid gray (0..1)
     pub contrast: f32,
-    /// How many times the default noise repeats across a UV tile (0.01..16)
+    /// Source frequency multiplier within a UV tile (0.01..16)
     pub tiling: f32,
 }
 
@@ -42,8 +42,12 @@ impl WarpSource {
 
     /// Noise features per UV tile
     pub fn noise_scale(&self) -> f32 {
-        let tiling = if self.tiling.is_finite() { self.tiling.clamp(Self::TILING_MIN, Self::TILING_MAX) } else { 1.0 };
-        Self::NOISE_FEATURES * tiling
+        Self::NOISE_FEATURES * self.tiling_factor()
+    }
+
+    /// Source tiling after validating saved settings
+    pub fn tiling_factor(&self) -> f32 {
+        if self.tiling.is_finite() { self.tiling.clamp(Self::TILING_MIN, Self::TILING_MAX) } else { 1.0 }
     }
 
     /// How many texels across the source is averaged over at `res` texels across a UV tile

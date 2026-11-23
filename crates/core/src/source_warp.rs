@@ -71,7 +71,7 @@ impl SourceWarp {
     pub fn reach(&self, res: u32) -> f32 {
         let chained = self.mode == WarpMode::MultiDirectional && self.blending == WarpBlending::Chain;
         let moves = self.move_texels(res) * if chained { self.angles().count().max(1) as f32 } else { 1.0 };
-        if self.source.mode != WarpSourceMode::PreviousInput {
+        if self.source.mode == WarpSourceMode::DefaultNoise {
             return moves;
         }
 
@@ -118,6 +118,9 @@ mod tests {
 
         let chained = SourceWarp { blending: WarpBlending::Chain, ..multi };
         assert!((chained.reach(2048) - 4.0 * 20.48).abs() < 1e-3, "four moves one after the other");
+
+        let custom = SourceWarp { source: WarpSource { mode: WarpSourceMode::CustomNoise, blur: 1.0, ..WarpSource::LIBRARY }, ..warp };
+        assert!(custom.reach(2048) >= custom.move_texels(2048) + SourceWarp::probe_texels(2048) + custom.source.blur_texels(2048) * 0.5);
 
         let input = SourceWarp { source: WarpSource { mode: WarpSourceMode::PreviousInput, ..WarpSource::LIBRARY }, ..warp };
         assert!((input.reach(2048) - (20.48 + 8.0)).abs() < 1e-3, "plus where it measures the slope");

@@ -81,7 +81,10 @@ fn eyedropper_at(harness: &Harness<'_, TextureCraftApp>, pointer: Pos2) -> bool 
     let output = harness.output();
     output.platform_output.cursor_icon == egui::CursorIcon::None
         && output.shapes.iter().any(|clipped| match &clipped.shape {
-            egui::Shape::Mesh(mesh) => mesh.texture_id != egui::TextureId::default() && mesh.calc_bounds().expand(1.0).contains(pointer),
+            egui::Shape::Mesh(mesh) => {
+                harness.ctx.tex_manager().read().meta(mesh.texture_id).is_some_and(|texture| texture.name == "eyedropper_cursor")
+                    && mesh.calc_bounds().expand(1.0).contains(pointer)
+            }
             _ => false,
         })
 }

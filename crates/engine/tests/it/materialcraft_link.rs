@@ -133,6 +133,24 @@ fn imports_as_a_linked_fill_with_its_maps() {
     assert!(s.add_linked_material_bytes_at(b"PK not really", Place::Selection).is_err());
 }
 
+#[test]
+fn a_built_in_material_assignment_preserves_a_linked_fill() {
+    let mut session = session();
+    let layer = install(&mut session);
+    let original_link = link(&session, layer);
+    let original_map = map_name(&session, layer, Channel::Roughness);
+    let original_history = session.history_labels();
+
+    for material in [json!("copper_hammered"), Value::Null] {
+        let error = execute(&mut session, "layer.fill.material", &json!({"layer": layer.0, "material": material})).unwrap_err();
+
+        assert!(error.to_string().contains("linked material"));
+        assert_eq!(link(&session, layer), original_link);
+        assert_eq!(map_name(&session, layer, Channel::Roughness), original_map);
+        assert_eq!(session.history_labels(), original_history);
+    }
+}
+
 /// An image marked DirectX keeps the mark when a re-cook replaces it.
 #[test]
 fn recooks_keep_the_normal_format_of_a_map() {

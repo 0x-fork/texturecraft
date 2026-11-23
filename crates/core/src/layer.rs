@@ -114,13 +114,14 @@ impl Default for HeightMask {
 }
 
 impl HeightMask {
-    /// The mask `m` combined with height `h` (see [`HeightMask`]).
-    pub fn apply(&self, m: f32, h: f32) -> f32 {
-        if !self.enabled || !h.is_finite() {
-            return m;
+    /// Combines a mask value with height (see [`HeightMask`]).
+    pub fn apply(&self, mask: f32, height: f32) -> f32 {
+        if !self.enabled || !height.is_finite() {
+            return mask;
         }
 
-        (m + self.contrast * 4.0 * m * (1.0 - m) * (h + self.offset)).clamp(0.0, 1.0)
+        // The height response peaks at the mask midpoint and vanishes at both ends
+        (mask + self.contrast * 4.0 * mask * (1.0 - mask) * (height + self.offset)).clamp(0.0, 1.0)
     }
 }
 
@@ -889,7 +890,8 @@ impl Levels {
     const MIN_GAMMA: f32 = 1e-3;
 
     pub fn apply(&self, x: f32) -> f32 {
-        let between = (x - self.in_low) / (self.in_high - self.in_low).max(Self::MIN_INPUT_RANGE);
+        let range = self.in_high - self.in_low;
+        let between = (x - self.in_low) / if range > 0.0 { range } else { Self::MIN_INPUT_RANGE };
 
         // Past the input handles an unclamped remap carries on in a straight line (gamma only bends the part between them)
         let between = if self.clamp || (0.0..=1.0).contains(&between) { between.clamp(0.0, 1.0).powf(1.0 / self.gamma.max(Self::MIN_GAMMA)) } else { between };
@@ -1532,7 +1534,9 @@ impl Filter {
     /// The colors a gradient's ramp uses: the first Color Quantity of them (all of them where it has none)
     pub fn ramp_colors(&self) -> &[[f32; 3]] {
         match self {
-            Filter::GradientMap { colors, quantity, .. } => colors.get(..quantity.map_or(colors.len(), usize::from).min(colors.len())).unwrap_or(colors),
+            Filter::GradientMap { colors, quantity, .. } => {
+                colors.get(..quantity.map_or(colors.len(), |count| usize::from(count.clamp(2, Self::MAX_GRADIENT_COLORS))).min(colors.len())).unwrap_or(colors)
+            }
             _ => &[],
         }
     }
@@ -2292,6 +2296,9 @@ mod tests {
         assert!((open.apply(0.8) - 1.5).abs() < 1e-6);
         assert!((open.apply(0.4) - clamped.apply(0.4)).abs() < 1e-6, "between the handles both remap alike");
 
+        let narrow = Levels { in_high: 0.000005, gamma: 2.0, ..Levels::default() };
+        assert!(narrow.apply(0.0000075) > narrow.out_high);
+
         let bent = Levels { gamma: 2.0, ..open };
         assert!((bent.apply(0.0) + 0.5).abs() < 1e-6, "gamma bends only the part between the handles");
     }
@@ -2384,13 +2391,13 @@ mod tests {
     fn point_filters_map_values_and_skip_neighbourhood_filters() {
         let c = ChannelKind::Color;
         let close = |a: [f32; 3], b: [f32; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-4);
-        let cl = Filter::ContrastLuminosity { contrast: 1.0, luminosity: 0.0 };
-        assert!(close(cl.point(c, [0.25, 0.5, 0.75]).unwrap(), [0.0, 0.5, 1.0]));
+        let contrast = Filter::ContrastLuminosity { contrast: 1.0, luminosity: 0.0 };
+        assert!(close(contrast.point(c, [0.25, 0.5, 0.75]).unwrap(), [0.0, 0.5, 1.0]));
         assert!(close(Filter::ContrastLuminosity { contrast: 0.0, luminosity: 0.2 }.point(ChannelKind::Scalar, [0.5; 3]).unwrap(), [0.7; 3]));
 
-        let gm = Filter::even_gradient(vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
-        assert!(close(gm.point(c, [0.0; 3]).unwrap(), [1.0, 0.0, 0.0]));
-        assert!(close(gm.point(c, [1.0; 3]).unwrap(), [0.0, 0.0, 1.0]));
+        let gradient_map = Filter::even_gradient(vec![[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]);
+        assert!(close(gradient_map.point(c, [0.0; 3]).unwrap(), [1.0, 0.0, 0.0]));
+        assert!(close(gradient_map.point(c, [1.0; 3]).unwrap(), [0.0, 0.0, 1.0]));
         assert_eq!(Filter::even_gradient(vec![]).point(c, [0.3; 3]), None, "an empty gradient changes nothing");
 
         let gray_ramp = Filter::even_gradient(vec![[0.0; 3], [1.0; 3]]);
@@ -2415,8 +2422,8 @@ mod tests {
         assert!(close(shift(0.0), [0.0, 0.5, 1.0]), "no offset keeps white white");
         assert!(close(shift(0.25), [0.25, 0.75, 0.25]) && close(shift(-0.25), [0.75, 0.25, 0.75]));
 
-        let cb = Filter::ColorBalance { shadows: [0.2, 0.0, 0.0], midtones: [0.0; 3], highlights: [0.0, 0.0, 0.2] };
-        assert!(cb.point(c, [0.05; 3]).unwrap()[0] > 0.2 && cb.point(c, [0.95; 3]).unwrap()[2] > 0.99);
+        let color_balance = Filter::ColorBalance { shadows: [0.2, 0.0, 0.0], midtones: [0.0; 3], highlights: [0.0, 0.0, 0.2] };
+        assert!(color_balance.point(c, [0.05; 3]).unwrap()[0] > 0.2 && color_balance.point(c, [0.95; 3]).unwrap()[2] > 0.99);
         assert!(close(Filter::Invert.point(ChannelKind::Signed, [0.5; 3]).unwrap(), [-0.5; 3]));
         assert_eq!(Filter::Invert.point(ChannelKind::NormalMap, [0.5, 0.5, 1.0]), Some([0.5, 0.5, 1.0]));
 

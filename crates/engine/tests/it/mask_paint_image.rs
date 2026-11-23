@@ -101,24 +101,32 @@ fn plain_png(level: u8) -> Vec<u8> {
 
 #[test]
 fn a_mask_stroke_paints_the_image_it_began_with_when_the_resource_is_replaced_mid_stroke() {
-    let mut session = Session::new_project("Mask image", primitives::sphere(1.0, 48, 24), "builtin:sphere", None, RESOLUTION).unwrap();
-    let layer = LayerId(execute(&mut session, "layer.add.paint", &Value::Null).unwrap()["layer"].as_u64().unwrap());
-    execute(&mut session, "mask.add.white", &json!({"layer": layer.0})).unwrap();
-    execute(&mut session, "layer.select", &json!({"layer": layer.0, "target": "mask"})).unwrap();
-    execute(&mut session, "tool.paint", &Value::Null).unwrap();
-    execute(&mut session, "tool.brush", &json!({"size": 40.0, "spacing": 5.0, "hardness": 100})).unwrap();
-    let image = session.import_resource_bytes("brush.png", plain_png(0)).unwrap();
-    execute(&mut session, "tool.material", &json!({"maskImage": image})).unwrap();
+    let (mut session, layer) = masked_layer();
+    let image = session.import_resource_bytes("brush.png", plain_png(255)).unwrap();
+    execute(&mut session, "tool.material", &json!({"maskImage": image, "maskValue": 0.0})).unwrap();
 
     session.begin_stroke_uv(Vec2::new(0.1, 0.5), 1.0).unwrap();
     session.continue_stroke_uv(Vec2::new(0.4, 0.5), 1.0);
     execute(&mut session, "resource.remove", &json!({"name": image})).unwrap();
-    let replaced = session.import_resource_bytes("brush.png", plain_png(255)).unwrap();
+    let replaced = session.import_resource_bytes("brush.png", plain_png(0)).unwrap();
     session.continue_stroke_uv(Vec2::new(0.9, 0.5), 1.0);
     session.end_stroke().unwrap();
 
-    assert_eq!(replaced, image, "the white picture took the black one's name");
+    assert_eq!(replaced, image, "the replacement kept the resource name");
 
     let (left, right) = (mask_at(&session, layer, 0.25, 0.5), mask_at(&session, layer, 0.75, 0.5));
-    assert!(left < 0.05 && right < 0.05, "the whole stroke is black: left {left}, right {right}");
+    assert!(left > 0.95 && right > 0.95, "the whole stroke uses the captured white image: left {left}, right {right}");
+}
+
+#[test]
+fn polygon_fill_uses_its_mask_value_while_paint_keeps_its_image() {
+    let (mut session, layer) = masked_layer();
+    let image = session.import_resource_bytes("black.png", plain_png(0)).unwrap();
+    execute(&mut session, "tool.material", &json!({"maskImage": image, "maskValue": 1.0})).unwrap();
+    let uv = Vec2::new(0.27, 0.41);
+
+    session.polygon_fill_uv(uv).unwrap();
+
+    assert!(mask_at(&session, layer, uv.x, uv.y) > 0.95);
+    assert_eq!(session.tool.mask_image.as_ref(), Some(&image));
 }

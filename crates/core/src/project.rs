@@ -916,6 +916,7 @@ mod tests {
         assert_eq!(p.sets_drawing(inst), vec![1]);
 
         p.validate().unwrap();
+
         // A folder holding an instance of itself draws itself
         let gid = p.alloc_id();
         p.insert_layer(1, Layer::new(gid, "g", LayerKind::folder(), &[]), None, false).unwrap();

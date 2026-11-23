@@ -2,7 +2,6 @@
 
 use texturecraft_core::{SourceWarp, WarpBlending, WarpMode};
 
-use crate::eval::direction;
 use crate::warp_source_sample::WarpSourceSample;
 
 /// Bilinear sample at an absolute texel position into an accumulator (components, then weight), as [`crate::eval`]'s gather reads
@@ -14,9 +13,16 @@ pub(crate) type Input<'a> = &'a dyn Fn(f32, f32) -> Option<f32>;
 /// A read weighing less than this covers nothing
 pub(crate) const MIN_READ_WEIGHT: f32 = 1e-6;
 
-/// Warp `warp` at texel `(x, y)` (`res` texels across a UV tile, `comps` values a texel) into `acc`: where its source sends it, or those reads blended
-pub(crate) fn warp_texel(warp: &SourceWarp, (x, y): (f32, f32), (res, comps): (u32, usize), acc: &mut [f32; 5], (sample, input): (Sample<'_>, Input<'_>)) {
-    let source = WarpSourceSample::new(&warp.source, warp.seed, (res, comps), (sample, input));
+/// Warp `warp` at texel `(x, y)` into `acc`: where its source sends it, or those reads blended
+pub(crate) fn warp_texel(
+    (warp, directions): (&SourceWarp, &[[f32; 2]]),
+    (x, y): (f32, f32),
+    (res, comps): (u32, usize),
+    tile_sizes: ([u32; 2], [u32; 2]),
+    acc: &mut [f32; 5],
+    (sample, input): (Sample<'_>, Input<'_>),
+) {
+    let source = WarpSourceSample::new(&warp.source, warp.seed, [x, y], (res, comps), tile_sizes, (sample, input));
     let reach = warp.move_texels(res);
     if warp.mode == WarpMode::Warp {
         let probe = SourceWarp::probe_texels(res);
@@ -26,27 +32,25 @@ pub(crate) fn warp_texel(warp: &SourceWarp, (x, y): (f32, f32), (res, comps): (u
         return;
     }
 
-    let directions = warp.angles().map(direction);
-    let moved = |(at_x, at_y): (f32, f32), [dx, dy]: [f32; 2]| {
-        let along = SourceWarp::amount(source.at(at_x, at_y)) * reach;
-        (at_x + dx * along, at_y + dy * along)
-    };
-    match (warp.mode, warp.blending) {
-        (WarpMode::MultiDirectional, WarpBlending::Chain) => {
-            let (end_x, end_y) = directions.fold((x, y), moved);
-            sample(end_x, end_y, acc);
-        }
-        (WarpMode::MultiDirectional, WarpBlending::Max | WarpBlending::Min) => {
-            let reads = directions.map(|direction| moved((x, y), direction));
-            keep_extreme_read(reads, warp.blending == WarpBlending::Max, comps, acc, sample);
-        }
+    let directions = directions.iter().copied();
+    let displacement = |at_x, at_y| SourceWarp::amount(source.at(at_x, at_y)) * reach;
+    if warp.mode == WarpMode::MultiDirectional && warp.blending == WarpBlending::Chain {
+        let (end_x, end_y) = directions.fold((x, y), |(at_x, at_y), [dx, dy]| {
+            let along = displacement(at_x, at_y);
+            (at_x + dx * along, at_y + dy * along)
+        });
+        sample(end_x, end_y, acc);
+        return;
+    }
 
-        // One direction, or the average of several: the reads add up in `acc`
-        _ => {
-            for direction in directions {
-                let (at_x, at_y) = moved((x, y), direction);
-                sample(at_x, at_y, acc);
-            }
+    // Independent directions share the source at the original texel
+    let along = displacement(x, y);
+    let reads = directions.map(|[dx, dy]| (x + dx * along, y + dy * along));
+    if warp.mode == WarpMode::MultiDirectional && matches!(warp.blending, WarpBlending::Max | WarpBlending::Min) {
+        keep_extreme_read(reads, warp.blending == WarpBlending::Max, comps, acc, sample);
+    } else {
+        for (at_x, at_y) in reads {
+            sample(at_x, at_y, acc);
         }
     }
 }

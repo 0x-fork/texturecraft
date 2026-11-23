@@ -72,13 +72,13 @@ impl EnvImage {
         Self::from_pixels(width, height, rgba, srgb)
     }
 
-    /// An imported linear RGB equirect image, with the same validation and size limits as [Self::from_rgba].
-    pub fn from_linear_rgb(width: u32, height: u32, rgb: &[[f32; 3]]) -> Option<Self> {
+    /// An equirectangular linear RGB image with the same radiance and size limits as an RGBA import.
+    pub fn from_linear_rgb(width: u32, height: u32, rgb: &[[f32; 3]]) -> Option<EnvImage> {
         Self::from_pixels(width, height, rgb, false)
     }
 
-    fn from_pixels<const COMPONENTS: usize>(width: u32, height: u32, pixels: &[[f32; COMPONENTS]], srgb: bool) -> Option<Self> {
-        if width == 0 || height == 0 || pixels.len() as u64 != width as u64 * height as u64 {
+    fn from_pixels<const COMPONENTS: usize>(width: u32, height: u32, pixels: &[[f32; COMPONENTS]], srgb: bool) -> Option<EnvImage> {
+        if width == 0 || height == 0 || pixels.len() as u64 != u64::from(width) * u64::from(height) {
             return None;
         }
 

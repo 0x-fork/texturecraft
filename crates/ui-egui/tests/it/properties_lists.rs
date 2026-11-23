@@ -200,19 +200,27 @@ fn check_list(harness: &mut Harness<'_, TextureCraftApp>, button: Rect, name: &s
         harness.run_steps(SETTLE_FRAMES);
     }
 
-    if open(harness, button) {
-        click_at(harness, gesture_start);
-        if is_open(harness) {
-            problems.push(format!("{name}: a click in the view does not close it"));
-        }
+    if !open(harness, button) {
+        problems.push(format!("{name}: it does not reopen before the outside click"));
+        return problems;
     }
 
-    if !is_open(harness) && open(harness, button) {
-        drag(harness, gesture_start, GESTURE, PointerButton::Primary, Modifiers::NONE);
-        if is_open(harness) {
-            problems.push(format!("{name}: a stroke on the model does not close it"));
-        }
+    click_at(harness, gesture_start);
+    if is_open(harness) {
+        problems.push(format!("{name}: a click in the view does not close it"));
+        return problems;
     }
+
+    if !open(harness, button) {
+        problems.push(format!("{name}: it does not reopen before the stroke"));
+        return problems;
+    }
+
+    drag(harness, gesture_start, GESTURE, PointerButton::Primary, Modifiers::NONE);
+    if is_open(harness) {
+        problems.push(format!("{name}: a stroke on the model does not close it"));
+    }
+
     problems
 }
 

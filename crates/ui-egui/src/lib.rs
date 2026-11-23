@@ -96,6 +96,7 @@ mod pattern_target;
 pub mod pbr_import;
 mod picker_group;
 mod picker_tab;
+mod placed_fill_slot;
 mod placement;
 mod pointer_lock;
 mod popup_drag;
@@ -282,6 +283,7 @@ pub struct TextureCraftApp {
     pub moving_on_model: Option<move_on_model::MoveOnModel>,
     /// The Properties popup a right click in a view opens.
     pub properties_popup: Option<properties_popup::PropertiesPopup>,
+    properties_scroll: property_sheet::PropertiesScroll,
     /// The color selection the next click in the 3D or 2D view picks an ID color for
     pub picking_id_color: Option<id_color_pick::IdColorPick>,
     /// Whether the next click on the model places the symmetry planes (Pick point in the symmetry settings)
@@ -290,6 +292,7 @@ pub struct TextureCraftApp {
     pub picking_color: Option<egui::Id>,
     /// That eyedropper pick's wait for a click outside the app
     pub screen_pick: Option<screen_pick::ScreenPick>,
+    eyedropper_project_id: u64,
     /// Whether an eyedropper pick also takes a click outside the app (only with a real window: never in tests)
     pub screen_picking: bool,
     /// The wgpu state (screenshots read the renderer's targets).
@@ -341,10 +344,22 @@ pub(crate) fn start_ui(saved: Option<UiState>, session: &mut Session) -> UiState
     }
 }
 
+fn uses_wayland(ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp::<bool>(egui::Id::unique("wayland_window")).unwrap_or(false))
+}
+
 impl TextureCraftApp {
     /// The app around `session`, with the saved UI state (or defaults in the OS language) and the GPU viewport.
     pub fn new(cc: &eframe::CreationContext<'_>, mut session: Session) -> TextureCraftApp {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let uses_wayland = raw_window_handle::HasWindowHandle::window_handle(cc)
+                .is_ok_and(|window| matches!(window.as_raw(), raw_window_handle::RawWindowHandle::Wayland(_)));
+            cc.egui_ctx.data_mut(|data| data.insert_temp(egui::Id::unique("wayland_window"), uses_wayland));
+        }
+
         theme::install(&cc.egui_ctx);
+        popup_drag::install(&cc.egui_ctx);
 
         // Bakes cast their rays on a GPU device of their own (created on the first bake)
         #[cfg(not(target_arch = "wasm32"))]
@@ -363,6 +378,7 @@ impl TextureCraftApp {
         let next_autosave = autosave_period_seconds(ui.prefs.autosave_minutes);
         ui.prefs.apply_resource_limits();
 
+        let project_id = session.project_id;
         let mut app = TextureCraftApp {
             camera_glide: None,
             orbit_snap: None,
@@ -395,10 +411,12 @@ impl TextureCraftApp {
             last_paint_uv: None,
             moving_on_model: None,
             properties_popup: None,
+            properties_scroll: property_sheet::PropertiesScroll::default(),
             picking_id_color: None,
             picking_symmetry_plane: false,
             picking_color: None,
             screen_pick: None,
+            eyedropper_project_id: project_id,
             #[cfg(not(target_arch = "wasm32"))]
             screen_picking: raw_window_handle::HasWindowHandle::window_handle(cc).is_ok(),
             #[cfg(target_arch = "wasm32")]
@@ -1077,6 +1095,7 @@ impl eframe::App for TextureCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.poll_link_imports(ctx);
         self.thumbs.sync_project_previews(&self.session);
+        self.properties_scroll.sync(&self.session);
 
         // The library shelf rescans when the window comes back (MaterialCraft may have sent a material)
         let focused = ctx.input(|input| input.viewport().focused).unwrap_or(true);
@@ -1128,9 +1147,6 @@ impl eframe::App for TextureCraftApp {
         if !self.session.project_open {
             self.ui.mode = state::Mode::Painting;
         }
-
-        // Before any popup draws, so one a drag closes is gone from this frame
-        popup_drag::close_on_drag_outside(&ctx);
 
         if !self.ui.hide_ui {
             titlebar::show(self, ui);

@@ -10,6 +10,7 @@ use crate::environment_sky::{VIEWPORT_WIDTH, dir_of, environment_linear, radianc
 use crate::store::{ImageRes, ImageStore};
 
 /// The diffuse light of the viewport environment and the turn the viewport gives it
+#[derive(Clone, Copy)]
 pub struct EnvironmentSh {
     coefficients: [[f32; 3]; 9],
     /// The viewport's environment rotation (radians)
@@ -92,11 +93,14 @@ mod tests {
     /// A uniform environment lights every direction alike, whatever the turn; brighter skies light more
     #[test]
     fn a_uniform_image_lights_every_way_alike() {
-        let image = |v: f32| ImageRes { width: 32, height: 16, rgba: vec![[v, v, v, 1.0]; 32 * 16], srgb: false, mips: Default::default() };
-        let sh = EnvironmentSh { coefficients: image_sh(&image(0.5)), rotation: 1.0 };
-        for normal in [Vec3::Y, Vec3::X, Vec3::NEG_Y, Vec3::new(0.6, 0.0, 0.8)] {
-            let light = sh.irradiance(normal, 0.3, 0.7);
-            assert!((light - Vec3::splat(0.5)).abs().max_element() < 0.02, "{normal}: {light}");
+        for (width, height) in [(1, 1), (32, 16)] {
+            let image = ImageRes::new(width, height, vec![[0.5, 0.5, 0.5, 1.0]; (width * height) as usize], false);
+            let sh = EnvironmentSh { coefficients: image_sh(&image), rotation: 1.0 };
+
+            for normal in [Vec3::Y, Vec3::X, Vec3::NEG_Y, Vec3::new(0.6, 0.0, 0.8)] {
+                let light = sh.irradiance(normal, 0.3, 0.7);
+                assert!((light - Vec3::splat(0.5)).abs().max_element() < 0.02, "{width}x{height} {normal}: {light}");
+            }
         }
     }
 
@@ -138,6 +142,7 @@ mod tests {
 
         const WORKERS: usize = 8;
         const TILES: usize = 1024;
+
         // One tile in so many asks for the light; the rest finish at once, so their workers are free to steal the averaging's work
         const LIT_EVERY: usize = 128;
         const ROUNDS: usize = 20;
@@ -202,7 +207,7 @@ mod tests {
         let (width, height) = (1024u32, 512u32);
         let patch = |x: u32, y: u32| (97..101).contains(&x) && (193..197).contains(&y);
         let rgba = (0..width * height).map(|i| if patch(i % width, i / width) { [BRIGHT, BRIGHT, BRIGHT, 1.0] } else { [0.0, 0.0, 0.0, 1.0] }).collect();
-        let image = ImageRes { width, height, rgba, srgb: false, mips: Default::default() };
+        let image = ImageRes::new(width, height, rgba, false);
 
         let averaged = image_sh(&image)[0][0];
         let exact = crate::environment_sky::sh9(width, height, |x, y| if patch(x, y) { Vec3::splat(BRIGHT) } else { Vec3::ZERO })[0][0];

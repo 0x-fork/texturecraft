@@ -1,6 +1,12 @@
 //! The filter library (the Filters shelf): adjustment, blur and distortion filters for
 //! layer content and masks, and material finishes (content only). `effect.add.filter` adds one
 //! by id; `filter.list` lists them with their default parameters.
+//!
+//! The public [Warp] and [Blur Slope] guides describe the controls and inputs.
+//! TextureCraft defines its own command IDs, units, and sampling.
+//!
+//! [Warp]: https://experienceleague.adobe.com/en/docs/substance-3d-painter/using/effects/filters/standard-filters/warp
+//! [Blur Slope]: https://experienceleague.adobe.com/en/docs/substance-3d-painter/using/effects/filters/standard-filters/blur-slope
 
 use serde_json::{Value, json};
 use texturecraft_core::{
@@ -79,7 +85,7 @@ pub const FILTERS: &[FilterDef] = &[
     def("colorMatch", "Color Match", "Adjustments", false),
     def("blur", "Blur", "Blur and sharpen", true),
     def("blurDirectional", "Blur Directional", "Blur and sharpen", true),
-    def("slopeBlur", "Blur Slope", "Blur and sharpen", true),
+    def("blurSlope", "Blur Slope", "Blur and sharpen", true),
     def("sharpen", "Sharpen", "Blur and sharpen", true),
     def("highPass", "Highpass", "Blur and sharpen", true),
     def("fxaa", "FXAA (Anti-aliasing)", "Blur and sharpen", true),
@@ -104,15 +110,19 @@ fn norm(s: &str) -> String {
     s.to_ascii_lowercase().replace([' ', '_', '-', '/'], "")
 }
 
-/// The library filter `id` (case and separators ignored; labels work too). Directional Warp's former id and labels find Warp, whose mode it is now
+/// The library entry for an ID or label, ignoring case and separators.
 pub fn find(id: &str) -> Option<&'static FilterDef> {
-    let wanted = if is_directional_warp(id) { norm("warp") } else { norm(id) };
+    let wanted = norm(id);
     FILTERS.iter().find(|def| norm(def.id) == wanted || norm(def.label) == wanted)
 }
 
-/// Whether `id` names Directional Warp, a filter of its own before the warp modes (`warpDirectional`, "Warp Directional", "Directional Warp")
-fn is_directional_warp(id: &str) -> bool {
-    matches!(norm(id).as_str(), "warpdirectional" | "directionalwarp")
+/// The catalog entry for an installed filter. Saved Warp and Blur Slope variants
+/// from before the new modes have no catalog entry, even when their labels match.
+pub fn definition(filter: &Filter) -> Option<&'static FilterDef> {
+    match filter {
+        Filter::Warp { .. } | Filter::DirectionalWarp { .. } | Filter::SlopeBlur { .. } => None,
+        _ => find(filter.label()),
+    }
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -122,7 +132,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Restore defaults",
             [],
             None,
-            "{effect?: filter effect id, default the selected effect} — its filter's parameters back to their defaults (name, channels and blending stay; a filter saved before its library replacement becomes that replacement, as the library adds it) in one undo step; no step when they are already; returns {changed}",
+            "{effect?: filter effect id, default the selected effect} — restore its catalog defaults in one undo step, keeping name, channels and blending. Filters without a catalog entry and filters already at defaults return {changed: false}",
             has_layer,
             restore_defaults
         ),
@@ -152,7 +162,7 @@ fn listed(def: &FilterDef) -> Value {
     })
 }
 
-/// The filter `effect.filter.restoreDefaults` works on: its id and the library defaults of the filter it is (None: an empty filter)
+/// The selected effect ID and its filter's defaults, when that filter has a catalog entry.
 fn filter_defaults(s: &Session, p: &Value) -> Result<(LayerId, Option<Filter>)> {
     const CMD: &str = "effect.filter.restoreDefaults";
     let effect = crate::mask_cmds::effect_id(s, p, CMD)?;
@@ -161,10 +171,10 @@ fn filter_defaults(s: &Session, p: &Value) -> Result<(LayerId, Option<Filter>)> 
         Some(_) => return Err(bad(CMD, format!("effect {} is not a filter", effect.0))),
         None => return Err(bad(CMD, format!("no effect {}", effect.0))),
     };
-    let defaults = match build(filter.label(), &Value::Null) {
+    let defaults = definition(filter).and_then(|def| match build(def.id, &Value::Null) {
         Ok(EffectKind::Filter(defaults)) => Some(defaults),
         _ => None,
-    };
+    });
     Ok((effect, defaults))
 }
 
@@ -319,7 +329,7 @@ pub(crate) fn build_for(cmd: &str, id: &str, p: &Value) -> Result<EffectKind> {
         "histogramShift" => Filter::HistogramShift { offset: 0.0 },
         "warp" => Filter::SourceWarp(SourceWarp::LIBRARY),
         "blurDirectional" => Filter::DirectionalBlur { radius: 16.0, angle: 0.0 },
-        "slopeBlur" => Filter::SourceSlopeBlur(SourceSlopeBlur::LIBRARY),
+        "blurSlope" => Filter::SourceSlopeBlur(SourceSlopeBlur::LIBRARY),
         "highPass" => Filter::HighPass { radius: 3.0 * Filter::BLUR_INTENSITY, space: HighpassSpace::Working, alpha: false },
         "edgeDetect" => Filter::EdgeDetect { width: 2.0 },
         "grayscale" => Filter::GrayscaleConversion(GrayscaleConversion::LIBRARY),
@@ -359,7 +369,15 @@ pub(crate) fn build_for(cmd: &str, id: &str, p: &Value) -> Result<EffectKind> {
         }
     }
 
-    apply_named(Some(id), p, &mut filter, cmd)?;
+    apply(p, &mut filter, cmd)?;
+    if let Filter::GradientMap { positions, quantity: Some(count), .. } = &mut filter
+        && p.get("colors").is_some()
+        && p.get("positions").is_none()
+    {
+        let last = f32::from(*count - 1);
+        *positions = (0..*count).map(|index| f32::from(index) / last).collect();
+    }
+
     Ok(EffectKind::Filter(filter))
 }
 
@@ -694,32 +712,6 @@ fn one_of<T: std::fmt::Display>(allowed: &[T]) -> String {
     }
 }
 
-/// Whether `p` asks `filter`, a warp saved before the warp modes, for a mode it can't hold: Directional Warp's former id on a Warp, or a `warpMode` it is not
-pub(crate) fn changes_saved_warp_mode(named: &str, p: &Value, filter: &Filter) -> bool {
-    let saved_mode = match filter {
-        Filter::Warp { .. } => WarpMode::Warp,
-        Filter::DirectionalWarp { .. } => WarpMode::Directional,
-        _ => return false,
-    };
-    match p.get("warpMode") {
-        Some(mode) => mode.as_str() != Some(saved_mode.id()),
-        None => is_directional_warp(named) && saved_mode != WarpMode::Directional,
-    }
-}
-
-/// [`apply`] for the filter id `named`, if one is given: Directional Warp's former id turns a Warp to Directional mode unless `warpMode` is given
-pub(crate) fn apply_named(named: Option<&str>, p: &Value, filter: &mut Filter, cmd: &str) -> Result<()> {
-    apply(p, filter, cmd)?;
-
-    if let Filter::SourceWarp(warp) = filter
-        && named.is_some_and(is_directional_warp)
-        && p.get("warpMode").is_none()
-    {
-        warp.mode = WarpMode::Directional;
-    }
-    Ok(())
-}
-
 /// Set the parameters of `filter` given in `p` (clamped to their ranges); `effect.set` uses it too
 pub(crate) fn apply(p: &Value, filter: &mut Filter, cmd: &str) -> Result<()> {
     let set = |slot: &mut f32, key: &str, low: f32, high: f32| {
@@ -761,6 +753,7 @@ pub(crate) fn apply(p: &Value, filter: &mut Filter, cmd: &str) -> Result<()> {
             *filter = if on { Filter::Invert } else { Filter::InvertOff };
         }
         Filter::NormalInvert | Filter::Empty => {}
+
         // A Grayscale saved before the settings takes its luminance weights on its first edit, so it looks the same
         Filter::Grayscale => {
             if CONVERSION_KEYS.iter().any(|key| p.get(key).is_some()) {
@@ -916,6 +909,7 @@ pub(crate) fn apply(p: &Value, filter: &mut Filter, cmd: &str) -> Result<()> {
                     _ => return Err(bad(cmd, format!("`colors` must be 1 to {GRADIENT_COLORS_GIVEN_MAX} colors ([r, g, b] linear or \"#rrggbb\" sRGB)"))),
                 }
             }
+
             if let Some(list) = p.get("positions") {
                 let parsed: Option<Vec<f32>> =
                     list.as_array().and_then(|given| given.iter().map(|place| place.as_f64().map(|place| (place as f32).clamp(0.0, 1.0))).collect());
@@ -924,6 +918,7 @@ pub(crate) fn apply(p: &Value, filter: &mut Filter, cmd: &str) -> Result<()> {
                     _ => return Err(bad(cmd, "`positions` must be numbers in 0..1, at most one per color")),
                 }
             }
+
             if p.get("quantity").is_some() {
                 let wanted = u64p(p, "quantity")
                     .and_then(|count| u8::try_from(count).ok())
@@ -1115,7 +1110,12 @@ mod tests {
     #[test]
     fn a_new_gradient_given_colors_and_a_quantity_spaces_them_evenly() {
         let five = [[0.0; 3], [0.25; 3], [0.5; 3], [0.75; 3], [1.0; 3]];
-        for (given, quantity, expected) in [(&five[..2], 2, vec![0.0, 1.0]), (&five[..], 5, vec![0.0, 0.25, 0.5, 0.75, 1.0])] {
+        for (given, quantity, expected) in [
+            (&five[..2], 2, vec![0.0, 1.0]),
+            (&five[..], 5, vec![0.0, 0.25, 0.5, 0.75, 1.0]),
+            (&five[..], 3, vec![0.0, 0.5, 1.0]),
+            (&five[..2], 3, vec![0.0, 0.5, 1.0]),
+        ] {
             let params = json!({"colors": given, "quantity": quantity});
 
             let EffectKind::Filter(Filter::GradientMap { positions, quantity: used, .. }) = build("gradientMap", &params).unwrap() else { panic!() };

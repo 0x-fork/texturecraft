@@ -42,6 +42,7 @@ fn references(project: &Project, anchor: LayerId) -> Vec<Reference> {
         .into_iter()
         .filter_map(|(layer_id, effect)| {
             let layer = project.layers.get(&layer_id)?;
+            let mut name = layer.name.clone();
             let (kind, glyph) = match effect {
                 None if matches!(layer.kind, LayerKind::Fill(_)) => (n_("Fill"), ic::PAINT_BUCKET),
                 None => return None,
@@ -53,6 +54,11 @@ fn references(project: &Project, anchor: LayerId) -> Vec<Reference> {
                         (layer.content_effects.iter().find(|effect| effect.id == effect_id)?, true)
                     };
 
+                    if found.name != found.kind.name() {
+                        name.push_str(" / ");
+                        name.push_str(&found.name);
+                    }
+
                     match &found.kind {
                         EffectKind::Fill { .. } | EffectKind::Material(_) if in_content => (n_("Fill"), ic::PAINT_BUCKET),
                         EffectKind::Fill { .. } => (n_("Mask fill"), ic::PAINT_BUCKET),
@@ -60,7 +66,7 @@ fn references(project: &Project, anchor: LayerId) -> Vec<Reference> {
                     }
                 }
             };
-            Some(Reference { layer: layer_id, name: layer.name.clone(), kind, glyph, effect })
+            Some(Reference { layer: layer_id, name, kind, glyph, effect })
         })
         .collect()
 }

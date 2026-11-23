@@ -3,7 +3,7 @@
 use egui::{Color32, CornerRadius, Painter, Rect, Stroke, StrokeKind, Ui, vec2};
 use egui_phosphor::regular as ic;
 use serde_json::json;
-use texturecraft_engine::compose::ImageStore;
+use texturecraft_engine::Session;
 use texturecraft_engine::core::{ColorSelection, LayerId, SelectionBackground};
 
 use crate::TextureCraftApp;
@@ -17,7 +17,6 @@ use crate::resource_picker;
 use crate::resource_picker_item::ResourcePickerItem;
 use crate::slot_thumbnail::{SlotThumbnail, paint_empty_slot, paint_thumbnail};
 use crate::theme::Tokens;
-use crate::thumbs::Thumbs;
 
 /// Squares on each side of the transparent background's checker
 const CHECKER_SQUARES: usize = 4;
@@ -121,7 +120,7 @@ fn id_mask_slot(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, effect
 
     // The picker's ids are `Some(name)` for an image and `None` for Import..., so no image chosen is no current tile
     let current = selection.id_map.clone().map(Some);
-    let tabs = |_: &mut Thumbs| texture_tabs(&app.session.images);
+    let tabs = || texture_tabs(&app.session);
     match resource_picker::show(&slot.pick, popup, &mut app.thumbs, current.as_ref(), current.is_some(), tabs) {
         Some(None) => crate::menus::invoke(app, &ctx, "resource.import"),
         Some(Some(name)) if selection.id_map.as_ref() != Some(&name) => {
@@ -157,8 +156,8 @@ fn display_bytes(color: [f32; 3]) -> [u8; 3] {
 }
 
 /// The ID Mask picker: the project's textures, Import... first; the id is the texture's name, none for Import...
-fn texture_tabs(images: &ImageStore) -> Vec<PickerTab<Option<String>>> {
-    let textures = ResourcePickerItem::textures(images, None, |name| Some(name.to_owned()));
+fn texture_tabs(session: &Session) -> Vec<PickerTab<Option<String>>> {
+    let textures = ResourcePickerItem::textures(session, None, |name| Some(name.to_owned()));
     vec![PickerTab { icon: ic::SQUARES_FOUR, name: tr("Resources"), groups: vec![PickerGroup { header: Some(tr("Textures")), items: textures }] }]
 }
 

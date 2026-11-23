@@ -29,15 +29,17 @@ pub struct FramePlacement {
     pub scale: [f32; 3],
 }
 
-/// Whether backface culling faces the same way once `projector`'s scale is moved into a frame: culling is off, or the scale is even and keeps the side the frame faces (culling reads the scaled normal, a frame its own)
+/// Whether moving the projector's scale into the frame preserves culling
 pub fn culling_folds(projector: &Projector) -> bool {
     let stretch = projector_stretch(projector);
     let size = stretch.abs();
     let even = size.x == size.y && size.y == size.z;
-    !projector.backface.on || (even && stretch.x * stretch.y * stretch.z > 0.0)
+    let facing_preserved = stretch.x.signum() * stretch.y.signum() * stretch.z.signum() > 0.0;
+    (!projector.depth.on || facing_preserved) && (!projector.backface.on || (even && facing_preserved))
 }
 
-/// `proj` (a placed planar or a warp) with its projector's turn and scale moved into its frame, so the frame is where the projection lands; culling and crop stay. None for other projections, and while backface culling cannot keep its facing (see [`culling_folds`])
+/// Fold a placed planar or warp's turn and scale into its frame while preserving crop and culling.
+/// See [`culling_folds`] for when a fold would change culling.
 pub fn folded(proj: &Projection) -> Option<Projection> {
     let (frame, projector) = match proj {
         Projection::Planar { placed: Some(frame), projector, .. } | Projection::Warp { frame, projector, .. } => (frame, projector),
@@ -120,7 +122,9 @@ pub fn placement(proj: &Projection, bounds: (Vec3, Vec3)) -> Option<FramePlaceme
 /// Frame projection `proj` (a placed planar or a warp) moved to `placement`; its projector's turn and scale are folded in first, its other settings kept (None for other projections or a degenerate placement)
 pub fn placed(proj: &Projection, placement: &FramePlacement, bounds: (Vec3, Vec3)) -> Option<Projection> {
     let values = placement.offset.iter().chain(&placement.rotation).chain(&placement.scale);
-    if !values.copied().all(f32::is_finite) || placement.scale.iter().any(|scale| *scale <= 0.0) {
+    let [width_scale, height_scale, reach_scale] = placement.scale;
+    let valid_reach = reach_scale > 0.0 || (reach_scale == 0.0 && matches!(proj, Projection::Warp { .. }));
+    if !values.copied().all(f32::is_finite) || width_scale <= 0.0 || height_scale <= 0.0 || !valid_reach {
         return None;
     }
 
@@ -239,6 +243,7 @@ mod tests {
         for proj in [planar(projector), warp(projector)] {
             let flat = folded(&proj).unwrap();
             let Projector { rotation, scale, crop, .. } = projector_of(&flat);
+
             assert_eq!((rotation, scale, crop), ([0.0; 3], [1.0; 3], ShapeCrop::Cropped), "the turn and scale moved into the frame, the crop stayed");
 
             close(&samples(&proj), &samples(&flat));
@@ -249,11 +254,23 @@ mod tests {
     }
 
     #[test]
+    fn depth_culling_prevents_folding_with_the_opposite_facing() {
+        let mut projector = Projector::depth_culled();
+        projector.scale[2] = -1.0;
+        let bounds = (Vec3::NEG_ONE, Vec3::ONE);
+        let axis_planar = Projection::Planar { scale: 1.0, axis: 2, offset: [0.0; 3], uv: UvTransform::default(), projector, placed: None };
+
+        assert!(folded(&planar(projector)).is_none(), "an existing frame would face the opposite direction");
+        assert!(crate::axis_frame::placed_from_axis(&axis_planar, bounds).is_none(), "an axis projector would face the opposite direction");
+        assert!(folded(&planar(Projector::depth_culled())).is_some(), "unit stretch preserves facing");
+    }
+
+    #[test]
     fn folding_keeps_what_backface_culling_hides() {
         let backface = Backface { on: true, angle: 60.0, hardness: 1.0 };
         let square = Decal { center: [0.0; 3], normal: [0.0, 0.0, 1.0], up: [0.0, 1.0, 0.0], size: [1.0, 1.0], rotation: 0.0, offset: [0.0; 2], ..frame() };
 
-        // Half way between across and out: a scale across tilts the culled normal past the angle, a negative one turns it round
+        // An oblique normal distinguishes tilt from reflection
         let normal = Vec3::new(1.0, 0.0, 1.0).normalize();
         let center = (BOUNDS.0 + BOUNDS.1) * 0.5;
         let cover = |proj: &Projection| framed_cover(proj, Vec3::ZERO, normal, center).map(|(_, cover)| cover);
@@ -305,6 +322,7 @@ mod tests {
     #[test]
     fn a_frames_upright_turn_is_its_turn_round_its_normal() {
         let mut flat = Decal { normal: [0.0, 0.0, 1.0], up: [0.0, 1.0, 0.0], rotation: 30.0, offset: [0.0; 2], ..frame() };
+
         assert!((upright_turn(&flat).unwrap() - 30.0).abs() < 1e-3);
 
         flat.rotation = -100.0;

@@ -62,6 +62,28 @@ content-only filters. `filter.list` lists the available IDs; levels and material
 must be added separately with `effect.add.filter`. A successful replacement is one undo step;
 a rejected replacement changes nothing.
 
+Warp (`warp`) and Blur Slope (`blurSlope`) work on layer content or masks. Use these IDs with
+`effect.add.filter` and `effect.set`, including when replacing a saved filter. They share
+normalized `intensity` (0..1), `divider` (1, 10, 100, 1000), and `seed`.
+
+- Warp accepts `warpMode: "warp" | "directional" | "multiDirectional"`. The directional
+  modes take `angle` in degrees. Multidirectional Warp also takes `directions` (1, 2, 4)
+  and `blendingMode: "average" | "min" | "max" | "chain"`.
+- Blur Slope accepts `blendingMode: "blur" | "min" | "max"` and normalized `quality` (0..1).
+- Both take `sourceMode: "defaultNoise" | "previousInput" | "customNoise"`, normalized
+  `sourceBlur`, `sourceBalance` and `sourceContrast`, and `sourceTiling` (0.01..16).
+  Source Tiling sets the noise frequency or repeats a sampled source within each UV tile.
+  In Custom Noise mode, set the grayscale source through `layer.fill.set
+  {effect, input: "customNoise", ...}`. Blur Slope can read an anchor through that slot.
+
+For directional Warp, use `effect.add.filter {target: "content", filter: "warp",
+warpMode: "directional", angle: 45, intensity: 0.05, divider: 1}`. To replace that effect,
+use `effect.set {effect, filter: "blurSlope", quality: 0.5}`.
+
+This changes the automation contract. `warp` uses normalized intensity, and the
+`warpDirectional` and `slopeBlur` selectors return an unknown-filter error. Saved filter
+settings still load as stored. Restore Defaults applies to the current catalog entries.
+
 `edit.undo {steps?}` and `edit.redo {steps?}` go back or forward several steps at once (as far
 as the history reaches); `edit.history` lists the steps done and the undone ones, next first. Step names are English; a stroke is named by tool and layer (`Paint on Rust`,
 `Clone on Rust`, `Erase mask of Rust`).
@@ -575,7 +597,7 @@ its Material section). `layer.fill.material {layer? | effect?, material}` sets e
 material writes from it, turns those channels on and the others off, and keeps the fill's projection;
 `material: null` returns the channels to their defaults (a content fill effect keeps the channels it
 changes, at their defaults); setting what the fill already holds adds no undo step. Smart materials (folders of layers) are added
-with `material.apply` instead. The fill remembers the material (`Fill.material`, saved only when set;
+with `material.apply` instead. The command rejects linked MaterialCraft fills. The fill remembers the material (`Fill.material`, saved only when set;
 `project.inspect` shows it as `material`) until a channel's source is set on its own with
 `layer.fill.set`. A plain material added from the shelf names its fill the same way.
 

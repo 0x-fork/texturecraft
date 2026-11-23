@@ -260,7 +260,8 @@ fn panic_hunt() {
 
         for p in &hostile {
             let mut s = session();
-            // Match the 256px fixture so empty bake options cannot launch a 2048px bake
+
+            // Match the fixture resolution to avoid a full 2048px bake for each unrelated input
             for texture_set in &mut s.doc.project.texture_sets {
                 texture_set.bake.common.resolution = texturecraft_engine::core::BakeResolution::R256;
             }
@@ -454,6 +455,7 @@ fn hunt_filters(hostile: &[Value]) {
                     for edit in &extremes {
                         let mut edit = edit.clone();
                         edit["effect"] = json!(effect);
+
                         // Each accepted value reaches the compositor before the next edit replaces it
                         if execute(&mut s, "effect.set", &edit).is_ok() {
                             s.update();

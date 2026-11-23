@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::grayscale_mode::GrayscaleMode;
 use crate::{ChannelKind, finite_unit, lum, per_unit};
 
-/// Full contrast stays a finite step instead of a division by zero
+/// Keep the transition finite just below full contrast
 const MIN_STEEPNESS: f32 = 1e-3;
 
 /// The balance that leaves the gray as it is
@@ -66,8 +66,14 @@ impl GradientInput {
 /// Gray `x` balanced (0.5 keeps it), contrasted around mid gray (0 keeps it, 1 is a step at 0.5) and maybe inverted, in 0..1
 pub fn shape_gray(x: f32, balance: f32, contrast: f32, invert: bool) -> f32 {
     let balanced = finite_unit(x) + finite_unit(balance) - NEUTRAL_BALANCE;
-    let steep = (1.0 - finite_unit(contrast)).max(MIN_STEEPNESS);
-    let shaped = finite_unit((balanced - 0.5) / steep + 0.5);
+    let contrast = finite_unit(contrast);
+    let shaped = if contrast == 1.0 {
+        f32::from(balanced >= NEUTRAL_BALANCE)
+    } else {
+        let steep = (1.0 - contrast).max(MIN_STEEPNESS);
+        finite_unit((balanced - NEUTRAL_BALANCE) / steep + NEUTRAL_BALANCE)
+    };
+
     if invert { 1.0 - shaped } else { shaped }
 }
 
@@ -79,7 +85,8 @@ pub(crate) fn ramp_stops<'a>(colors: &'a [[f32; 3]], positions: &'a [f32]) -> im
     colors.iter().copied().enumerate().map(move |(index, color)| {
         let even_position = || if last == 0 { 0.0 } else { index as f32 / last as f32 };
         let position = positions.get(index).copied().filter(|position| position.is_finite()).unwrap_or_else(even_position);
-        (position.clamp(0.0, 1.0), color)
+        let position = if position <= 0.0 { 0.0 } else { position.min(1.0) };
+        (position, color)
     })
 }
 
@@ -143,10 +150,20 @@ mod tests {
         let ends = (ramp(&colors, &positions, true, 0.0), ramp(&colors, &positions, true, 1.0));
         let past_one_stop = ramp(&[gray, white], &[0.5, 0.5], true, 0.25);
 
+        assert_eq!(ramp(&[black, white], &[0.0, -0.0], true, 0.0), Some(white));
         assert_eq!(quarter, Some([0.25; 3]));
         assert_eq!(ends, (Some(black), Some(white)));
         assert_eq!(past_one_stop, Some(gray), "before the first stop, its color");
         assert_eq!(ramp(&[], &[], true, 0.5), None);
+    }
+
+    #[test]
+    fn full_contrast_separates_neighbors_of_mid_gray() {
+        let below = shape_gray(0.49975, NEUTRAL_BALANCE, 1.0, false);
+        let above = shape_gray(0.50025, NEUTRAL_BALANCE, 1.0, false);
+
+        assert_eq!((below, above), (0.0, 1.0));
+        assert_eq!(shape_gray(0.50025, NEUTRAL_BALANCE, 1.0, true), below);
     }
 
     #[test]

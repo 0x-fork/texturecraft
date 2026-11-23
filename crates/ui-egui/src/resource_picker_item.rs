@@ -1,7 +1,6 @@
 //! One choice offered by a resource picker
 
-use texturecraft_engine::compose::ImageStore;
-use texturecraft_engine::fill_alpha::library_alpha_of;
+use texturecraft_engine::Session;
 
 use crate::i18n::tr;
 use crate::tile_picture::TilePicture;
@@ -16,8 +15,8 @@ pub(crate) struct ResourcePickerItem<K> {
 
 impl<K> ResourcePickerItem<K> {
     /// A picker's Textures tiles: Import... first, then the project's images sorted by name, library alphas left out; `image` gives an image's id. A thumbnail is made only once its tile is drawn, so opening the picker does not resample every image
-    pub fn textures(images: &ImageStore, import: K, image: impl Fn(&str) -> K) -> Vec<Self> {
-        let mut named: Vec<_> = images.iter().filter(|(name, _)| library_alpha_of(name).is_none()).collect();
+    pub fn textures(session: &Session, import: K, image: impl Fn(&str) -> K) -> Vec<Self> {
+        let mut named: Vec<_> = session.images.iter().filter(|(name, _)| session.library_alpha(name).is_none()).collect();
         named.sort_by_key(|(name, _)| *name);
 
         let mut tiles = vec![Self { id: import, label: tr("Import...").to_owned(), caption: None, picture: TilePicture::Import }];

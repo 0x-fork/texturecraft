@@ -366,7 +366,7 @@ mod tests {
                 (0..=samples)
                     .map(|sample| {
                         let back = sample as f32 * step;
-                        (back, (x - direction[0] * back).round(), (y - direction[1] * back).round())
+                        (back, (x - direction[0] * back + 0.5).floor(), (y - direction[1] * back + 0.5).floor())
                     })
                     .take_while(|(_, sample_x, sample_y)| *sample_x >= 0.0 && *sample_y >= 0.0 && (*sample_x as usize) < width && (*sample_y as usize) < height)
                     .find_map(|(back, sample_x, sample_y)| inside[sample_y as usize * width + sample_x as usize].then(|| back / reach))

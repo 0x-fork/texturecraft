@@ -60,7 +60,7 @@ const CARD_BLEED: f32 = 6.0;
 /// The filter's card holds its rows: no Parameters band, every row and the Attributes row inside the card's edges, Attributes last
 #[test]
 fn the_filter_card_holds_its_parameters() {
-    let (harness, _) = app_with("slopeBlur", "content", WINDOW_HEIGHT);
+    let (harness, _) = app_with("blurSlope", "content", WINDOW_HEIGHT);
     assert!(harness.query_by_label("Parameters").is_none(), "no Parameters band");
 
     let card = harness.get_by_role_and_label(Role::ComboBox, "Blur Slope").rect();

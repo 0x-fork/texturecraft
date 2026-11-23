@@ -176,6 +176,8 @@ fn assert_list_leaves_the_wheel_and_closes(harness: &mut Harness<'_, TextureCraf
     assert!(!egui::Popup::is_any_open(&harness.ctx), "Escape closes the list");
 
     let button = open(harness);
+    assert!(egui::Popup::is_any_open(&harness.ctx), "the list reopens before the outside click");
+
     click_at(harness, egui::pos2(button.min.x - OUTSIDE_OFFSET, button.min.y));
     assert!(!egui::Popup::is_any_open(&harness.ctx), "a click outside closes the list");
 }

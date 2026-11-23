@@ -2,13 +2,16 @@
 
 use std::sync::Arc;
 
-use egui::{Color32, TextureHandle};
+use egui::Color32;
 use texturecraft_engine::compose::ImageRes;
 use texturecraft_engine::core::ProceduralKind;
+use texturecraft_engine::paint::alphas::LibraryAlpha;
 
-/// What a tile shows: a thumbnail (none while it renders), a project image or a pattern (its thumbnail made only once the tile is drawn), a colour, a glyph, or the import square
+/// A tile's picture source. Previews are requested only when its tile is drawn.
 pub(crate) enum TilePicture {
-    Texture(Option<TextureHandle>),
+    Material(&'static str),
+    Filter(&'static str),
+    Alpha(&'static LibraryAlpha),
     Image(String, Arc<ImageRes>),
     Procedural(ProceduralKind),
     Swatch(Color32),

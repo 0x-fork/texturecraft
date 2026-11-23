@@ -13,14 +13,29 @@ impl PropertySheet<'_> {
     pub(crate) fn name_field(&mut self, label: &str, name: &str) -> Option<String> {
         let (control, _) = self.row(label);
         let typing_id = self.next_id().with("typed");
+        let owner_changed = self.ui.data_mut(|data| {
+            let owner = data.get_temp_mut_or(typing_id.with("owner"), self.id);
+            std::mem::replace(owner, self.id) != self.id
+        });
+        if owner_changed {
+            // A different anchor must not inherit the previous draft, cursor or undo buffer
+            self.ui.memory_mut(|memory| {
+                memory.surrender_focus(typing_id);
+                memory.data.remove::<String>(typing_id);
+                memory.data.remove::<egui::text_edit::TextEditState>(typing_id);
+            });
+        }
+
         let typing = self.ui.memory(|memory| memory.has_focus(typing_id));
 
-        // The draft is read even when the focus already left (Shift+Tab, a field built earlier this frame took it): it commits below; it lasts one frame without the focus. Escape drops it, read from the frame's raw input as an app shortcut may already have taken the key
+        // Check raw Escape even if another shortcut consumed it
         let escaped =
             self.ui.input(|input| input.raw.events.iter().any(|event| matches!(event, egui::Event::Key { key: egui::Key::Escape, pressed: true, .. })));
         if escaped {
             self.ui.data_mut(|data| data.remove::<String>(typing_id));
         }
+
+        // A focus change early in this frame still needs the draft for the final commit
         let mut text = self.ui.data(|data| data.get_temp::<String>(typing_id)).unwrap_or_else(|| name.to_owned());
 
         let tokens = self.tokens;

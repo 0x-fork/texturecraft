@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use winsafe::prelude::Handle;
-use winsafe::{HHOOK, HINSTANCE, HWND, MSG, POINT, co};
+use winsafe::{HHOOK, HINSTANCE, HPROCESS, HWND, MSG, POINT, co};
 
 use super::eyedropper_pointer::EyedropperPointer;
 use super::hook_state::HookState;
@@ -44,7 +44,7 @@ pub(super) fn run(shared: &Arc<PickShared>, outcomes: Sender<PickOutcome>, ctx: 
         return;
     }
 
-    // Before the hook: while it is in place this thread must keep reading messages, or every mouse move on the desktop stalls
+    // Prepare the pointer before installing the hook so its message loop starts promptly
     let pointer = EyedropperPointer::show(dpi);
     let Ok(module) = HINSTANCE::GetModuleHandle(None) else { return finish_unavailable(generation, &unavailable, &ctx) };
     let Ok(mut hook) = HHOOK::SetWindowsHookEx(co::WH::MOUSE_LL, mouse_hook, Some(&module), None) else {
@@ -71,7 +71,7 @@ pub(super) fn run(shared: &Arc<PickShared>, outcomes: Sender<PickOutcome>, ctx: 
             deliver_pick(generation);
         }
 
-        // Unhooked before the scope joins the disc thread: no message is read from here on, and the desktop's mouse waits on a hook
+        // Remove the hook before joining the disc thread so desktop input can continue
         let _ = hook.UnhookWindowsHookEx();
         let _ = HWND::NULL.KillTimer(timer);
 
@@ -139,7 +139,7 @@ fn pick_button_down() -> bool {
 
 extern "system" fn mouse_hook(code: i32, wparam: usize, lparam: isize) -> isize {
     // A negative code must go straight to the next hook
-    if code >= 0 && take(wparam) {
+    if code >= 0 && take(wparam, lparam) {
         return 1;
     }
 
@@ -147,7 +147,7 @@ extern "system" fn mouse_hook(code: i32, wparam: usize, lparam: isize) -> isize 
 }
 
 /// Whether the mouse message `message` is the pick's own: a left press outside the app (noted, then taken) or its release
-fn take(message: usize) -> bool {
+fn take(message: usize, event_address: isize) -> bool {
     let Ok(mut hook) = HOOK.lock() else { return false };
     let Some(state) = hook.as_mut() else { return false };
 
@@ -157,11 +157,18 @@ fn take(message: usize) -> bool {
         return true;
     }
 
-    if message != co::WM::LBUTTONDOWN.raw() || state.done {
+    if message != co::WM::LBUTTONDOWN.raw() || state.done || state.shared.stopped() {
         return false;
     }
 
-    let Ok(point) = winsafe::GetCursorPos() else { return false };
+    // MSLLHOOKSTRUCT starts with the event's POINT, in physical screen coordinates
+    let mut coordinates = [0; 8];
+    if HPROCESS::GetCurrentProcess().ReadProcessMemory(event_address as *mut _, &mut coordinates) != Ok(coordinates.len()) {
+        return false;
+    }
+
+    let [x0, x1, x2, x3, y0, y1, y2, y3] = coordinates;
+    let point = POINT { x: i32::from_ne_bytes([x0, x1, x2, x3]), y: i32::from_ne_bytes([y0, y1, y2, y3]) };
     if over_own_window(point) || over_windows(&state.shared.windows(), point.x, point.y) {
         return false;
     }

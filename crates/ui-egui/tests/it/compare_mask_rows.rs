@@ -18,6 +18,7 @@ fn compare_harness() -> (Harness<'static, TextureCraftApp>, LayerId) {
     let effect = LayerId(execute(&mut session, "effect.add.compare", &json!({"layer": layer})).unwrap()["effect"].as_u64().unwrap());
     execute(&mut session, "layer.select", &json!({"layer": layer, "target": effect.0})).unwrap();
     let mut harness = Harness::builder().with_size(PROPERTIES_WINDOW).with_step_dt(FRAME_SECONDS).build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(STARTUP_FRAMES);
     (harness, effect)
 }

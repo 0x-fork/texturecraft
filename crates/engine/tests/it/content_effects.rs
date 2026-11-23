@@ -38,6 +38,7 @@ fn content_effects_commands_inspect_and_round_trip() {
     assert!(close(center(&mut s, Channel::BaseColor), [0.0, 1.0, 0.0]), "{:?}", center(&mut s, Channel::BaseColor));
     assert!(s.doc.project.layer(LayerId(layer)).unwrap().mask.is_none(), "content effects don't create a mask");
     assert_eq!(s.target, StackTarget::Effect(LayerId(hsl)));
+
     // Mask-only effects refuse the content, unknown targets are errors
     assert!(execute(&mut s, "effect.add.generator", &json!({"target": "content"})).is_err());
     assert!(execute(&mut s, "effect.add.filter", &json!({"target": "nope"})).is_err());

@@ -39,7 +39,7 @@ impl SourceSlopeBlur {
     /// How many texels around a texel the filter reads at `res` texels across a UV tile: downhill, and where it measures its source's slope
     pub fn reach(&self, res: u32) -> f32 {
         let moves = self.move_texels(res);
-        if self.source.mode != WarpSourceMode::PreviousInput {
+        if self.source.mode == WarpSourceMode::DefaultNoise {
             return moves;
         }
 
@@ -58,6 +58,9 @@ mod tests {
         assert_eq!((slope.samples(24), SourceSlopeBlur { quality: 0.5, ..slope }.samples(24)), (24, 12));
         assert_eq!(SourceSlopeBlur { quality: 0.0, ..slope }.samples(24), 1, "always one read downhill");
         assert_eq!(SourceSlopeBlur { quality: f32::NAN, ..slope }.samples(24), 24);
+        let custom = SourceSlopeBlur { source: WarpSource { mode: WarpSourceMode::CustomNoise, blur: 1.0, ..WarpSource::LIBRARY }, ..slope };
+        assert!(custom.reach(2048) >= custom.move_texels(2048) + SourceWarp::probe_texels(2048) + custom.source.blur_texels(2048) * 0.5);
+
         let input = SourceSlopeBlur { source: WarpSource { mode: WarpSourceMode::PreviousInput, ..WarpSource::LIBRARY }, ..slope };
         assert!((input.reach(2048) - (61.44 + 8.0)).abs() < 1e-3, "plus where it measures the slope");
         assert_eq!(SourceSlopeBlur { intensity: f32::INFINITY, ..slope }.move_texels(2048), 0.0);

@@ -120,6 +120,13 @@ pub fn sh_basis(d: Vec3) -> [f32; 9] {
 /// Diffuse irradiance as 9 SH coefficients of the equirect image `width` x `height` whose texels `radiance` gives (already convolved with the cosine lobe and divided by π, so `Σ c·Y(n)` times albedo is the diffuse radiance)
 pub fn sh9(width: u32, height: u32, radiance: impl Fn(u32, u32) -> Vec3) -> [[f32; 3]; 9] {
     let (w, h) = (width.max(1), height.max(1));
+
+    // Sample each large texel across its angular footprint so a constant sky lights all directions
+    const MIN_COLUMNS: u32 = 32;
+    const MIN_ROWS: u32 = 16;
+    let samples_x = MIN_COLUMNS.div_ceil(w);
+    let samples_y = MIN_ROWS.div_ceil(h);
+    let (w, h) = (w * samples_x, h * samples_y);
     let mut sums = [Vec3::ZERO; 9];
     for y in 0..h {
         let theta = PI * (y as f32 + 0.5) / h as f32;
@@ -128,7 +135,7 @@ pub fn sh9(width: u32, height: u32, radiance: impl Fn(u32, u32) -> Vec3) -> [[f3
             let direction = dir_of((x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32);
 
             // No firefly clamp: the projection integrates, so a bright sun lights diffuse fully
-            let weighted = radiance(x, y) * solid_angle;
+            let weighted = radiance(x / samples_x, y / samples_y) * solid_angle;
             for (sum, basis) in sums.iter_mut().zip(sh_basis(direction)) {
                 *sum += weighted * basis;
             }

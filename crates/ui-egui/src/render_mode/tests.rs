@@ -46,6 +46,7 @@ fn environment_cache_retains_source_identity_until_replaced() {
     app.session.images.insert("environment".into(), source);
     let first_key = gpu_scene_key(&app.session);
     let first = super::trace_scene(&app).env;
+
     assert!(Arc::ptr_eq(&first, &super::trace_scene(&app).env), "unchanged images reuse the decoded environment");
 
     let replacement = Arc::new(ImageRes::new(2, 1, vec![[0.0, 1.0, 0.0, 1.0]; 2], false));

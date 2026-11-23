@@ -252,7 +252,7 @@ fn directional_distance_trails_one_way() {
 /// Texels either side of a texel that must all rise (or fall) for the warp and slope tests to read it as on a slope
 const SLOPE_WINDOW: usize = 8;
 
-/// Warp: library defaults, the former Directional Warp id, Previous Input moving texels by their values, blended directions, old saves
+/// Warp: library defaults, Previous Input moving texels by their values, and blended directions
 #[test]
 fn warp_modes_move_texels_their_way() {
     let mut s = session();
@@ -307,22 +307,25 @@ fn warp_modes_move_texels_their_way() {
     let Filter::SourceWarp(warp) = filter_of(&s, effect) else { panic!() };
     assert_eq!((warp.intensity, warp.angle, warp.source.tiling, warp.source.blur, warp.seed), (1.0, 270.0, 16.0, 0.0, 7), "values clamp, the angle wraps");
     assert_eq!((warp.mode, warp.blending, warp.directions), (WarpMode::MultiDirectional, WarpBlending::Chain, 4));
+}
 
-    let former = add_filter(&mut s, json!({"filter": "warpDirectional"}));
-    let directional = SourceWarp { mode: WarpMode::Directional, ..SourceWarp::LIBRARY };
-    assert_eq!(filter_of(&s, former), Filter::SourceWarp(directional), "the former id adds a Directional Warp");
+/// Opening saved Directional Warp preserves the existing settings without a catalog reset.
+#[test]
+fn a_saved_directional_warp_has_no_catalog_defaults() {
+    let mut session = session();
+    let effect = add_filter(&mut session, json!({"filter": "warp"}));
 
-    // Saved before the modes: loads as it was, and Restore defaults gives the warp of its mode
     let saved = json!({"DirectionalWarp": {"intensity": 8.0, "angle": 30.0, "scale": 4.0, "seed": 3}});
     let old: Filter = serde_json::from_value(saved.clone()).unwrap();
 
     assert_eq!(old, Filter::DirectionalWarp { intensity: 8.0, angle: 30.0, scale: 4.0, seed: 3, divider: 1 });
     assert_eq!(serde_json::to_value(&old).unwrap(), saved, "saves as before");
 
-    s.doc.project.effect_mut(former).unwrap().kind = EffectKind::Filter(old);
-    execute(&mut s, "effect.filter.restoreDefaults", &json!({"effect": former.0})).unwrap();
+    session.doc.project.effect_mut(effect).unwrap().kind = EffectKind::Filter(old.clone());
+    let reset = execute(&mut session, "effect.filter.restoreDefaults", &json!({"effect": effect.0})).unwrap();
 
-    assert_eq!(filter_of(&s, former), Filter::SourceWarp(directional));
+    assert_eq!(reset, json!({"changed": false}));
+    assert_eq!(filter_of(&session, effect), old);
 }
 
 /// Blur Slope: library defaults, Min under Blur under Max, reading downhill of its Previous Input, Quality, one undo, old saves
@@ -333,7 +336,7 @@ fn slope_blur_reads_downhill_of_its_source() {
     let after = middle_row;
     let moved = |values: &[f32]| values.iter().zip(&before).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
 
-    let effect = add_filter(&mut s, json!({"filter": "slopeBlur"}));
+    let effect = add_filter(&mut s, json!({"filter": "blurSlope"}));
     assert_eq!(filter_of(&s, effect), Filter::SourceSlopeBlur(SourceSlopeBlur::LIBRARY), "the library defaults");
     assert_eq!(s.doc.project.effect(effect).unwrap().1.name, "Blur Slope");
 
@@ -374,15 +377,35 @@ fn slope_blur_reads_downhill_of_its_source() {
     let source = WarpSource { mode: WarpSourceMode::CustomNoise, blur: 1.0, balance: 0.25, contrast: 0.0, tiling: 16.0 };
     assert_eq!((slope.intensity, slope.quality, slope.source, slope.seed), (1.0, 0.0, source, 7), "values clamp");
 
-    // Saved before its source settings: loads and saves as it was, and Restore defaults gives today's Blur Slope
+    // Saved Blur Slope keeps its existing settings
     let saved = json!({"SlopeBlur": {"radius": 16.0, "scale": 4.0, "seed": 1}});
     let old: Filter = serde_json::from_value(saved.clone()).unwrap();
 
     assert_eq!(old, Filter::SlopeBlur { radius: 16.0, scale: 4.0, seed: 1, divider: 1 });
     assert_eq!(serde_json::to_value(&old).unwrap(), saved, "saves as before");
 
-    s.doc.project.effect_mut(effect).unwrap().kind = EffectKind::Filter(old);
-    execute(&mut s, "effect.filter.restoreDefaults", &json!({"effect": effect.0})).unwrap();
+    s.doc.project.effect_mut(effect).unwrap().kind = EffectKind::Filter(old.clone());
+    let reset = execute(&mut s, "effect.filter.restoreDefaults", &json!({"effect": effect.0})).unwrap();
 
-    assert_eq!(filter_of(&s, effect), Filter::SourceSlopeBlur(SourceSlopeBlur::LIBRARY));
+    assert_eq!(reset, json!({"changed": false}));
+    assert_eq!(filter_of(&s, effect), old);
+}
+
+#[test]
+fn slope_blur_source_tiling_changes_sampled_inputs() {
+    let mut session = session();
+    let _ = gradient_row(&mut session);
+    let effect = add_filter(&mut session, json!({"filter": "blurSlope", "intensity": 0.05, "divider": 1}));
+    set(&mut session, effect, json!({"sourceMode": "customNoise"}));
+    execute(&mut session, "layer.fill.set", &json!({"effect": effect.0, "input": "customNoise", "procedural": "gradient"})).unwrap();
+
+    for mode in ["previousInput", "customNoise"] {
+        set(&mut session, effect, json!({"sourceMode": mode, "sourceTiling": 1.0}));
+        let original = middle_row(&mut session);
+
+        set(&mut session, effect, json!({"sourceTiling": 2.0}));
+        let repeated = middle_row(&mut session);
+
+        assert!(original.iter().zip(&repeated).any(|(original, repeated)| (original - repeated).abs() > 0.01), "{mode} should repeat the source");
+    }
 }

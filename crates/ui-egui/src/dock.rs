@@ -18,6 +18,7 @@ use crate::layer_panel::{effect_preview_size, effect_row_height, layer_preview_s
 use crate::past_end::PastEnd;
 use crate::property_sheet::{PropertySheet, SectionScope};
 use crate::shelf::{Asset, ShelfDrag};
+use crate::source_choice::SourceChoice;
 use crate::state::PropsTab;
 use crate::theme::{Tokens, caption};
 use crate::toolbar::{MAX_BRUSH_SIZE, MIN_BRUSH_SIZE};
@@ -563,7 +564,8 @@ fn layer_row(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, depth: usize
         let set = project.locate(source).and_then(|(set, _, _)| project.texture_sets.get(set)).map(|set| set.name.as_str()).unwrap_or("?");
         project.layers.get(&source).map_or_else(|| tr("missing source").to_string(), |source_layer| format!("{} · {set}", source_layer.name))
     });
-    // Only what the row draws of the mask (whether it is on, its background, its effect count): no clone per row per frame
+
+    // Read just the visible mask summary to avoid cloning every row
     let mask =
         project.layers.get(&project.mask_owner(layer.id)).and_then(|owner| owner.mask.as_ref()).map(|mask| (mask.enabled, mask.background, mask.effects.len()));
     let blend = project.content_layer(layer.id).and_then(|content| content.blend(channel));
@@ -1004,7 +1006,7 @@ fn effect_row(
     let thumbnail = Rect::from_min_size(pos2(content_left + EYE_COLUMN_WIDTH, rect.center().y - preview_size * 0.5), vec2(preview_size, preview_size));
     let channel = app.ui.layer_channel;
 
-    // A content effect blends each channel on its own: its row shows and sets the displayed channel's blending, as a layer row does
+    // Content rows edit the displayed channel's blend
     let row_channel = (!in_mask && !app.ui.layer_material_view).then_some(channel);
     if !thumb_box(ui, app, thumbnail, ThumbTarget::Stage { effect: effect_id, channel }, false) {
         let glyph = if in_mask { ic::MAGIC_WAND } else { ic::SPHERE };
@@ -1113,7 +1115,7 @@ fn effect_row(
             }
         }
 
-        // One channel's blending (the channel the Layers panel shows) on every channel, or every channel's carried to another effect
+        // Blending options can apply across channels or effects
         ui.separator();
         let blends = effect.kind.blends();
         let copied = app.session.blending_clipboard.is_some();
@@ -1128,7 +1130,7 @@ fn effect_row(
                     }
                 };
 
-                // The row's channel lends its blending; a mask effect blends one channel and the Material view shows no channel, so only copy and paste apply there
+                // Mask and Material views have no individual channel to propagate
                 let lends = channel.is_some();
                 item(ui, tr("Use this blend mode on every channel"), "effect.blending.modeToEveryChannel", lends);
                 item(ui, tr("Use this opacity on every channel"), "effect.blending.opacityToEveryChannel", lends);
@@ -1777,7 +1779,8 @@ pub(crate) fn properties_title(app: &TextureCraftApp) -> String {
     let what = match (app.session.selected_layer().and_then(|id| project.layers.get(&id)), app.session.target) {
         // Polygon fill keeps its own properties wherever it can fill
         _ if tool == Tool::PolygonFill && tool_usable => tr(tool.label()).to_string(),
-        // The effect's type, not its own name (every filter reads "Filter")
+
+        // Filters share a title even when the effect is renamed
         (Some(_), StackTarget::Effect(effect)) => project.effect(effect).map(|(_, found)| tr(effect_type_label(&found.kind)).to_string()).unwrap_or_default(),
         (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => tr("Fill").to_string(),
         (Some(layer), StackTarget::Content) if layer.is_group() => tr("Folder").to_string(),
@@ -1804,13 +1807,19 @@ pub(crate) fn properties(app: &mut TextureCraftApp, ui: &mut Ui) {
     if let Some(tabs) = properties_fill_tabs(app) {
         crate::property_sheet::section_tabs(ui, scope, 0, &tabs);
     }
-    let area = egui::ScrollArea::vertical().id_salt(("props", properties_place(app))).auto_shrink([false, false]);
-    crate::property_sheet::in_scope(ui, scope, |ui| properties_scrolled(app, ui, area, PastEnd::Always));
+
+    let selection = properties_selection(app);
+    crate::property_sheet::in_scope(ui, scope, |ui| {
+        let area = egui::ScrollArea::vertical().id_salt("props").auto_shrink([false, false]);
+        let area = app.properties_scroll.prepare(area, ui.scope_id(), selection);
+        let offset_points = properties_scrolled(app, ui, area, PastEnd::Always);
+        app.properties_scroll.remember(selection, offset_points);
+    });
 }
 
-/// What the docked Properties list keeps its own scroll place for: the selected layer and the part of it edited, none for the tool
-fn properties_place(app: &TextureCraftApp) -> Option<(LayerId, StackTarget)> {
-    // A short panel in between would clamp a shared place back to the top; a greyed tool shows the layer's own sheet
+/// The layer and target whose scroll offset is shown, or the polygon fill tool's own offset
+fn properties_selection(app: &TextureCraftApp) -> crate::property_sheet::PropertiesSelection {
+    // Disabled polygon fill shows the selected layer's settings
     if app.session.tool.tool == Tool::PolygonFill && app.session.tool_usable(Tool::PolygonFill) {
         return None;
     }
@@ -1818,20 +1827,22 @@ fn properties_place(app: &TextureCraftApp) -> Option<(LayerId, StackTarget)> {
     app.session.selected_layer().map(|layer| (layer, app.session.target))
 }
 
-/// The sections in `area`, leaving the solid bar's room even without it, so the bar coming in refits no row (flipped it every frame)
-pub(crate) fn properties_scrolled(app: &mut TextureCraftApp, ui: &mut Ui, area: egui::ScrollArea, past_end: PastEnd) {
+/// Draw the sections, reserve room for the scrollbar and return the clamped vertical offset
+pub(crate) fn properties_scrolled(app: &mut TextureCraftApp, ui: &mut Ui, area: egui::ScrollArea, past_end: PastEnd) -> f32 {
     let sheet_width = (ui.available_width() - ui.spacing().scroll.allocated_width()).max(0.0);
-    area.show(ui, |ui| {
+    let output = area.show(ui, |ui| {
         ui.set_max_width(sheet_width);
         crate::property_sheet::forget_sections(ui);
         properties_contents(app, ui);
 
-        // Blank space under the rows lets the last section's top reach the top of the list, as the reference panel scrolls
+        // Leave room to align the last section with the top of the list
         let scrolls = ui.min_rect().height() > ui.clip_rect().height();
         if past_end == PastEnd::Always || scrolls {
             ui.add_space(crate::property_sheet::room_past_end(ui));
         }
     });
+
+    output.state.clamped_offset().y
 }
 
 /// The tabs over the panel when it shows a fill layer's or a mask fill effect's sections, which they jump between
@@ -1860,7 +1871,7 @@ fn mask_fill_of(project: &texturecraft_engine::core::Project, effect: LayerId) -
 }
 
 /// Room around the Properties rows not yet laid out by the property sheet: the sheet's side padding, so both start under the panel's name
-const LEGACY_BODY_MARGIN: egui::Margin = egui::Margin::symmetric(crate::property_sheet::PAD as i8, 4);
+const LEGACY_BODY_MARGIN: egui::Margin = egui::Margin::symmetric(crate::property_sheet::SIDE_PADDING_POINTS as i8, 4);
 
 /// Lays out `body` with the other panels' margin
 fn legacy_body(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
@@ -1874,31 +1885,42 @@ pub(crate) fn properties_contents(app: &mut TextureCraftApp, ui: &mut Ui) {
         return;
     }
 
-    let selected = app.session.selected_layer().and_then(|id| app.session.doc.project.layers.get(&id).cloned());
+    let selected = app.session.selected_layer();
     let tool = app.session.tool.tool;
     let tool_usable = app.session.tool_usable(tool);
     let tokens = Tokens::get(ui.ctx());
 
-    match (&selected, app.session.target) {
-        // Polygon fill shows its own settings and says what it fills into, wherever it can fill
+    match (selected.and_then(|id| app.session.project().layers.get(&id)), app.session.target) {
+        // Polygon fill keeps its own settings on any target it can fill
         _ if tool == Tool::PolygonFill && tool_usable => legacy_body(ui, |ui| polygon_fill_properties(app, ui)),
-        (Some(layer), StackTarget::Effect(effect)) if mask_fill_of(&app.session.doc.project, effect).is_some() => mask_fill_properties(app, ui, layer, effect),
+        (Some(layer), StackTarget::Effect(effect)) if mask_fill_of(&app.session.doc.project, effect).is_some() => {
+            let layer_id = layer.id;
+            mask_fill_properties(app, ui, layer_id, effect);
+        }
         (Some(layer), StackTarget::Effect(effect)) => {
-            effect_properties(app, ui, layer, effect);
+            let snapshot = layer.clone();
+            effect_properties(app, ui, &snapshot, effect);
             let painted = app.session.doc.project.effect(effect).is_some_and(|(_, effect)| matches!(effect.kind, EffectKind::Paint | EffectKind::Path(_)));
             if painted && grayscale_tab_open(app) {
                 crate::mask_paint_panel::grayscale_sheet(app, ui);
             }
         }
-        (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => fill_properties(app, ui, layer),
+        (Some(layer), StackTarget::Content) if matches!(layer.kind, LayerKind::Fill(_)) => {
+            let snapshot = layer.clone();
+            fill_properties(app, ui, &snapshot);
+        }
         (Some(layer), StackTarget::Content) if layer.is_group() => crate::folder_properties::folder_properties(app, ui, layer.id),
-        (Some(layer), StackTarget::Content) if layer.instance_source().is_some() => crate::instance_properties::instance_properties(app, ui, layer),
+        (Some(layer), StackTarget::Content) if layer.instance_source().is_some() => {
+            let snapshot = layer.clone();
+            crate::instance_properties::instance_properties(app, ui, &snapshot);
+        }
         (Some(layer), StackTarget::Mask) => {
+            let layer_id = layer.id;
             legacy_body(ui, |ui| {
-                // Add mask > Height combination took its place; a layer saved with it on can still turn it off here
-                let height_shown = app.session.doc.project.content_layer(layer.id).is_some_and(|content| content.height_mask.enabled);
+                // Saved height masks can still be turned off here
+                let height_shown = app.session.doc.project.content_layer(layer_id).is_some_and(|content| content.height_mask.enabled);
                 if height_shown {
-                    height_mask_section(app, ui, layer);
+                    height_mask_section(app, ui, layer_id);
                 }
                 if tool_usable {
                     if height_shown {
@@ -1924,25 +1946,26 @@ fn grayscale_tab_open(app: &TextureCraftApp) -> bool {
 }
 
 /// Mask with height: the layer's height shapes its mask transitions.
-fn height_mask_section(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer) {
-    let id = layer.id.0;
-    let hm = app.session.doc.project.content_layer(layer.id).map(|l| l.height_mask).unwrap_or_default();
+fn height_mask_section(app: &mut TextureCraftApp, ui: &mut Ui, layer: LayerId) {
+    let height_mask = app.session.project().content_layer(layer).map(|source| source.height_mask).unwrap_or_default();
+
     section(ui, "sec_height_mask", tr("Mask with height"), true, |ui| {
-        let mut on = hm.enabled;
+        let mut on = height_mask.enabled;
         if ui
             .checkbox(&mut on, tr("Combine with the layer's height"))
             .on_hover_text(tr("Partial mask values follow the layer's height: high parts show first"))
             .changed()
         {
-            app.run("layer.set", json!({"layer": id, "heightMask": {"enabled": on}}));
+            app.run("layer.set", json!({"layer": layer.0, "heightMask": {"enabled": on}}));
         }
-        ui.add_enabled_ui(hm.enabled, |ui| {
-            let (mut contrast, mut offset) = (hm.contrast, hm.offset);
+
+        ui.add_enabled_ui(height_mask.enabled, |ui| {
+            let (mut contrast, mut offset) = (height_mask.contrast, height_mask.offset);
             if let Some(merge) = slider_edit(ui, tr("Contrast"), &mut contrast, 0.0..=16.0, 2) {
-                app.run("layer.set", json!({"layer": id, "heightMask": {"contrast": contrast}, "merge": merge}));
+                app.run("layer.set", json!({"layer": layer.0, "heightMask": {"contrast": contrast}, "merge": merge}));
             }
             if let Some(merge) = slider_edit(ui, tr("Height offset"), &mut offset, -1.0..=1.0, 2) {
-                app.run("layer.set", json!({"layer": id, "heightMask": {"offset": offset}, "merge": merge}));
+                app.run("layer.set", json!({"layer": layer.0, "heightMask": {"offset": offset}, "merge": merge}));
             }
         });
     });
@@ -1993,13 +2016,26 @@ fn tool_properties(app: &mut TextureCraftApp, ui: &mut Ui) {
     let stroke_width = (brush.size / PREVIEW_SIZE_UNIT * PREVIEW_STROKE_WIDTH_SCALE).clamp(*PREVIEW_STROKE_WIDTH.start(), *PREVIEW_STROKE_WIDTH.end());
     let alpha = (brush.flow * brush.opacity * 255.0) as u8;
 
-    // A mask stroke shows the gray it lays down and no material
-    let gray = match (content, &app.session.tool.mask_image) {
-        (false, None) => (app.session.tool.mask_value.clamp(0.0, 1.0) * 255.0).round() as u8,
-        _ => u8::MAX,
+    let preview_stroke = |gray: f32| {
+        let gray = (gray.clamp(0.0, 1.0) * 255.0).round() as u8;
+        Stroke::new(stroke_width, Color32::from_rgba_unmultiplied(gray, gray, gray, alpha.max(PREVIEW_STROKE_MIN_ALPHA)))
     };
-    let stroke_color = Color32::from_rgba_unmultiplied(gray, gray, gray, alpha.max(PREVIEW_STROKE_MIN_ALPHA));
-    painter.add(egui::Shape::line(points, Stroke::new(stroke_width, stroke_color)));
+
+    // Sample image-backed masks along the preview stroke
+    let gray = if content { texturecraft_engine::compose::MaskGray::Value(1.0) } else { app.session.mask_gray() };
+    match gray {
+        texturecraft_engine::compose::MaskGray::Value(value) => {
+            painter.add(egui::Shape::line(points, preview_stroke(value)));
+        }
+        texturecraft_engine::compose::MaskGray::Image { .. } => {
+            let size = PREVIEW_STROKE_STEPS as u32;
+            for (index, segment) in points.windows(2).enumerate() {
+                let value = gray.at(index as u32, size / 2, (size, size));
+                painter.line_segment([segment[0], segment[1]], preview_stroke(value));
+            }
+        }
+    }
+
     if content {
         let base_color = app.session.tool.values.get(&Channel::BaseColor).copied().unwrap_or(PREVIEW_FALLBACK_BASE_COLOR);
 
@@ -2253,7 +2289,7 @@ fn polygon_fill_properties(app: &mut TextureCraftApp, ui: &mut Ui) {
             ui.label(caption(&tr("Grayscale").to_uppercase()));
             let mut gray = app.session.tool.mask_value;
             if slider(ui, tr("Value"), &mut gray, 0.0..=1.0, 2).changed() {
-                app.session.tool.mask_value = gray;
+                app.run("tool.material", json!({"maskValue": gray}));
             }
         }
         Err(note) => {
@@ -2764,12 +2800,12 @@ pub(crate) fn anchors_below(project: &texturecraft_engine::core::Project, reader
         .collect()
 }
 
-/// Anchor choices for an effect, valid for its owner and recorded below the displayed instance
+/// Anchor choices valid below both the effect's owner and its displayed instance
 pub(crate) fn effect_anchors_below(app: &TextureCraftApp, layer: LayerId, effect: LayerId) -> Vec<(LayerId, String)> {
     project_effect_anchors_below(&app.session.doc.project, layer, effect)
 }
 
-/// [`effect_anchors_below`] in `project`
+/// Anchor choices for the Properties source picker
 pub(crate) fn project_effect_anchors_below(project: &texturecraft_engine::core::Project, layer: LayerId, effect: LayerId) -> Vec<(LayerId, String)> {
     let owner = project.effect(effect).map_or(layer, |(owner, _)| owner);
     let owner_anchors = anchors_below(project, owner);
@@ -2823,7 +2859,7 @@ pub(crate) fn anchor_label(app: &TextureCraftApp, anchor: LayerId, channel: Chan
 }
 
 /// A mask fill effect: its Fill, Symmetry and Grayscale sections as one sheet (its blending is on its row)
-fn mask_fill_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effect_id: LayerId) {
+fn mask_fill_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer_id: LayerId, effect_id: LayerId) {
     let Some((source, projection, sampling)) =
         mask_fill_of(&app.session.doc.project, effect_id).map(|(source, projection, sampling)| (source.clone(), projection.clone(), sampling))
     else {
@@ -2831,7 +2867,7 @@ fn mask_fill_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, e
     };
 
     PropertySheet::show(ui, ("mask_fill_sheet", effect_id.0), |sheet| {
-        crate::mask_fill_panel::mask_fill_sheet(app, sheet, effect_id, source, projection, sampling, layer.id);
+        crate::mask_fill_panel::mask_fill_sheet(app, sheet, effect_id, source, projection, sampling, layer_id);
     });
 }
 
@@ -3037,23 +3073,42 @@ fn effect_properties(app: &mut TextureCraftApp, ui: &mut Ui, layer: &Layer, effe
         EffectKind::Fill { source, projection, .. } => legacy_body(ui, |ui| {
             ui.label(caption(tr("Fill")));
             let anchors = effect_anchors_below(app, layer.id, effect_id);
-            let current = match source {
+            let name = match source {
                 Source::Anchor { anchor, channel, .. } => anchor_label(app, *anchor, *channel),
                 Source::Uniform(_) => tr("Uniform value").to_string(),
                 Source::Procedural { pattern, .. } => tr(pattern.kind.label()).to_string(),
                 Source::Image { name, .. } => trf("Image: {name}", &[("name", name)]),
             };
-            let source_response = combo(ui, tr("Source"), current, |ui| {
-                if ui.selectable_label(matches!(source, Source::Uniform(_)), tr("Uniform value")).clicked() {
-                    app.run("effect.set", json!({"effect": id, "value": 1.0}));
-                }
-                if let Some(anchor) = anchor_entries(ui, &anchors, source.anchor()) {
-                    app.run("effect.set", json!({"effect": id, "anchor": anchor.0}));
-                }
-                if let Some(name) = image_menu(app, ui) {
-                    app.run("effect.set", json!({"effect": id, "image": name}));
-                }
+
+            let (rect, source_response) = ui.allocate_exact_size(vec2(ui.available_width(), crate::placed_fill_slot::SLOT_HEIGHT), Sense::click());
+            source_response.widget_info(|| egui::WidgetInfo {
+                current_text_value: Some(name.clone()),
+                ..egui::WidgetInfo::labeled(egui::Role::ComboBox, true, tr("Grayscale"))
             });
+            let (ctx, popup) = (ui.ctx().clone(), ui.make_persistent_id(("fill_source_picker", id)));
+            if source_response.clicked() {
+                crate::resource_picker::toggle(&ctx, popup);
+            }
+            let highlighted = source_response.hovered() || egui::Popup::is_id_open(&ctx, popup);
+            crate::placed_fill_slot::paint(ui, rect, (highlighted, source_response.has_focus()), (tr("Grayscale"), &name));
+            let current = crate::fill_material_panel::source_choice(&app.session, source);
+            let tabs = || crate::fill_material_panel::source_tabs(&app.session, &anchors, Color32::from_gray(204), false);
+            let picked = crate::resource_picker::show(&source_response, popup, &mut app.thumbs, Some(&current), current != SourceChoice::Uniform, tabs);
+            let anchor_channel = if let Source::Anchor { channel, .. } = source { *channel } else { Channel::Height };
+            let params = match picked.filter(|choice| *choice != current) {
+                Some(SourceChoice::Procedural(kind)) => Some(json!({"effect": id, "procedural": kind.label()})),
+                Some(SourceChoice::Image(image)) => Some(json!({"effect": id, "image": image})),
+                Some(SourceChoice::Uniform) => Some(json!({"effect": id, "value": 1.0})),
+                Some(SourceChoice::Anchor(anchor)) => Some(json!({"effect": id, "anchor": anchor.0, "anchorChannel": anchor_channel.id()})),
+                Some(SourceChoice::Import) => {
+                    crate::menus::invoke(app, &ctx, "resource.import");
+                    None
+                }
+                Some(SourceChoice::Alpha(_)) | None => None,
+            };
+            if let Some(params) = params {
+                app.run("effect.set", params);
+            }
 
             // The source selector accepts image drops from the Assets panel
             if let Some(name) = image_drop(ui, &source_response.interact(Sense::hover())) {

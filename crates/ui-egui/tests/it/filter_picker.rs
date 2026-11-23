@@ -41,6 +41,20 @@ fn picking_from_the_slot_swaps_the_filter() {
 }
 
 #[test]
+fn picking_blur_slope_installs_its_source_controls() {
+    let (mut harness, effect) = app_with_invert();
+    open_picker(&mut harness);
+    harness.event(egui::Event::Text("blur slope".into()));
+    harness.run_steps(3);
+
+    let option = harness.get_by_label("Blur Slope").rect().center();
+    click_at(&mut harness, option);
+
+    assert!(matches!(filter_of(&harness, effect), Filter::SourceSlopeBlur(_)));
+    assert!(harness.query_by_role_and_label(Role::ComboBox, "Default Noise").is_some());
+}
+
+#[test]
 fn escape_closes_the_picker_without_changes() {
     let (mut harness, effect) = app_with_invert();
     open_picker(&mut harness);

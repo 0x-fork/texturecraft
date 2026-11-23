@@ -1,7 +1,7 @@
 //! Swapping a filter effect's type in place through `effect.set {filter}`
 
 use serde_json::{Value, json};
-use texturecraft_engine::core::{BlendMode, Effect, EffectKind, Filter, LayerId, WarpMode};
+use texturecraft_engine::core::{BlendMode, Effect, EffectKind, Filter, LayerId, SourceWarp, WarpMode, WarpSourceMode};
 use texturecraft_engine::geom::primitives;
 use texturecraft_engine::{Session, StackTarget, execute};
 
@@ -59,36 +59,72 @@ fn swapping_a_filter_keeps_a_name_the_user_chose() {
 }
 
 #[test]
-fn swapping_to_the_former_directional_warp_id_sets_directional_mode() {
-    let mut s = session();
-    let id = add(&mut s, "effect.add.filter", json!({"filter": "invert", "target": "content"}));
+fn canonical_warp_and_blur_slope_can_be_added_and_swapped() {
+    let mut session = session();
+    let listed = execute(&mut session, "filter.list", &Value::Null).unwrap();
+    let entries = listed.as_array().unwrap();
+    let warp = add(&mut session, "effect.add.filter", json!({"filter": "warp", "target": "content", "warpMode": "directional", "angle": 45.0}));
 
-    set(&mut s, id, json!({"filter": "warpDirectional"}));
+    assert!(
+        matches!(effect(&session, warp).kind, EffectKind::Filter(Filter::SourceWarp(settings)) if settings.mode == WarpMode::Directional && settings.angle == 45.0)
+    );
 
-    let swapped = effect(&s, id).kind;
-    assert!(matches!(swapped, EffectKind::Filter(Filter::SourceWarp(warp)) if warp.mode == WarpMode::Directional), "{swapped:?}");
+    for (id, label) in [("warp", "Warp"), ("blurSlope", "Blur Slope")] {
+        let entry = entries.iter().find(|entry| entry["id"] == id).unwrap_or_else(|| panic!("missing {id}"));
+        let added = add(&mut session, "effect.add.filter", json!({"filter": id, "target": "mask"}));
+
+        assert_eq!(entry["label"], label);
+        assert_eq!(effect(&session, added).name, label);
+        assert_eq!(entry["defaults"], serde_json::to_value(effect(&session, added).kind).unwrap());
+    }
+
+    set(&mut session, warp, json!({"filter": "Blur Slope", "quality": 0.5, "sourceMode": "customNoise"}));
+    let blurred = effect(&session, warp);
+
+    assert_eq!(blurred.name, "Blur Slope");
+    assert!(
+        matches!(blurred.kind, EffectKind::Filter(Filter::SourceSlopeBlur(settings)) if settings.quality == 0.5 && settings.source.mode == WarpSourceMode::CustomNoise)
+    );
+
+    set(&mut session, warp, json!({"filter": "warp", "warpMode": "multiDirectional", "directions": 2}));
+    let warped = effect(&session, warp);
+
+    assert_eq!(warped.name, "Warp");
+    assert!(matches!(warped.kind, EffectKind::Filter(Filter::SourceWarp(settings)) if settings.mode == WarpMode::MultiDirectional && settings.directions == 2));
 }
 
 #[test]
-fn naming_the_former_directional_warp_id_on_a_warp_sets_directional_mode() {
+fn replaced_filter_ids_are_rejected_without_editing_the_stack() {
+    let mut session = session();
+    let effect_id = add(&mut session, "effect.add.filter", json!({"filter": "invert", "target": "content"}));
+    let entries = execute(&mut session, "filter.list", &Value::Null).unwrap();
+    let before = effect(&session, effect_id);
+    let order = content_order(&session);
+    let history = session.history_labels();
+
+    for retired in ["slopeBlur", "Slope Blur", "warpDirectional", "Warp Directional", "Directional Warp"] {
+        let add_error = execute(&mut session, "effect.add.filter", &json!({"filter": retired, "target": "content"})).unwrap_err();
+        let swap_error = execute(&mut session, "effect.set", &json!({"effect": effect_id.0, "filter": retired, "warpMode": "directional"})).unwrap_err();
+
+        assert!(add_error.to_string().contains("unknown filter"), "{add_error}");
+        assert!(swap_error.to_string().contains("unknown filter"), "{swap_error}");
+        assert!(!entries.as_array().unwrap().iter().any(|entry| entry["id"] == retired || entry["label"] == retired));
+    }
+
+    assert_eq!(effect(&session, effect_id), before);
+    assert_eq!(content_order(&session), order);
+    assert_eq!(session.history_labels(), history);
+}
+
+#[test]
+fn setting_directional_mode_on_a_modern_warp_preserves_its_seed() {
     let mut s = session();
     let id = add(&mut s, "effect.add.filter", json!({"filter": "warp", "target": "content", "seed": 7}));
 
-    set(&mut s, id, json!({"filter": "warpDirectional"}));
+    set(&mut s, id, json!({"filter": "warp", "warpMode": "directional"}));
 
     let edited = effect(&s, id).kind;
     assert!(matches!(edited, EffectKind::Filter(Filter::SourceWarp(warp)) if warp.mode == WarpMode::Directional && warp.seed == 7), "{edited:?}");
-}
-
-#[test]
-fn a_warp_mode_given_with_the_former_directional_warp_id_wins() {
-    let mut s = session();
-    let id = add(&mut s, "effect.add.filter", json!({"filter": "warp", "target": "content"}));
-
-    set(&mut s, id, json!({"filter": "warpDirectional", "warpMode": "warp"}));
-
-    let edited = effect(&s, id).kind;
-    assert!(matches!(edited, EffectKind::Filter(Filter::SourceWarp(warp)) if warp.mode == WarpMode::Warp), "{edited:?}");
 }
 
 /// A content warp effect saved before the warp modes, as `filter`
@@ -99,29 +135,26 @@ fn saved_warp(s: &mut Session, filter: Filter) -> LayerId {
 }
 
 #[test]
-fn asking_a_saved_warp_for_another_mode_replaces_it_with_a_warp_in_that_mode() {
-    let mut s = session();
-    let warp = saved_warp(&mut s, Filter::Warp { intensity: 8.0, scale: 4.0, seed: 1, divider: 1 });
-    let directional = saved_warp(&mut s, Filter::DirectionalWarp { intensity: 8.0, angle: 0.0, scale: 4.0, seed: 1, divider: 1 });
+fn naming_canonical_warp_replaces_a_saved_warp_even_with_the_same_label() {
+    let mut session = session();
+    let saved = Filter::Warp { intensity: 8.0, scale: 4.0, seed: 7, divider: 1 };
+    let id = saved_warp(&mut session, saved.clone());
 
-    set(&mut s, warp, json!({"filter": "warpDirectional", "angle": 90.0}));
-    set(&mut s, directional, json!({"filter": "warp", "warpMode": "multiDirectional"}));
+    set(&mut session, id, json!({"filter": "warp"}));
 
-    let edited = effect(&s, warp).kind;
-    assert!(matches!(edited, EffectKind::Filter(Filter::SourceWarp(warp)) if warp.mode == WarpMode::Directional && warp.angle == 90.0), "{edited:?}");
-
-    let edited = effect(&s, directional).kind;
-    assert!(matches!(edited, EffectKind::Filter(Filter::SourceWarp(warp)) if warp.mode == WarpMode::MultiDirectional), "{edited:?}");
+    assert_eq!(effect(&session, id).kind, EffectKind::Filter(Filter::SourceWarp(SourceWarp::LIBRARY)));
+    execute(&mut session, "edit.undo", &Value::Null).unwrap();
+    assert_eq!(effect(&session, id).kind, EffectKind::Filter(saved));
 }
 
 #[test]
-fn editing_a_saved_warp_in_its_own_mode_keeps_it() {
+fn editing_settings_without_replacing_a_saved_warp_keeps_its_variant() {
     let mut s = session();
     let warp = saved_warp(&mut s, Filter::Warp { intensity: 8.0, scale: 4.0, seed: 1, divider: 1 });
     let directional = saved_warp(&mut s, Filter::DirectionalWarp { intensity: 8.0, angle: 0.0, scale: 4.0, seed: 1, divider: 1 });
 
-    set(&mut s, warp, json!({"filter": "warp", "warpMode": "warp", "seed": 3}));
-    set(&mut s, directional, json!({"filter": "warpDirectional", "angle": 45.0}));
+    set(&mut s, warp, json!({"seed": 3}));
+    set(&mut s, directional, json!({"angle": 45.0}));
 
     assert_eq!(effect(&s, warp).kind, EffectKind::Filter(Filter::Warp { intensity: 8.0, scale: 4.0, seed: 3, divider: 1 }));
     assert_eq!(effect(&s, directional).kind, EffectKind::Filter(Filter::DirectionalWarp { intensity: 8.0, angle: 45.0, scale: 4.0, seed: 1, divider: 1 }));
@@ -151,6 +184,7 @@ fn swapping_to_a_gradient_given_colors_and_places_uses_every_color() {
 
     let EffectKind::Filter(gradient) = effect(&s, id).kind else { panic!("still a filter") };
     assert_eq!(gradient.ramp_colors(), colors);
+    assert_eq!(gradient.ramp_at(0.3), Some(colors[3]));
 }
 
 #[test]
@@ -288,7 +322,7 @@ fn a_mask_takes_grayscale_conversion() {
 #[test]
 fn filters_carry_the_workflows_names_and_former_names_still_follow_a_swap() {
     let mut s = session();
-    let slope = add(&mut s, "effect.add.filter", json!({"filter": "slopeBlur", "target": "content"}));
+    let slope = add(&mut s, "effect.add.filter", json!({"filter": "blurSlope", "target": "content"}));
     assert_eq!(effect(&s, slope).name, "Blur Slope");
 
     let names: Vec<Value> = execute(&mut s, "filter.list", &Value::Null).unwrap().as_array().unwrap().iter().map(|def| def["label"].clone()).collect();
@@ -296,8 +330,8 @@ fn filters_carry_the_workflows_names_and_former_names_still_follow_a_swap() {
         assert!(names.contains(&json!(name)), "{name} in {names:?}");
     }
 
-    // A project saved before the rename holds the former name: a swap still renames it, and the former name still finds the filter
-    let old = add(&mut s, "effect.add.filter", json!({"filter": "Slope Blur", "target": "content", "name": "Slope Blur"}));
+    // A saved default name follows a swap even when the former name is no longer a command selector
+    let old = add(&mut s, "effect.add.filter", json!({"filter": "blurSlope", "target": "content", "name": "Slope Blur"}));
     set(&mut s, old, json!({"filter": "blur"}));
 
     assert_eq!(effect(&s, old).name, "Blur");

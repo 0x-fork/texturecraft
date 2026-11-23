@@ -41,7 +41,7 @@ const ABOUT: &[(&str, FilterAbout)] = &[
     ("replaceColor", about("Swaps one color for another, keeping the shading.", &["color", "replace", "swap"])),
     ("blur", about("Softens the input: each texel spreads into its neighbours.", &["blur", "soften"])),
     ("blurDirectional", about("Smears the input along one direction.", &["blur", "motion", "direction"])),
-    ("slopeBlur", about("Smears the values downhill along a noise height field.", &["blur", "slope", "flow"])),
+    ("blurSlope", about("Smears the values downhill along a noise height field.", &["blur", "slope", "flow"])),
     ("sharpen", about("Makes the details crisper.", &["sharpen", "detail"])),
     ("highPass", about("Keeps the fine details and drops the broad shapes.", &["detail", "high pass", "frequency"])),
     ("bevel", about("Slopes the shapes down to their edge, or raises a slope around them.", &["bevel", "edge", "slope"])),

@@ -177,6 +177,7 @@ mod tests {
         for preview in previews {
             let key = preview.key();
             let image = preview.image(BIG_PX).unwrap_or_else(|| panic!("{key}"));
+
             assert_eq!(image.size, [BIG_PX, BIG_PX], "{key}");
             assert!(image.pixels.iter().any(|color| color.a() > 0 && color.r().max(color.g()).max(color.b()) > 0), "{key}: something shows");
         }

@@ -40,6 +40,10 @@ impl HeightToNormal {
     /// How much a change of height per texel tilts the normal at `res` texels across a UV tile (0 for hostile values)
     pub fn strength(&self, res: u32) -> f32 {
         let finite = |value: f32, max: f32| if value.is_finite() { value.clamp(0.0, max) } else { 0.0 };
+        if self.world_units && !self.surface_size.is_finite() {
+            return 0.0;
+        }
+
         let per_tile = if self.world_units {
             finite(self.height_depth, Self::MAX_HEIGHT_DEPTH) / finite(self.surface_size, Self::MAX_SURFACE_SIZE).max(Self::MIN_SURFACE_SIZE)
         } else {
@@ -74,6 +78,7 @@ mod tests {
         assert!(HeightToNormal { intensity: 20.0, ..intensity }.strength(2048) > intensity.strength(2048));
         assert!(HeightToNormal { height_depth: 32.0, ..filter }.strength(2048) > filter.strength(2048));
         assert_eq!(filter.normal([0.0, 0.01], 2048)[1].signum(), 1.0, "rising down the image faces up");
+        assert_eq!(HeightToNormal { surface_size: f32::NAN, ..filter }.strength(2048), 0.0);
         let hostile = HeightToNormal { surface_size: f32::NAN, height_depth: f32::INFINITY, ..filter };
         assert!(hostile.normal([1.0, 1.0], 2048).iter().all(|v| v.is_finite()));
     }

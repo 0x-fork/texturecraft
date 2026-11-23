@@ -13,7 +13,7 @@ use texturecraft_engine::core::{
 use texturecraft_engine::filter_lib::{
     BEVEL_SMOOTHING_MAX, BLUR_INTENSITY_SLIDER_MAX, DISTANCE_BEVEL_SMOOTHING_MAX, FilterDef, GRADIENT_QUANTITY_MIN, MAX_CAVITY_SMOOTHNESS,
     MAX_DIELECTRIC_REFLECTANCE, MAX_HEIGHT_TO_NORMAL, MAX_LIGHT_INTENSITY, SKY_INTENSITY_SLIDER_MAX, SMOOTH_DISTANCE_MAX, SOURCE_TILING_MAX, SOURCE_TILING_MIN,
-    SUN_INTENSITY_MAX, build, find, scalar_params,
+    SUN_INTENSITY_MAX, build, definition, scalar_params,
 };
 use texturecraft_engine::paint::FULL_TURN_DEGREES;
 
@@ -44,7 +44,7 @@ pub(crate) fn filter_properties(app: &mut TextureCraftApp, ui: &mut Ui, effect: 
             let off: Vec<Channel> = app.session.doc.project.effect(effect).map(|(_, found)| found.off_channels.iter().copied().collect()).unwrap_or_default();
             channel_pills(app, sheet, effect, &off);
         }
-        let def = find(filter.label());
+        let def = definition(filter);
         let defaults = def.and_then(defaults_of);
         let changed = defaults.as_ref().is_some_and(|defaults| defaults != filter);
         if filter_card(app, sheet, effect, filter, def, changed) {
@@ -123,8 +123,8 @@ fn channel_pills(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, effec
 /// How soon a filter card whose picture is still rendering looks for it again
 const THUMBNAIL_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
-/// The hourglass size on a slot whose picture is still rendering
-const WAITING_GLYPH_SIZE: f32 = 12.0;
+/// The glyph size on a slot without a finished picture
+const FILTER_GLYPH_SIZE: f32 = 12.0;
 
 /// How round a filter card's picture and a swatch's corners are, in points
 const SWATCH_CORNER_RADIUS: u8 = 3;
@@ -143,17 +143,14 @@ fn filter_card(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, effect:
             painter.image(texture.id(), rect, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
         }
 
-        // A picked filter whose picture is still rendering: a filled square, so it never reads as the empty card's outline
+        // A saved filter outside the catalog has no picture request to wait for
         None if !empty => {
+            let glyph = if def.is_some() { egui_phosphor::regular::HOURGLASS_MEDIUM } else { egui_phosphor::regular::FUNNEL };
             painter.rect_filled(rect.shrink(OUTLINE_WIDTH), SWATCH_CORNER_RADIUS, tokens.button);
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::HOURGLASS_MEDIUM,
-                egui::FontId::proportional(WAITING_GLYPH_SIZE),
-                tokens.text_dim,
-            );
-            ctx.request_repaint_after(THUMBNAIL_POLL);
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(FILTER_GLYPH_SIZE), tokens.text_dim);
+            if def.is_some() {
+                ctx.request_repaint_after(THUMBNAIL_POLL);
+            }
         }
         None => {
             painter.rect_stroke(rect.shrink(OUTLINE_WIDTH), SWATCH_CORNER_RADIUS, Stroke::new(OUTLINE_WIDTH, tokens.text_dim), StrokeKind::Inside);
@@ -241,7 +238,6 @@ fn parameters(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, id: u64,
         }
     }
 
-    // Switches under the sliders: Blur and Bevel reading past the texture's edges, Posterize, Pixelate and FXAA changing the coverage, Histogram Scan's direction
     let trailing = match filter {
         Filter::Blur { wrap, .. } => Some(("wrap", tr("Blur Wrap"), *wrap)),
         Filter::Bevel { wrap, .. } => Some(("wrap", tr("Bevel Wrap"), *wrap)),
@@ -668,7 +664,7 @@ fn slope_blur(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, id: u64,
     sheet.close_card();
 }
 
-/// The reference shows this blur on 0..20; stored on Warp's shared 0..1 source scale
+/// The display range for Blur Slope's source blur, stored on the shared 0..1 scale
 const SLOPE_SOURCE_BLUR_DISPLAY_MAX: f32 = 20.0;
 
 /// A light bar on the field after the slope pass: smeared (Blur), eaten away (Min) or grown (Max)
@@ -777,7 +773,7 @@ fn hsl(app: &mut TextureCraftApp, sheet: &mut PropertySheet<'_>, id: u64, [hue, 
 
     // Shown around 0.5: the hue as half a turn either way (a stored turn past half wraps round), saturation and lightness as −1..1 halved
     let rows = [
-        ("hue", tr("Hue"), (hue + 0.5).rem_euclid(1.0), 1.0),
+        ("hue", tr("Hue"), if hue == 0.5 { 1.0 } else { (hue + 0.5).rem_euclid(1.0) }, 1.0),
         ("saturation", tr("Saturation"), 0.5 + saturation / 2.0, 2.0),
         ("lightness", tr("Lightness"), 0.5 + lightness / 2.0, 2.0),
     ];

@@ -166,7 +166,7 @@ pub fn default_workspace() -> Workspace {
     const VIEWPORT_SPLIT_RATIO: f32 = 0.80;
     const TEXTURE_SET_SPLIT_RATIO: f32 = 0.125;
 
-    // Layers' share under the texture sets: Properties' 69% shows a fill down to its channels, Layers keeps three rows
+    // Leave room for three layer rows and the fill's channel controls
     const LAYERS_SPLIT_RATIO: f32 = 0.31;
 
     let column = split(
@@ -419,6 +419,9 @@ const TAB_TEXT_SIZE: f32 = 12.5;
 /// Narrowest panel tab, in points
 const MIN_TAB_WIDTH: f32 = 54.0;
 
+/// Mixing in title ink keeps the light dock's focus outline above 3:1 on both header surfaces
+const LIGHT_DOCK_ACCENT_TEXT_MIX: f32 = 0.2;
+
 /// The dock look: every panel group is a card under one chrome-coloured header bar, names in capitals at the left, a close × at the right
 fn style(ui: &Ui, tokens: &Tokens) -> DockStyle {
     let mut dock_style = DockStyle::from_ui(ui);
@@ -428,12 +431,12 @@ fn style(ui: &Ui, tokens: &Tokens) -> DockStyle {
     dock_style.background = tokens.panel;
     dock_style.tab_background = tokens.chrome;
 
-    // The shown and the hovered tab keep the bar's colour; their names brighten instead
+    // The selected title is brighter while the strip keeps its colour
     dock_style.active_background = tokens.chrome;
     dock_style.text = tokens.text_strong;
     dock_style.inactive_text = tokens.text_dim;
     dock_style.border = egui::Stroke::NONE;
-    dock_style.accent = tokens.accent;
+    dock_style.accent = if tokens.dark { tokens.accent } else { tokens.accent.lerp_to_gamma(tokens.text_strong, LIGHT_DOCK_ACCENT_TEXT_MIX) };
     dock_style.floating_background = tokens.panel;
     dock_style.floating_stroke = egui::Stroke::new(FLOATING_BORDER_WIDTH, tokens.button_border);
 
@@ -477,10 +480,11 @@ pub fn show(app: &mut TextureCraftApp, ui: &mut Ui) {
     if let Some(panel) = app.ui.dock.raise.take() {
         area = area.raise_panel(panel);
     }
-    let output = area.show_content(ui, &layout, &style, &mut Panels { app, tokens, style: style.clone() });
+
+    let output = area.show_content(ui, &layout, &style, &mut Panels { app, tokens, layout: &layout, style: &style });
     crate::rail_popup::hand_drag_to_dock(&context, area_id());
 
-    // After the dock, which records the viewport the popup reaches into, and before a changed layout returns early
+    // The popup needs the viewport the dock recorded this frame
     crate::rail_popup::show(app, &context);
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -518,7 +522,8 @@ fn header_closes(active: &Panel, floating: bool) -> bool {
 struct Panels<'a> {
     app: &'a mut TextureCraftApp,
     tokens: Tokens,
-    style: DockStyle,
+    layout: &'a Layout<Panel>,
+    style: &'a DockStyle,
 }
 
 /// Room between a panel's edges and its contents
@@ -603,7 +608,7 @@ impl DockContent<Panel> for Panels<'_> {
         let name = logical.to_uppercase();
         let font = crate::theme::semibold(HEADER_TITLE_SIZE);
 
-        // Menus list the panels by these names too, in popups; only a header bar's names, docked or floating, centre on its band
+        // Popup menu rows use their unpadded text metrics
         if matches!(ui.layer_id().order, egui::Order::Foreground | egui::Order::Tooltip) {
             return RichText::new(name).font(font).color(color).into();
         }
@@ -636,7 +641,7 @@ impl DockContent<Panel> for Panels<'_> {
             return;
         }
 
-        // On the names' line: the middle of the header band
+        // Centre the close control on the header title line
         let rect = ui.max_rect();
         let button = egui::Rect::from_center_size(
             egui::pos2(rect.right() - HEADER_CLOSE_RIGHT_MARGIN - HEADER_CLOSE_SIZE / 2.0, rect.center().y - self.header_lift(*active)),
@@ -686,14 +691,15 @@ mod tests {
 
     #[test]
     fn default_workspace_has_every_panel_and_is_valid() {
-        let w = default_workspace();
-        assert!(validate(&w).is_ok());
+        let workspace = default_workspace();
+
+        assert!(validate(&workspace).is_ok());
 
         for panel in Panel::ALL {
-            assert!(w.layout.contains(&panel) || w.hidden.iter().any(|(p, _)| *p == panel), "{panel:?} is neither shown nor hidden");
+            assert!(workspace.layout.contains(&panel) || workspace.hidden.iter().any(|(hidden, _)| *hidden == panel), "{panel:?} is neither shown nor hidden");
         }
 
-        assert_eq!(panels_of(&w), [Panel::Assets, Panel::Viewport, Panel::TextureSetList, Panel::Layers, Panel::TextureSetSettings, Panel::Properties]);
+        assert_eq!(panels_of(&workspace), [Panel::Assets, Panel::Viewport, Panel::TextureSetList, Panel::Layers, Panel::TextureSetSettings, Panel::Properties]);
     }
 
     #[test]

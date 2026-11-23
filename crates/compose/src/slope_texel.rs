@@ -9,15 +9,16 @@ use crate::warp_texel::{Input, Sample, keep_extreme_read};
 /// A source rising less than this across a texel is flat
 const FLAT_STEEPNESS: f32 = 1e-6;
 
-/// Blur Slope `slope` at texel `(x, y)` (`res` texels across a UV tile, `comps` values a texel) into `acc`: the reads downhill of it, blended
+/// Blur Slope `slope` at texel `(x, y)` into `acc`: the reads downhill of it, blended
 pub(crate) fn slope_texel(
     slope: &SourceSlopeBlur,
     (x, y): (f32, f32),
     (res, comps): (u32, usize),
+    tile_sizes: ([u32; 2], [u32; 2]),
     acc: &mut [f32; 5],
     (sample, input): (Sample<'_>, Input<'_>),
 ) {
-    let source = WarpSourceSample::new(&slope.source, slope.seed, (res, comps), (sample, input));
+    let source = WarpSourceSample::new(&slope.source, slope.seed, [x, y], (res, comps), tile_sizes, (sample, input));
     let probe = SourceWarp::probe_texels(res);
     let downhill = [source.at(x - probe, y) - source.at(x + probe, y), source.at(x, y - probe) - source.at(x, y + probe)];
     let steepness = downhill[0].hypot(downhill[1]);

@@ -16,6 +16,11 @@ use texturecraft_core::{
 use texturecraft_geom::{Mesh, UvGBuffer, primitives};
 use texturecraft_texel::{TILE, TileImage, to_u16};
 
+#[path = "cache_and_instances/blur_on.rs"]
+mod blur_on;
+
+use blur_on::BlurOn;
+
 const RES: u32 = 256;
 
 struct Fixture {
@@ -667,6 +672,7 @@ fn kept_filter_fields_are_not_used_after_an_edit_or_under_a_live_stroke() {
     // Keep fields for the remaining tiles
     cache.ahead = rest.to_vec();
     let mut out = run(&fixture, 0, first, Some(&mut cache));
+
     assert!(cache.holds_fields());
 
     // Changing the hot mask must invalidate the retained fields
@@ -1014,11 +1020,28 @@ fn the_environment_keys_the_stack_only_while_environment_lighting_reads_it() {
     assert!(stack_key(&fixture, &images) != turned, "replacing the environment image invalidates the cache");
 }
 
-/// Where a blur lies on the layer inside the instanced folder
-#[derive(Clone, Copy, Debug)]
-enum BlurOn {
-    Content,
-    Mask,
+#[test]
+fn painting_metallic_updates_validation_on_a_layer_above_it() {
+    let mut fixture = fixture();
+    let metal = add(&mut fixture, 0, LayerKind::Paint, None);
+    let color = add(&mut fixture, 0, fill(&[(Channel::BaseColor, Source::Uniform([0.12; 3]))]), None);
+    let color_layer = fixture.project.layer_mut(color).unwrap();
+    color_layer.channels.retain(|channel, _| *channel == Channel::BaseColor);
+    let validation = effect(&mut fixture, EffectKind::Filter(Filter::PbrValidate(texturecraft_core::PbrValidate::LIBRARY)));
+    fixture.project.layer_mut(color).unwrap().content_effects.push(validation);
+
+    let mut cache = BelowCache::default();
+    cache.set_hot(Some(metal));
+    let coordinate = RES / 2;
+    let tiles = [(coordinate / TILE, coordinate / TILE)];
+    let before = run(&fixture, 0, &tiles, Some(&mut cache)).value(Channel::BaseColor, coordinate, coordinate);
+
+    fixture.pixels.layer_mut(metal, Channel::Metallic, (RES, RES)).set(coordinate, coordinate, &[u16::MAX; 2]);
+    let fresh = run(&fixture, 0, &tiles, None).value(Channel::BaseColor, coordinate, coordinate);
+    let updated = run(&fixture, 0, &tiles, Some(&mut cache)).value(Channel::BaseColor, coordinate, coordinate);
+
+    assert_ne!(fresh, before, "the same color is valid for a dielectric and too dark for a metal");
+    assert_eq!(updated, fresh, "replaying the stack must reevaluate material-dependent validation");
 }
 
 /// A folder of set `ts` holding a Clouds fill whose content or mask is blurred by 8; returns the folder and the fill
@@ -1089,4 +1112,161 @@ fn a_hot_layer_with_a_neighbourhood_filter_in_an_instanced_folder_under_an_offse
 
         assert!(!cache.is_empty(), "{blur_on:?} blur: the hot layer is cached through its instance");
     }
+}
+
+fn cache_after_changing_mesh(owned: bool) {
+    use std::sync::Arc;
+    use texturecraft_compose::{ProjectorDepthCache, composite_tiles_with_projectors};
+
+    let mut fixture = fixture();
+    let lower = add(&mut fixture, 0, fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]), None);
+    fixture.project.layer_mut(lower).unwrap().geometry_mask = Some(vec!["Lid".into()]);
+    let hot = add(&mut fixture, 0, LayerKind::Paint, None);
+    let mut named = fixture.mesh.clone();
+    named.submeshes[0].name = "Lid".into();
+    let first = Arc::new(named);
+    let second = Arc::new(fixture.mesh.clone());
+    let images = Default::default();
+    let baked = Default::default();
+    let mut projectors = ProjectorDepthCache::default();
+    let mut cache = BelowCache::default();
+    cache.set_hot(Some(hot));
+    let mut render = |mesh: &Arc<Mesh>, cache: Option<&mut BelowCache>| {
+        let mut input = inputs(&fixture, 0, &images, &baked);
+        input.mesh = mesh;
+        let mut output = Composite::new(&fixture.project.texture_sets[0].channel_list(), RES);
+        if owned {
+            composite_tiles_with_projectors(&input, mesh, &mut projectors, &mut output, &[(1, 1)], cache);
+        } else {
+            composite_tiles_cached(&input, &mut output, &[(1, 1)], cache);
+        }
+        output
+    };
+
+    let before = render(&first, Some(&mut cache));
+    assert!(!cache.is_empty());
+    let expected = render(&second, None);
+    let actual = render(&second, Some(&mut cache));
+
+    assert!(before != expected, "the lower fill applies only to the named part");
+    assert!(actual == expected, "the previous mesh's cached fill was reused");
+}
+
+#[test]
+fn a_borrowed_mesh_change_invalidates_cached_fills() {
+    cache_after_changing_mesh(false);
+}
+
+#[test]
+fn a_projector_rebind_without_below_cache_invalidates_cached_fills() {
+    cache_after_changing_mesh(true);
+}
+
+fn roughness_compare(fixture: &mut Fixture, source: CompareSource) -> Effect {
+    effect(
+        fixture,
+        EffectKind::Compare {
+            op: CompareOp::GreaterThan,
+            value: 0.7,
+            tolerance: 0.0,
+            left: source,
+            right: CompareSource::Constant,
+            channel: Channel::Roughness,
+            hardness: 1.0,
+        },
+    )
+}
+
+#[test]
+fn compare_uses_the_stack_below_each_draw_of_an_instanced_folder() {
+    let mut fixture = fixture();
+    let base = |roughness| fill(&[(Channel::BaseColor, Source::Uniform([0.0, 0.0, 1.0])), (Channel::Roughness, Source::Uniform([roughness; 3]))]);
+    add(&mut fixture, 0, base(0.2), None);
+    let folder = add(&mut fixture, 0, LayerKind::folder(), None);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::LayersBelow));
+    mask.effects.push(effect(&mut fixture, EffectKind::Filter(Filter::Blur { radius: 32.0, wrap: false })));
+    let red = fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]);
+    put(&mut fixture, 0, Some(folder), red, Some(mask));
+    add(&mut fixture, 0, base(0.9), None);
+    add(&mut fixture, 0, LayerKind::Instance { source: folder }, None);
+
+    let color = run(&fixture, 0, &[(1, 1)], None).value(Channel::BaseColor, 96, 96);
+
+    assert!(color[0] > color[2], "the second draw should read the rougher surface: {color:?}");
+}
+
+#[test]
+fn compare_reads_a_retained_channel_after_it_is_removed_from_the_outputs() {
+    let mut fixture = fixture();
+    let roughness = fill(&[(Channel::Roughness, Source::Uniform([0.9; 3]))]);
+    add(&mut fixture, 0, roughness, None);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::LayersBelow));
+    let red = fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]);
+    add(&mut fixture, 0, red, Some(mask));
+    let before = run(&fixture, 0, &[(1, 1)], None).value(Channel::BaseColor, 96, 96);
+
+    fixture.project.texture_sets[0].channels.retain(|(channel, _)| *channel != Channel::Roughness);
+    let after = run(&fixture, 0, &[(1, 1)], None);
+
+    assert!(before[0] > before[1]);
+    assert_eq!(after.value(Channel::BaseColor, 96, 96), before);
+    assert!(!after.channels.contains_key(&Channel::Roughness));
+}
+
+#[test]
+fn sparse_compare_mask_reads_filtered_content_through_the_full_blur_radius() {
+    use texturecraft_compose::{mask_texels, mask_values};
+
+    const SIZE: u32 = 512;
+    let mut fixture = fixture();
+    fixture.mesh = primitives::plane(2.0, 2);
+    fixture.gbuf = UvGBuffer::new(&fixture.mesh, 0, SIZE, SIZE);
+    fixture.project.texture_sets[0] = TextureSet::new("Plane", 0, SIZE);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::ThisLayer));
+    mask.effects.push(effect(&mut fixture, EffectKind::Filter(Filter::Blur { radius: 256.0, wrap: false })));
+    let roughness = fill(&[(Channel::Roughness, Source::Uniform([0.9; 3]))]);
+    let layer = add(&mut fixture, 0, roughness, Some(mask));
+    let edge = effect(&mut fixture, EffectKind::Filter(Filter::EdgeDetect { width: 8.0 }));
+    fixture.project.layer_mut(layer).unwrap().content_effects.push(edge);
+    let (images, baked) = (Default::default(), Default::default());
+    let center = SIZE / 2;
+
+    for (wrap, x) in [(false, center), (true, 0)] {
+        let EffectKind::Filter(Filter::Blur { wrap: enabled, .. }) =
+            &mut fixture.project.layer_mut(layer).unwrap().mask.as_mut().unwrap().effects.last_mut().unwrap().kind
+        else {
+            panic!("expected blur")
+        };
+
+        *enabled = wrap;
+        let inputs = inputs(&fixture, 0, &images, &baked);
+
+        let full = mask_texels(&inputs, layer).unwrap();
+        let tile = mask_values(&inputs, layer, &[(x / TILE, center / TILE)]).unwrap();
+
+        assert_eq!(tile.get(x, center)[0], to_u16(full[(center * SIZE + x) as usize]), "wrap={wrap}");
+    }
+}
+
+#[test]
+fn a_folder_thumbnail_reads_compare_inputs_from_its_backdrop() {
+    use texturecraft_compose::{ThumbTarget, thumb};
+
+    let mut fixture = fixture();
+    let backdrop = fill(&[(Channel::Roughness, Source::Uniform([0.9; 3])), (Channel::BaseColor, Source::Uniform([0.0, 0.0, 1.0]))]);
+    add(&mut fixture, 0, backdrop, None);
+    let folder = add(&mut fixture, 0, LayerKind::folder(), None);
+    let mut mask = Mask::new(MaskBackground::Black);
+    mask.effects.push(roughness_compare(&mut fixture, CompareSource::LayersBelow));
+    put(&mut fixture, 0, Some(folder), fill(&[(Channel::BaseColor, Source::Uniform([1.0, 0.0, 0.0]))]), Some(mask));
+    let (images, baked) = (Default::default(), Default::default());
+    let inputs = inputs(&fixture, 0, &images, &baked);
+
+    let thumbnail = thumb::render(&inputs, ThumbTarget::Content { layer: folder, channel: Channel::BaseColor }).unwrap();
+    let center = 4 * (96 * RES + 96) as usize;
+
+    assert!(thumbnail.rgba[center] > thumbnail.rgba[center + 2], "visible red child");
 }

@@ -839,10 +839,18 @@ fn mask_fill_image_snapshot() {
     harness.run_steps(4);
 
     let EffectKind::Fill { source, .. } = &harness.state().session.doc.project.effect(LayerId(effect)).unwrap().1.kind else { panic!("fill effect") };
-    assert_eq!(*source, Source::image(name));
-    assert!(harness.query_by_label("UV projection").is_some(), "image projection is editable");
 
+    assert_eq!(*source, Source::image(name));
     save(&mut harness, &output_dir, "mask-fill-image-selected");
+
+    harness.get_by_role_and_label(egui::Role::ComboBox, "UV projection").click();
+    harness.run_steps(2);
+    harness.get_by_role_and_label(egui::Role::ListBoxOption, "Tri-planar projection").click();
+    harness.run_steps(3);
+
+    let edited = &harness.state().session.doc.project.effect(LayerId(effect)).unwrap().1.kind;
+
+    assert!(matches!(edited, EffectKind::Fill { projection: texturecraft_engine::core::Projection::Triplanar { .. }, .. }));
 }
 
 /// Every docked panel's header bar (names in capitals, a close × at the right), then the Properties × hovered
@@ -1012,13 +1020,14 @@ fn fill_properties_snapshots() {
     .unwrap();
     let mut harness =
         Harness::builder().with_size(egui::vec2(1600.0, 1500.0)).with_pixels_per_point(2.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
     for (brightness, name) in [(Brightness::MediumDark, "medium"), (Brightness::Dark, "dark"), (Brightness::Light, "light")] {
         harness.state_mut().ui.prefs.brightness = brightness;
         save(&mut harness, &output_dir, &format!("fill-uv-{name}"));
     }
     harness.state_mut().ui.prefs.brightness = Brightness::MediumDark;
 
-    // A UV pad drag right, held mid-way: the ring stays in the middle, the filled dot and the checker go right; then a dot past the edge
+    // Check the fixed ring and moving dot both inside and beyond the preview
     execute(&mut harness.state_mut().session, "layer.fill.projection", &json!({"layer": layer, "offset": [0.0, 0.0]})).unwrap();
     harness.run_steps(2);
     let pad = harness.get_by_label("Move on model").rect().center();
@@ -1142,6 +1151,7 @@ fn fill_symmetry_snapshots() {
     execute(&mut session, "layer.fill.projection", &json!({"layer": layer, "projection": "planar"})).unwrap();
     let mut harness =
         Harness::builder().with_size(egui::vec2(1600.0, 1500.0)).with_pixels_per_point(2.0).wgpu().build_eframe(|cc| TextureCraftApp::new(cc, session));
+    harness.state_mut().ui.prefs.language = "en".into();
     harness.run_steps(4);
     harness.get_by_role_and_label(egui::Role::Tab, "Symmetry").click();
     let cases = [
@@ -1742,7 +1752,7 @@ fn mask_fill_snapshots() {
         save(harness, &output_dir, name);
     };
     shot(&mut harness, json!({"value": 1.0}), "mask-fill-uniform");
-    shot(&mut harness, json!({"image": scratches}), "mask-fill-image");
+    shot(&mut harness, json!({"image": scratches}), "mask-fill-source-image");
     shot(&mut harness, json!({"procedural": "Clouds", "scale": 4.0, "seed": 12}), "mask-fill-procedural");
 
     // The procedural's Resolution list open (Relative factors and Fixed sizes) with a size hovered
@@ -2225,7 +2235,7 @@ fn filter_card_snapshots() {
     };
     let empty = add(&mut session, json!({"layer": layer, "target": "content", "filter": "none"}));
     let blur = add(&mut session, json!({"layer": layer, "target": "mask", "filter": "blur"}));
-    let slope = add(&mut session, json!({"layer": layer, "target": "content", "filter": "slopeBlur", "seed": 12}));
+    let slope = add(&mut session, json!({"layer": layer, "target": "content", "filter": "blurSlope", "seed": 12}));
     execute(&mut session, "effect.set", &json!({"effect": slope.0, "divider": 10, "channels": {"metallic": false, "normal": false}})).unwrap();
     let invert = add(&mut session, json!({"layer": layer, "target": "content", "filter": "invert"}));
     execute(&mut session, "layer.select", &json!({"layer": layer})).unwrap();
@@ -2859,7 +2869,7 @@ fn filter_picker_snapshots() {
         LayerId(execute(session, "effect.add.filter", &params).unwrap()["effect"].as_u64().unwrap())
     };
     let empty = add(&mut session, json!({"layer": layer, "target": "content", "filter": "none"}));
-    let slope = add(&mut session, json!({"layer": layer, "target": "content", "filter": "slopeBlur"}));
+    let slope = add(&mut session, json!({"layer": layer, "target": "content", "filter": "blurSlope"}));
     execute(&mut session, "effect.set", &json!({"effect": slope.0, "channels": {"metallic": false, "normal": false}})).unwrap();
     let masked = add(&mut session, json!({"layer": layer, "target": "mask", "filter": "none"}));
     execute(&mut session, "layer.select", &json!({"layer": layer})).unwrap();

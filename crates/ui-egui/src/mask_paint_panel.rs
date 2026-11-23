@@ -3,7 +3,7 @@
 use egui::Ui;
 use egui_phosphor::regular as ic;
 use serde_json::json;
-use texturecraft_engine::compose::ImageStore;
+use texturecraft_engine::Session;
 use texturecraft_engine::core::{NormalFormat, Source};
 
 use crate::TextureCraftApp;
@@ -17,7 +17,6 @@ use crate::resource_picker;
 use crate::resource_picker_item::ResourcePickerItem;
 use crate::slot_thumbnail::{paint_thumbnail, thumbnail};
 use crate::theme::Tokens;
-use crate::thumbs::Thumbs;
 use crate::tile_picture::TilePicture;
 
 /// The GRAYSCALE section: a slot card for one gray (with its ramp and invert) or an image whose gray is painted
@@ -44,7 +43,7 @@ pub(crate) fn grayscale_sheet(app: &mut TextureCraftApp, ui: &mut Ui) {
             None => MaskSourceChoice::Uniform,
         };
         let ctx = sheet.ui.ctx().clone();
-        let tabs = |_: &mut Thumbs| source_tabs(&app.session.images, shown_color([gray; 3]));
+        let tabs = || source_tabs(&app.session, shown_color([gray; 3]));
         match resource_picker::show(&slot.pick, popup, &mut app.thumbs, Some(&current), image, tabs) {
             Some(MaskSourceChoice::Import) => crate::menus::invoke(app, &ctx, "resource.import"),
             Some(MaskSourceChoice::Image(name)) if app.session.tool.mask_image.as_deref() != Some(name.as_str()) => {
@@ -76,8 +75,8 @@ pub(crate) fn grayscale_sheet(app: &mut TextureCraftApp, ui: &mut Ui) {
 }
 
 /// The picker's one Resources tab: Textures (Import... first, then the project's images) and Uniform
-fn source_tabs(images: &ImageStore, uniform: egui::Color32) -> Vec<PickerTab<MaskSourceChoice>> {
-    let textures = ResourcePickerItem::textures(images, MaskSourceChoice::Import, |name| MaskSourceChoice::Image(name.to_owned()));
+fn source_tabs(session: &Session, uniform: egui::Color32) -> Vec<PickerTab<MaskSourceChoice>> {
+    let textures = ResourcePickerItem::textures(session, MaskSourceChoice::Import, |name| MaskSourceChoice::Image(name.to_owned()));
     let uniform =
         vec![ResourcePickerItem { id: MaskSourceChoice::Uniform, label: tr("Uniform value").to_owned(), caption: None, picture: TilePicture::Swatch(uniform) }];
     let groups =
